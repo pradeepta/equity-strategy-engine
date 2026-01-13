@@ -1,0 +1,52 @@
+# MACD Bullish Crossover GOOGL v1
+# Buy when MACD crosses above signal line (bullish momentum)
+
+meta:
+  name: "MACD Bullish Crossover GOOGL v1"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Buy when MACD crosses above signal line (bullish momentum)
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "macd > -0.5 && close > ema50"
+  trigger: "macd > macd_signal && volume_zscore > 0.2 && close > ema20"
+  invalidate:
+    when_any:
+      - "macd < macd_signal"
+      - "close < ema50 * 0.96"
+
+orderPlans:
+  - name: macd_bullish_crossover_googl_v1
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

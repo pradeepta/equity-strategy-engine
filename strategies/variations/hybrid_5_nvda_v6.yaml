@@ -1,0 +1,56 @@
+# BB + MACD Momentum NVDA v6
+# Buy when price at lower BB AND MACD shows expansion
+
+meta:
+  name: "BB + MACD Momentum NVDA v6"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Buy when price at lower BB AND MACD shows expansion
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: macd_histogram
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && macd > -0.5"
+  trigger: "macd > macd_signal && macd_histogram > 0 && volume_zscore > 0.3"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "macd < macd_signal"
+
+orderPlans:
+  - name: bb_+_macd_momentum_nvda_v6
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

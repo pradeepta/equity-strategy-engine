@@ -1,0 +1,46 @@
+# BB Walk (Upper) NVDA v4
+# Buy and hold while price walks along upper Bollinger Band (trending)
+
+meta:
+  name: "BB Walk (Upper) NVDA v4"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Buy and hold while price walks along upper Bollinger Band (trending)
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: close
+    type: indicator
+  - name: ema50
+    type: indicator
+
+rules:
+  arm: "close > bb_middle && close > ema50"
+  trigger: "close > bb_upper * 0.99 && close > bb_middle"
+  invalidate:
+    when_any:
+      - "close < bb_middle"
+      - "close < ema50"
+
+orderPlans:
+  - name: bb_walk_(upper)_nvda_v4
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

@@ -1,0 +1,62 @@
+# RSI + BB + MACD Triple Confluence GOOGL v5
+# Buy when all three indicators align: RSI oversold, price at lower BB, MACD bullish
+
+meta:
+  name: "RSI + BB + MACD Triple Confluence GOOGL v5"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Buy when all three indicators align: RSI oversold, price at lower BB, MACD bullish
+
+features:
+  - name: rsi
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi < 35 && close < bb_middle && macd > -0.5 && close > ema50"
+  trigger: "rsi < 30 && close > bb_lower && macd > macd_signal && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "rsi > 70"
+      - "close > bb_upper"
+      - "macd < macd_signal"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: rsi_+_bb_+_macd_triple_confluence_googl_v5
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

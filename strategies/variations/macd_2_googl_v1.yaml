@@ -1,0 +1,52 @@
+# MACD Bearish Crossover GOOGL v1
+# Short when MACD crosses below signal line (bearish momentum)
+
+meta:
+  name: "MACD Bearish Crossover GOOGL v1"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Short when MACD crosses below signal line (bearish momentum)
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "macd < 0.5 && close < ema50"
+  trigger: "macd < macd_signal && volume_zscore > 0.2 && close < ema20"
+  invalidate:
+    when_any:
+      - "macd > macd_signal"
+      - "close > ema50 * 1.04"
+
+orderPlans:
+  - name: macd_bearish_crossover_googl_v1
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

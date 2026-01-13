@@ -1,0 +1,64 @@
+# Fade VWAP Reclaim Failure Strategy for NFLX
+#
+# Concept:
+#   - Wait for price to approach VWAP from below
+#   - Arm when close reaches 90.30 (upper entry zone boundary)
+#   - Trigger short when price breaks below EMA20 and closes below VWAP
+#   - Manage with bracket orders (targets at 89.60 and 89.35, 50/50 split)
+#   - Stop if price reclaims VWAP or volume absorption detected
+#
+# Timeframe: 5-min bars
+# Symbol: NFLX
+
+meta:
+  name: "Fade VWAP Reclaim Failure"
+  symbol: NFLX
+  timeframe: 5m
+  description: |
+    Fade short strategy that triggers when price fails to sustain above VWAP.
+    Expects mean reversion to support levels.
+
+features:
+  - name: vwap
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: lod
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: absorption
+    type: microstructure
+
+rules:
+  # Arm condition: price has rallied to upper zone and is near VWAP
+  arm: "close >= 90.20 && close <= 90.40 && close > vwap"
+
+  # Trigger condition: price falls below EMA20 AND closes below VWAP
+  trigger: "close < ema20 && close < vwap && volume > 1000000"
+
+  # Invalidate: price reclaims VWAP or absorption kills momentum
+  invalidate:
+    when_any:
+      - "close > vwap"
+      - "absorption == true"
+      - "high > 90.50"
+
+orderPlans:
+  - name: primary_bracket
+    side: sell
+    entryZone: [90.10, 90.30]
+    qty: 100
+    stopPrice: 90.45
+    targets:
+      - price: 89.60
+        ratioOfPosition: 0.5
+      - price: 89.35
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 2
+  rthOnly: true
+
+risk:
+  maxRiskPerTrade: 50

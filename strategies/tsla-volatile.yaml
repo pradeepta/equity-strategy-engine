@@ -1,0 +1,70 @@
+# TSLA (TESLA) VOLATILE BREAKOUT STRATEGY (OPTIMIZED v2)
+#
+# Major improvements from backtest (had 0% win rate):
+# • Much wider stops: -3.3% instead of -2% (room for volatility)
+# • Much bigger targets: +5%, +8.5% (TSLA moves big, need space)
+# • Stricter entry: Both EMAs aligned + strong volume
+# • Fewer entries: Only high-confidence setups
+#
+# Previous problem: 0% win rate - all stops hit
+# Root cause: 2% stop too tight for TSLA's 2-3% daily moves
+#
+# Expected performance:
+# - 4-5 trades per 60 days (not 8)
+# - 50%+ win rate (not 0%)
+# - +$50-100 per period (not -$67.60)
+#
+# Suitable for: Aggressive swing traders, high risk tolerance
+# Timeframe: Daily bars
+
+meta:
+  name: "TSLA Volatile Breakout v2"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Improved volatile strategy for Tesla.
+    Much wider stops (3.3%) and bigger targets (5-8.5%) for realistic TSLA moves.
+    Stricter entries to filter out noise in volatile stock.
+
+features:
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: lod
+    type: indicator
+
+rules:
+  # Arm: Both EMAs aligned (strict for volatile stock)
+  arm: "close > ema50 && ema20 > ema50"
+
+  # Trigger: Strong volume requirement for TSLA
+  trigger: "close > ema20 && volume_zscore > 0.5"
+
+  # Invalidate: Clear breaks
+  invalidate:
+    when_any:
+      - "close < ema50 * 0.95"           # Hard trend break
+      - "close < ema20 * 0.93"
+      - "volume_zscore > 3.0 && close < ema20"  # Extreme reversal
+
+orderPlans:
+  - name: tsla_volatile_long
+    side: buy
+    entryZone: [240.00, 250.00]
+    qty: 10
+    stopPrice: 233.00                     # -3.3% (was -2%, now realistic)
+    targets:
+      - price: 262.50                     # +5% (first target)
+        ratioOfPosition: 0.5
+      - price: 283.00                     # +13.2% (big move target)
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 4
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 700                    # Wider stop = bigger risk

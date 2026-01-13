@@ -1,0 +1,59 @@
+# Mean Reversion Strategy for NFLX (Current Prices)
+#
+# Concept:
+#   - Wait for price to break above 20-bar EMA
+#   - Arm when price reaches upper entry zone
+#   - Trigger short when price fails (closes below EMA + volume confirmation)
+#   - Manage with bracket orders (targets at 2% and 3% below entry)
+#
+# Timeframe: Daily
+# Symbol: NFLX
+# Current price range: $340-$370
+
+meta:
+  name: "NFLX Mean Reversion"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Mean reversion strategy that triggers when price fails to sustain above
+    the 20-day EMA after reaching upper resistance.
+
+features:
+  - name: ema20
+    type: indicator
+  - name: lod
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+
+rules:
+  # Arm: price is near 20-EMA and trending up (close > ema20)
+  arm: "close > ema20 && close > lod"
+
+  # Trigger: price pulls back below EMA with volume
+  trigger: "close < ema20 && volume_zscore > 0.5"
+
+  # Invalidate: price reclaims EMA decisively or volume spike
+  invalidate:
+    when_any:
+      - "close > ema20 + 1"
+      - "volume_zscore > 2.0"
+
+orderPlans:
+  - name: nflx_short
+    side: sell
+    entryZone: [350.00, 360.00]
+    qty: 10
+    stopPrice: 365.00
+    targets:
+      - price: 343.00
+        ratioOfPosition: 0.5
+      - price: 339.00
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 3
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 150

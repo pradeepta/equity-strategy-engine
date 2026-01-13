@@ -1,0 +1,50 @@
+# MACD Histogram Divergence GOOGL v1
+# Buy when MACD histogram expands (momentum accelerating)
+
+meta:
+  name: "MACD Histogram Divergence GOOGL v1"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Buy when MACD histogram expands (momentum accelerating)
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_histogram
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "macd > 0 && close > ema50"
+  trigger: "macd_histogram > 0 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "macd_histogram < -0.05"
+      - "close < ema50 * 0.96"
+
+orderPlans:
+  - name: macd_histogram_divergence_googl_v1
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

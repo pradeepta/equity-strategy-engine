@@ -1,0 +1,56 @@
+# BB + MACD Crossover NFLX v1
+# Buy at lower BB when MACD crosses above signal (double confirmation)
+
+meta:
+  name: "BB + MACD Crossover NFLX v1"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Buy at lower BB when MACD crosses above signal (double confirmation)
+
+features:
+  - name: bb_lower
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && macd > -0.5"
+  trigger: "close > bb_lower && macd > macd_signal && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "macd < macd_signal"
+
+orderPlans:
+  - name: bb_+_macd_crossover_nflx_v1
+    side: buy
+    entryZone: [343, 348]
+    qty: 29.2
+    stopPrice: 340
+    targets:
+      - price: 350
+        ratioOfPosition: 0.5
+      - price: 360
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 88

@@ -1,0 +1,50 @@
+# RSI Overbought Rejection TSLA v2
+# Short when RSI rises above 70 (overbought), exit when RSI falls below 50
+
+meta:
+  name: "RSI Overbought Rejection TSLA v2"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Short when RSI rises above 70 (overbought), exit when RSI falls below 50
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: open
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 60 && close < ema50"
+  trigger: "rsi > 70 && close < open && volume_zscore > 0.1"
+  invalidate:
+    when_any:
+      - "rsi < 30"
+      - "close > ema50 * 1.04"
+
+orderPlans:
+  - name: rsi_overbought_rejection_tsla_v2
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

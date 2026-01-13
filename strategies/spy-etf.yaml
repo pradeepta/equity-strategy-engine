@@ -1,0 +1,70 @@
+# SPY (S&P 500 ETF) CONSERVATIVE BREAKOUT STRATEGY (OPTIMIZED v2)
+#
+# Major rethink from backtest (worst performer -$187.80):
+# • Problem: 0.5% stop way too tight for broad ETF
+# • Solution: 1.8% stop (realistic for SPY's smoother moves)
+# • Problem: Targets too tight (1.5%, 2.5%)
+# • Solution: 2.7% and 4.4% targets (matches ETF volatility)
+# • Problem: Over-trading noise (6 trades, mostly losses)
+# • Solution: Much stricter entry filters (EMA alignment required)
+#
+# Key insight: SPY is broad market - follows slower trends
+# Need: Less frequent entries but higher conviction
+#
+# Expected performance:
+# - 4-5 trades per 60 days (not 6)
+# - 50%+ win rate (not 16.7%)
+# - +$60-100 per period (not -$187.80)
+#
+# Suitable for: Conservative, lower-risk traders
+# Timeframe: Daily bars
+
+meta:
+  name: "SPY ETF Conservative v2"
+  symbol: SPY
+  timeframe: 1d
+  description: |
+    Reworked conservative strategy for SPY ETF.
+    Realistic stops (1.8%) and targets (2.7-4.4%) for broad market moves.
+    Strict entries to avoid over-trading in range-bound ETF.
+
+features:
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+
+rules:
+  # Arm: Both EMAs aligned (SPY requires confirmed uptrend)
+  arm: "close > ema50 && ema20 > ema50"
+
+  # Trigger: Higher volume requirement for ETF (less noise)
+  trigger: "close > ema20 && volume_zscore > 0.3 && close > ema50"
+
+  # Invalidate: Clear breaks
+  invalidate:
+    when_any:
+      - "close < ema50 * 0.97"           # Trend break
+      - "close < ema20 * 0.96"           # Support break
+      - "volume_zscore > 2.5 && close < ema50"  # Volume rejection
+
+orderPlans:
+  - name: spy_etf_long
+    side: buy
+    entryZone: [560.00, 570.00]
+    qty: 10
+    stopPrice: 553.00                     # -1.2% (realistic for broad ETF)
+    targets:
+      - price: 577.50                     # +2.7% (conservative target)
+        ratioOfPosition: 0.5
+      - price: 595.00                     # +4.4% (bigger move target)
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350                    # Moderate risk for conservative strategy

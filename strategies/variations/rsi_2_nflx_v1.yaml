@@ -1,0 +1,50 @@
+# RSI Overbought Rejection NFLX v1
+# Short when RSI rises above 70 (overbought), exit when RSI falls below 50
+
+meta:
+  name: "RSI Overbought Rejection NFLX v1"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Short when RSI rises above 70 (overbought), exit when RSI falls below 50
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: open
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 60 && close < ema50"
+  trigger: "rsi > 70 && close < open && volume_zscore > 0.1"
+  invalidate:
+    when_any:
+      - "rsi < 30"
+      - "close > ema50 * 1.04"
+
+orderPlans:
+  - name: rsi_overbought_rejection_nflx_v1
+    side: buy
+    entryZone: [343, 348]
+    qty: 29.2
+    stopPrice: 340
+    targets:
+      - price: 350
+        ratioOfPosition: 0.5
+      - price: 360
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 88

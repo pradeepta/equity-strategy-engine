@@ -1,0 +1,57 @@
+# BB Lower Band Bounce NVDA v4
+# Buy at lower Bollinger Band, exit at middle or upper band
+
+meta:
+  name: "BB Lower Band Bounce NVDA v4"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Buy at lower Bollinger Band, exit at middle or upper band
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: close
+    type: indicator
+  - name: open
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && close > bb_lower * 0.98"
+  trigger: "close > bb_lower && volume_zscore > 0.2 && close > open"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "close < bb_lower * 0.95"
+      - "close < ema50"
+
+orderPlans:
+  - name: bb_lower_band_bounce_nvda_v4
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

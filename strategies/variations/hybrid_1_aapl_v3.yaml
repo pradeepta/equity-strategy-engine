@@ -1,0 +1,57 @@
+# RSI + BB Confluence AAPL v3
+# Buy when RSI oversold AND price at lower Bollinger Band
+
+meta:
+  name: "RSI + BB Confluence AAPL v3"
+  symbol: AAPL
+  timeframe: 1d
+  description: |
+    Buy when RSI oversold AND price at lower Bollinger Band
+
+features:
+  - name: rsi
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi < 35 && close < bb_middle && close > ema50"
+  trigger: "rsi < 30 && close > bb_lower && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "rsi > 70"
+      - "close > bb_upper"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: rsi_+_bb_confluence_aapl_v3
+    side: buy
+    entryZone: [228, 232]
+    qty: 43.9
+    stopPrice: 225
+    targets:
+      - price: 235
+        ratioOfPosition: 0.5
+      - price: 240
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 132

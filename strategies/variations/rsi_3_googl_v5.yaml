@@ -1,0 +1,50 @@
+# RSI Divergence Long GOOGL v5
+# Buy when price makes lower low but RSI makes higher low (bullish divergence)
+
+meta:
+  name: "RSI Divergence Long GOOGL v5"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Buy when price makes lower low but RSI makes higher low (bullish divergence)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi < 35 && close > ema50"
+  trigger: "rsi > 35 && rsi < 50 && close > ema20 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "rsi < 25"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: rsi_divergence_long_googl_v5
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

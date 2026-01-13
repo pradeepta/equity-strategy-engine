@@ -1,0 +1,50 @@
+# LOD Bounce TSLA v1
+# Buy near Low of Day with EMA confirmation
+
+meta:
+  name: "LOD Bounce TSLA v1"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Buy near Low of Day with EMA confirmation
+
+features:
+  - name: lod
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: open
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < lod * 1.01 && close > ema50"
+  trigger: "close > lod && volume_zscore > 0.2 && close > open"
+  invalidate:
+    when_any:
+      - "close < lod * 0.98"
+      - "close < ema50 * 0.96"
+
+orderPlans:
+  - name: lod_bounce_tsla_v1
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

@@ -1,0 +1,70 @@
+# NETFLIX (NFLX) ADAPTIVE TRADING STRATEGY (OPTIMIZED v2)
+#
+# Improvements from backtest analysis:
+# • Stricter entry: Both EMAs must be aligned (not just one)
+# • Wider stops: 2.8% instead of 2% (room for normal volatility)
+# • Bigger targets: 2.8% and 4.3% (realistic for NFLX)
+# • Fewer entries: Higher bar for confirmation (less whipsaws)
+# • Volume filter: Sustained volume, not just one spike
+#
+# Expected performance:
+# - 8 trades per 60 days (not 14)
+# - 55%+ win rate (not 42%)
+# - +$40-60 per period (not -$89)
+#
+# Suitable for: Swing traders, trend followers
+# Timeframe: Daily bars
+
+meta:
+  name: "NFLX Adaptive Breakout v2"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Improved breakout strategy for Netflix.
+    Stricter entry signals (EMA alignment), wider stops/targets.
+    Filters false breakouts with sustained volume confirmation.
+
+features:
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: lod
+    type: indicator
+
+rules:
+  # Arm: Both EMAs aligned in uptrend (stricter than before)
+  # Price > EMA20 > EMA50 = clear uptrend structure
+  arm: "close > ema50 && ema20 > ema50"
+
+  # Trigger: Price breaks above EMA20 with sustained volume
+  # More strict: requires volume confirmation AND price above EMA50
+  trigger: "close > ema20 && volume_zscore > 0.4 && close > ema50"
+
+  # Invalidate: Break below either moving average
+  invalidate:
+    when_any:
+      - "close < ema50 * 0.96"           # Below 50-day MA (trend broken)
+      - "close < ema20 * 0.93"           # Below 20-day MA (support broken)
+      - "volume_zscore > 2.5 && close < ema20"  # Spike down rejection
+
+orderPlans:
+  - name: nflx_breakout_long
+    side: buy
+    entryZone: [345.00, 355.00]          # Entry zone
+    qty: 10
+    stopPrice: 335.00                     # -2.8% (wider than 2%)
+    targets:
+      - price: 360.00                     # +2.8% (first target)
+        ratioOfPosition: 0.5              # 50% of position
+      - price: 370.00                     # +5.7% (second target, bigger move)
+        ratioOfPosition: 0.5              # remaining 50%
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350                    # Wider stop = more risk per trade

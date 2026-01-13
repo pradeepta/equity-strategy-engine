@@ -1,0 +1,51 @@
+# LOD + RSI Bounce GOOGL v4
+# Buy at LOD when RSI shows oversold (double bottom signal)
+
+meta:
+  name: "LOD + RSI Bounce GOOGL v4"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Buy at LOD when RSI shows oversold (double bottom signal)
+
+features:
+  - name: lod
+    type: indicator
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < lod * 1.02 && rsi < 35 && close > ema50"
+  trigger: "close > lod && rsi < 30 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "close < lod * 0.97"
+      - "rsi > 70"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: lod_+_rsi_bounce_googl_v4
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

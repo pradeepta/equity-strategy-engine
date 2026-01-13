@@ -1,0 +1,50 @@
+# BB Walk (Lower) MSFT v2
+# Short and hold while price walks along lower Bollinger Band (downtrend)
+
+meta:
+  name: "BB Walk (Lower) MSFT v2"
+  symbol: MSFT
+  timeframe: 1d
+  description: |
+    Short and hold while price walks along lower Bollinger Band (downtrend)
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && close < ema50"
+  trigger: "close < bb_lower * 1.01 && close < bb_middle"
+  invalidate:
+    when_any:
+      - "close > bb_middle"
+      - "close > ema50"
+
+orderPlans:
+  - name: bb_walk_(lower)_msft_v2
+    side: buy
+    entryZone: [425, 435]
+    qty: 23.5
+    stopPrice: 420
+    targets:
+      - price: 445
+        ratioOfPosition: 0.5
+      - price: 460
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 118

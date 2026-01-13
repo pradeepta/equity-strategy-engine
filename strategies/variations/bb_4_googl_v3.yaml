@@ -1,0 +1,50 @@
+# BB Expansion Fade GOOGL v3
+# Short when bands expand, fade the move back to middle
+
+meta:
+  name: "BB Expansion Fade GOOGL v3"
+  symbol: GOOGL
+  timeframe: 1d
+  description: |
+    Short when bands expand, fade the move back to middle
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close > bb_middle && volume_zscore > 1.5"
+  trigger: "close < bb_middle && volume_zscore > 0.5"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "volume_zscore < 0.2"
+
+orderPlans:
+  - name: bb_expansion_fade_googl_v3
+    side: buy
+    entryZone: [160, 165]
+    qty: 62.5
+    stopPrice: 158
+    targets:
+      - price: 172
+        ratioOfPosition: 0.5
+      - price: 180
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 125

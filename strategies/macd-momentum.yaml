@@ -1,0 +1,55 @@
+# MACD Momentum Strategy
+# Buy on MACD bullish crossover, sell on bearish crossover
+# Combines trend and momentum signals
+
+meta:
+  name: "MACD Momentum v1"
+  symbol: AAPL
+  timeframe: 1d
+  description: |
+    Momentum strategy using MACD.
+    Buys on MACD bullish crossover, sells on bearish crossover.
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+
+rules:
+  # Arm: MACD near/above zero, price above 50-EMA
+  arm: "macd > -0.5 && close > ema50"
+
+  # Trigger: MACD bullish crossover with confirmation
+  trigger: "macd > macd_signal && volume_zscore > 0.2 && close > ema20"
+
+  # Exit: MACD bearish crossover or trend break
+  invalidate:
+    when_any:
+      - "macd < macd_signal"      # MACD crosses below signal
+      - "close < ema50 * 0.96"    # Trend break
+
+orderPlans:
+  - name: macd_momentum_long
+    side: buy
+    entryZone: [228.00, 232.00]
+    qty: 12
+    stopPrice: 225.00
+    targets:
+      - price: 235.00
+        ratioOfPosition: 0.5
+      - price: 240.00
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350

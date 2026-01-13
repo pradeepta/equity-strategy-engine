@@ -1,0 +1,56 @@
+# Bollinger Bands Bounce Strategy
+# Buy at lower band, exit at middle or upper band
+# Dynamic support/resistance based on volatility
+
+meta:
+  name: "Bollinger Bands Bounce v1"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Mean reversion strategy using Bollinger Bands.
+    Buys at lower band bounce, sells at middle or upper band.
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+
+rules:
+  # Arm: Price near lower band (oversold area)
+  arm: "close < bb_middle && close > bb_lower * 0.98"
+
+  # Trigger: Bounce from lower band with volume
+  trigger: "close > bb_lower && volume_zscore > 0.2 && close > open"
+
+  # Exit: Upper band, false bounce, or trend break
+  invalidate:
+    when_any:
+      - "close > bb_upper"           # Overbought at upper band
+      - "close < bb_lower * 0.95"    # False bounce, drops further
+      - "close < ema50"              # Trend break
+
+orderPlans:
+  - name: bb_bounce_long
+    side: buy
+    entryZone: [238.00, 242.00]
+    qty: 8
+    stopPrice: 235.00
+    targets:
+      - price: 245.00
+        ratioOfPosition: 0.5
+      - price: 250.00
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350

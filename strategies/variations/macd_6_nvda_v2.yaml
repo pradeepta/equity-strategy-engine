@@ -1,0 +1,48 @@
+# MACD Extreme Reversal NVDA v2
+# Counter-trend when MACD at extreme with divergence signal
+
+meta:
+  name: "MACD Extreme Reversal NVDA v2"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Counter-trend when MACD at extreme with divergence signal
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: macd_histogram
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: close
+    type: indicator
+
+rules:
+  arm: "macd > 1.0 || macd < -1.0"
+  trigger: "macd_histogram < 0 && macd > 0"
+  invalidate:
+    when_any:
+      - "macd_histogram > 0.2"
+      - "close < ema20 * 0.95"
+
+orderPlans:
+  - name: macd_extreme_reversal_nvda_v2
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

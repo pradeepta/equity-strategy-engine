@@ -1,0 +1,51 @@
+# LOD + RSI Bounce TSLA v1
+# Buy at LOD when RSI shows oversold (double bottom signal)
+
+meta:
+  name: "LOD + RSI Bounce TSLA v1"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Buy at LOD when RSI shows oversold (double bottom signal)
+
+features:
+  - name: lod
+    type: indicator
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < lod * 1.02 && rsi < 35 && close > ema50"
+  trigger: "close > lod && rsi < 30 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "close < lod * 0.97"
+      - "rsi > 70"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: lod_+_rsi_bounce_tsla_v1
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

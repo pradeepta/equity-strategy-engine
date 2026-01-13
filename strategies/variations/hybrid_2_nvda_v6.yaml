@@ -1,0 +1,53 @@
+# RSI + MACD Confirmation NVDA v6
+# Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+meta:
+  name: "RSI + MACD Confirmation NVDA v6"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 40 && macd > -0.2 && close > ema50"
+  trigger: "macd > macd_signal && rsi > 50 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "macd < macd_signal"
+      - "rsi > 75"
+      - "close < ema50"
+
+orderPlans:
+  - name: rsi_+_macd_confirmation_nvda_v6
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

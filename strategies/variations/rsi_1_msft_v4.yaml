@@ -1,0 +1,50 @@
+# RSI Oversold Bounce MSFT v4
+# Buy when RSI drops below 30 (oversold), exit when RSI rises above 50
+
+meta:
+  name: "RSI Oversold Bounce MSFT v4"
+  symbol: MSFT
+  timeframe: 1d
+  description: |
+    Buy when RSI drops below 30 (oversold), exit when RSI rises above 50
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: open
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi < 40 && close > ema50"
+  trigger: "rsi < 30 && close > open && volume_zscore > 0.1"
+  invalidate:
+    when_any:
+      - "rsi > 70"
+      - "close < ema50 * 0.96"
+
+orderPlans:
+  - name: rsi_oversold_bounce_msft_v4
+    side: buy
+    entryZone: [425, 435]
+    qty: 23.5
+    stopPrice: 420
+    targets:
+      - price: 445
+        ratioOfPosition: 0.5
+      - price: 460
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 118

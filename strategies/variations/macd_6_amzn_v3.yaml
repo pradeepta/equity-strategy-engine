@@ -1,0 +1,48 @@
+# MACD Extreme Reversal AMZN v3
+# Counter-trend when MACD at extreme with divergence signal
+
+meta:
+  name: "MACD Extreme Reversal AMZN v3"
+  symbol: AMZN
+  timeframe: 1d
+  description: |
+    Counter-trend when MACD at extreme with divergence signal
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: macd_histogram
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: close
+    type: indicator
+
+rules:
+  arm: "macd > 1.0 || macd < -1.0"
+  trigger: "macd_histogram < 0 && macd > 0"
+  invalidate:
+    when_any:
+      - "macd_histogram > 0.2"
+      - "close < ema20 * 0.95"
+
+orderPlans:
+  - name: macd_extreme_reversal_amzn_v3
+    side: buy
+    entryZone: [195, 205]
+    qty: 51.3
+    stopPrice: 192
+    targets:
+      - price: 215
+        ratioOfPosition: 0.5
+      - price: 230
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 154

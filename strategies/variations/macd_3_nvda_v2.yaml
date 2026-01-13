@@ -1,0 +1,48 @@
+# MACD Zero Line Breakout NVDA v2
+# Buy when MACD crosses above zero (trend reversal to bullish)
+
+meta:
+  name: "MACD Zero Line Breakout NVDA v2"
+  symbol: NVDA
+  timeframe: 1d
+  description: |
+    Buy when MACD crosses above zero (trend reversal to bullish)
+
+features:
+  - name: macd
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "macd > -0.2 && macd < 0.2"
+  trigger: "macd > 0 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "macd < -0.1"
+      - "close < ema50"
+
+orderPlans:
+  - name: macd_zero_line_breakout_nvda_v2
+    side: buy
+    entryZone: [135, 145]
+    qty: 74.1
+    stopPrice: 132
+    targets:
+      - price: 155
+        ratioOfPosition: 0.5
+      - price: 170
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 222

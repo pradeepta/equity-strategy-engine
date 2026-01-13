@@ -1,0 +1,56 @@
+# BB + MACD Crossover TSLA v2
+# Buy at lower BB when MACD crosses above signal (double confirmation)
+
+meta:
+  name: "BB + MACD Crossover TSLA v2"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Buy at lower BB when MACD crosses above signal (double confirmation)
+
+features:
+  - name: bb_lower
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && macd > -0.5"
+  trigger: "close > bb_lower && macd > macd_signal && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "macd < macd_signal"
+
+orderPlans:
+  - name: bb_+_macd_crossover_tsla_v2
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

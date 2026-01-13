@@ -1,0 +1,50 @@
+# MACD Signal Line Touch AMZN v3
+# Buy when MACD just touches signal line from below (momentum support)
+
+meta:
+  name: "MACD Signal Line Touch AMZN v3"
+  symbol: AMZN
+  timeframe: 1d
+  description: |
+    Buy when MACD just touches signal line from below (momentum support)
+
+features:
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "macd > macd_signal * 0.95 && close > ema50"
+  trigger: "macd > macd_signal && volume_zscore > 0.15"
+  invalidate:
+    when_any:
+      - "macd < macd_signal * 0.98"
+      - "close < ema50"
+
+orderPlans:
+  - name: macd_signal_line_touch_amzn_v3
+    side: buy
+    entryZone: [195, 205]
+    qty: 51.3
+    stopPrice: 192
+    targets:
+      - price: 215
+        ratioOfPosition: 0.5
+      - price: 230
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 154

@@ -1,0 +1,51 @@
+# RSI Mean Reversion Strategy
+# Buy oversold bounces, sell overbought extremes
+# Works best in choppy/ranging markets
+
+meta:
+  name: "RSI Mean Reversion v1"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Mean reversion strategy using RSI.
+    Buys oversold (RSI < 30), sells overbought (RSI > 70).
+
+features:
+  - name: ema50
+    type: indicator
+  - name: rsi
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+
+rules:
+  # Arm: RSI below 40 (weak to neutral)
+  arm: "rsi < 40 && close > ema50"
+
+  # Trigger: Oversold bounce
+  trigger: "rsi < 30 && close > open && volume_zscore > 0.1"
+
+  # Exit: Overbought or trend break
+  invalidate:
+    when_any:
+      - "rsi > 70"              # Exit if overbought
+      - "close < ema50 * 0.96"  # Exit if trend breaks
+
+orderPlans:
+  - name: rsi_mean_reversion
+    side: buy
+    entryZone: [343.00, 348.00]
+    qty: 10
+    stopPrice: 340.00
+    targets:
+      - price: 350.00
+        ratioOfPosition: 0.5
+      - price: 360.00
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350

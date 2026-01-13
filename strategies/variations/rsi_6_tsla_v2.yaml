@@ -1,0 +1,48 @@
+# RSI Threshold Breakout TSLA v2
+# Buy when RSI crosses above 60 from below (momentum acceleration)
+
+meta:
+  name: "RSI Threshold Breakout TSLA v2"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Buy when RSI crosses above 60 from below (momentum acceleration)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 40 && rsi < 60 && close > ema50"
+  trigger: "rsi > 60 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "rsi < 50"
+      - "close < ema50 * 0.97"
+
+orderPlans:
+  - name: rsi_threshold_breakout_tsla_v2
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

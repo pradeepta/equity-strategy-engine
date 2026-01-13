@@ -1,0 +1,45 @@
+# RSI Mean Reversion Extreme TSLA v2
+# Counter-trend trade when RSI reaches extreme (>80 or <20)
+
+meta:
+  name: "RSI Mean Reversion Extreme TSLA v2"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Counter-trend trade when RSI reaches extreme (>80 or <20)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: lod
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 75 || rsi < 25"
+  trigger: "(rsi > 75 || rsi < 25) && volume_zscore > 0.3"
+  invalidate:
+    when_any:
+      - "rsi > 60 && rsi < 40"
+
+orderPlans:
+  - name: rsi_mean_reversion_extreme_tsla_v2
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

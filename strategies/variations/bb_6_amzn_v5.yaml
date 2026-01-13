@@ -1,0 +1,50 @@
+# BB Walk (Lower) AMZN v5
+# Short and hold while price walks along lower Bollinger Band (downtrend)
+
+meta:
+  name: "BB Walk (Lower) AMZN v5"
+  symbol: AMZN
+  timeframe: 1d
+  description: |
+    Short and hold while price walks along lower Bollinger Band (downtrend)
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && close < ema50"
+  trigger: "close < bb_lower * 1.01 && close < bb_middle"
+  invalidate:
+    when_any:
+      - "close > bb_middle"
+      - "close > ema50"
+
+orderPlans:
+  - name: bb_walk_(lower)_amzn_v5
+    side: buy
+    entryZone: [195, 205]
+    qty: 51.3
+    stopPrice: 192
+    targets:
+      - price: 215
+        ratioOfPosition: 0.5
+      - price: 230
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 154

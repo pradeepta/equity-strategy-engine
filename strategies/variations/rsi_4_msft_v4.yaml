@@ -1,0 +1,50 @@
+# RSI Trend Confirmation MSFT v4
+# Buy on RSI > 50 in uptrend for momentum confirmation
+
+meta:
+  name: "RSI Trend Confirmation MSFT v4"
+  symbol: MSFT
+  timeframe: 1d
+  description: |
+    Buy on RSI > 50 in uptrend for momentum confirmation
+
+features:
+  - name: rsi
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close > ema50 && rsi > 45"
+  trigger: "rsi > 50 && close > ema20 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "rsi < 40"
+      - "close < ema50"
+
+orderPlans:
+  - name: rsi_trend_confirmation_msft_v4
+    side: buy
+    entryZone: [425, 435]
+    qty: 23.5
+    stopPrice: 420
+    targets:
+      - price: 445
+        ratioOfPosition: 0.5
+      - price: 460
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 118

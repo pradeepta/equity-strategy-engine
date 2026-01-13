@@ -1,0 +1,57 @@
+# LOD + BB Lower Band TSLA v1
+# Buy when both LOD and lower BB give support signal
+
+meta:
+  name: "LOD + BB Lower Band TSLA v1"
+  symbol: TSLA
+  timeframe: 1d
+  description: |
+    Buy when both LOD and lower BB give support signal
+
+features:
+  - name: lod
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: close
+    type: indicator
+  - name: low
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "close < bb_middle && close > bb_lower * 0.98 && close > ema50"
+  trigger: "close > bb_lower && close > lod && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "close < bb_lower * 0.95"
+      - "close < ema50"
+
+orderPlans:
+  - name: lod_+_bb_lower_band_tsla_v1
+    side: buy
+    entryZone: [238, 242]
+    qty: 42
+    stopPrice: 235
+    targets:
+      - price: 250
+        ratioOfPosition: 0.5
+      - price: 262
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 126

@@ -1,0 +1,53 @@
+# RSI + MACD Confirmation AAPL v3
+# Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+meta:
+  name: "RSI + MACD Confirmation AAPL v3"
+  symbol: AAPL
+  timeframe: 1d
+  description: |
+    Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 40 && macd > -0.2 && close > ema50"
+  trigger: "macd > macd_signal && rsi > 50 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "macd < macd_signal"
+      - "rsi > 75"
+      - "close < ema50"
+
+orderPlans:
+  - name: rsi_+_macd_confirmation_aapl_v3
+    side: buy
+    entryZone: [228, 232]
+    qty: 43.9
+    stopPrice: 225
+    targets:
+      - price: 235
+        ratioOfPosition: 0.5
+      - price: 240
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 132

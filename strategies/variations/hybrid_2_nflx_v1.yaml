@@ -1,0 +1,53 @@
+# RSI + MACD Confirmation NFLX v1
+# Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+meta:
+  name: "RSI + MACD Confirmation NFLX v1"
+  symbol: NFLX
+  timeframe: 1d
+  description: |
+    Buy when MACD bullish crossover AND RSI confirms (RSI > 50)
+
+features:
+  - name: rsi
+    type: indicator
+  - name: macd
+    type: indicator
+  - name: macd_signal
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: close
+    type: indicator
+  - name: volume
+    type: indicator
+
+rules:
+  arm: "rsi > 40 && macd > -0.2 && close > ema50"
+  trigger: "macd > macd_signal && rsi > 50 && volume_zscore > 0.2"
+  invalidate:
+    when_any:
+      - "macd < macd_signal"
+      - "rsi > 75"
+      - "close < ema50"
+
+orderPlans:
+  - name: rsi_+_macd_confirmation_nflx_v1
+    side: buy
+    entryZone: [343, 348]
+    qty: 29.2
+    stopPrice: 340
+    targets:
+      - price: 350
+        ratioOfPosition: 0.5
+      - price: 360
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 88
