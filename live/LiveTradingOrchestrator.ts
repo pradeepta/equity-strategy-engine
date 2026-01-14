@@ -198,24 +198,42 @@ export class LiveTradingOrchestrator {
           continue;
         }
 
-        console.log(`🔄 Processing bars for ${activeStrategies.length} active strategy(ies)...`);
+        // Check which strategies need bar updates based on their timeframe
+        const strategiesNeedingBars: string[] = [];
+        for (const instance of activeStrategies) {
+          const timeframe = instance.getTimeframe();
+          const timeframeMs = this.timeframeToMilliseconds(timeframe);
 
-        // Fetch latest bars for all symbols
-        const latestBars = await this.multiStrategyManager.fetchLatestBars();
-
-        // Process bars for each strategy
-        for (const [symbol, bars] of latestBars.entries()) {
-          const instance = this.multiStrategyManager.getStrategyBySymbol(symbol);
-          if (!instance) continue;
-
-          // Process each bar
-          for (const bar of bars) {
-            await instance.processBar(bar);
+          if (instance.shouldFetchBars(timeframeMs)) {
+            strategiesNeedingBars.push(instance.symbol);
           }
+        }
 
-          // Check if evaluation is due (every bar for now)
-          if (instance.shouldEvaluate(1)) {
-            await this.lifecycleManager.evaluateStrategy(instance);
+        if (strategiesNeedingBars.length === 0) {
+          console.log(`⏭️  No strategies need bar updates yet (all waiting for timeframe intervals)`);
+        } else {
+          console.log(`🔄 Fetching bars for ${strategiesNeedingBars.length}/${activeStrategies.length} strategy(ies): ${strategiesNeedingBars.join(', ')}`);
+
+          // Fetch latest bars only for symbols that need updates
+          const latestBars = await this.multiStrategyManager.fetchLatestBarsForSymbols(strategiesNeedingBars);
+
+          // Process bars for each strategy
+          for (const [symbol, bars] of latestBars.entries()) {
+            const instance = this.multiStrategyManager.getStrategyBySymbol(symbol);
+            if (!instance) continue;
+
+            // Mark bars as fetched
+            instance.markBarsFetched();
+
+            // Process each bar
+            for (const bar of bars) {
+              await instance.processBar(bar);
+            }
+
+            // Check if evaluation is due (every bar for now)
+            if (instance.shouldEvaluate(1)) {
+              await this.lifecycleManager.evaluateStrategy(instance);
+            }
           }
         }
 

@@ -150,6 +150,42 @@ export class MultiStrategyManager {
   }
 
   /**
+   * Fetch latest bars for specific symbols only
+   * Returns map of symbol -> bars
+   */
+  async fetchLatestBarsForSymbols(symbols: string[]): Promise<Map<string, Bar[]>> {
+    const results = new Map<string, Bar[]>();
+
+    // Fetch bars for each symbol concurrently
+    const promises = symbols.map(async (symbol) => {
+      try {
+        const instance = this.instances.get(symbol);
+        if (!instance) {
+          console.warn(`No strategy instance for ${symbol}`);
+          return;
+        }
+
+        const client = this.marketDataClients.get(symbol);
+        if (!client) {
+          console.warn(`No market data client for ${symbol}`);
+          return;
+        }
+
+        const timeframe = instance.getTimeframe();
+        const bars = await client.getHistoricalBars(symbol, 2, timeframe);
+
+        results.set(symbol, bars);
+      } catch (error) {
+        console.error(`Failed to fetch bars for ${symbol}:`, error);
+      }
+    });
+
+    await Promise.all(promises);
+
+    return results;
+  }
+
+  /**
    * Get all active strategies
    */
   getActiveStrategies(): StrategyInstance[] {

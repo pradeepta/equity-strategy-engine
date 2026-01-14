@@ -24,6 +24,7 @@ export class StrategyInstance {
   private barsSinceLastEval: number = 0;
   private yamlContent: string = '';
   private initialized: boolean = false;
+  private lastBarFetchTime: number = 0;  // Track last time we fetched bars
 
   constructor(yamlPath: string, adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment) {
     this.yamlPath = yamlPath;
@@ -163,5 +164,21 @@ export class StrategyInstance {
    */
   getTimeframe(): string {
     return this.ir.timeframe;
+  }
+
+  /**
+   * Check if enough time has elapsed to fetch new bars for this strategy's timeframe
+   */
+  shouldFetchBars(timeframeMs: number): boolean {
+    const now = Date.now();
+    const elapsed = now - this.lastBarFetchTime;
+    return elapsed >= timeframeMs;
+  }
+
+  /**
+   * Mark that bars were fetched at this time
+   */
+  markBarsFetched(): void {
+    this.lastBarFetchTime = Date.now();
   }
 }
