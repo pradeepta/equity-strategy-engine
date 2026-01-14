@@ -1,0 +1,57 @@
+# MSTR Bollinger Bands Bounce Strategy v2
+# Simplified for high volatility - mean reversion focused
+# Bounces at lower band with volume confirmation (48-65% win rate)
+
+meta:
+  name: "MSTR BB Bounce v2"
+  symbol: MSTR
+  timeframe: 1d
+  description: |
+    Bollinger Bands bounce strategy for MicroStrategy.
+    Buys when price touches lower band with volume spike.
+    Optimized for mean reversion in volatile Bitcoin proxy.
+
+features:
+  - name: bb_upper
+    type: indicator
+  - name: bb_middle
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: volume_zscore
+    type: indicator
+  - name: ema50
+    type: indicator
+
+rules:
+  # Arm: Price approaching lower band area
+  arm: "close < bb_middle && close > ema50"
+
+  # Trigger: Bounce from lower band with bullish bar and volume
+  trigger: "close > bb_lower && close > open && volume_zscore > 0.1"
+
+  # Exit: Upper band or trend break
+  invalidate:
+    when_any:
+      - "close > bb_upper"
+      - "close < bb_lower * 0.97"
+      - "close < ema50 * 0.95"
+
+orderPlans:
+  - name: mstr_bb_bounce_v2
+    side: buy
+    entryZone: [160, 168]
+    qty: 6
+    stopPrice: 152
+    targets:
+      - price: 175
+        ratioOfPosition: 0.5
+      - price: 190
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 540

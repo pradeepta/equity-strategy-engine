@@ -1,0 +1,134 @@
+meta:
+  name: "MP Rare Earth Supply Dominance (Greenland Event)"
+  symbol: MP
+  timeframe: 1d
+  description: |
+    MP Materials geopolitical resource play.
+    Triggered by Trump Greenland invasion announcement.
+
+    Thesis: US gains strategic rare earth mineral supply independence
+    by controlling Greenland deposits. Reduces China dependency.
+    Drives rare earth prices up, MP production/valuation skyrockets.
+
+    Entry: Invasion announced + +8% gap up + supply implications clear
+    Targets: +35-50% (supply dominance), +85-100% (China concerns)
+    Duration: 60 days (medium-term thesis)
+
+  event_trigger: "Trump announces Greenland invasion/annexation"
+  catalyst_type: "Supply Chain Geopolitical"
+  risk_level: "Very High (resource + event-dependent)"
+
+features:
+  - name: volume_zscore
+    type: indicator
+  - name: rsi
+    type: indicator
+  - name: bb_lower
+    type: indicator
+  - name: bb_upper
+    type: indicator
+  - name: ema50
+    type: indicator
+
+rules:
+  # ARM: Pre-invasion positioning phase
+  # Tech/defense funds accumulating shares on thesis
+  arm: |
+    volume_zscore > 1.2 &&
+    rsi > 50 &&
+    close > bb_lower &&
+    close > ema50
+
+  # TRIGGER: CRITICAL EVENT
+  # Invasion announced + gap up on supply implications
+  # Rare earth becomes strategic asset
+  trigger: |
+    volume_zscore > 2.0 &&
+    rsi > 55 &&
+    close > (ema50 * 1.08) &&
+    close > bb_lower * 1.1
+
+  # EXIT: Thesis breaks or overbought exhaustion
+  invalidate:
+    when_any:
+      - "rsi > 85"  # Overbought, take profits
+      - "close < bb_lower * 0.95"  # Support break, thesis failing
+      - "volume_zscore < -2.0"  # Panic selling (deal off)
+      - "close < ema50 * 0.95"  # Lost uptrend
+
+orderPlans:
+  - name: mp_rare_earth_catalyst
+    side: buy
+    entryZone: [40, 70]   # MP current trading range
+    qty: 15               # Larger position, higher conviction
+    stopPrice: 35         # -12% stop (allows volatility)
+    targets:
+      - price: 95         # +35-50% target 1 (supply dominance)
+        ratioOfPosition: 0.5
+      - price: 130        # +85-100% target 2 (China tariff shock)
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 3     # VERY FAST - rare earth plays gap hard
+  rthOnly: false          # Must trade overnight gaps
+
+risk:
+  maxRiskPerTrade: 1500   # High conviction = larger position
+  maxHoldingDays: 60      # Hold longer for supply thesis
+
+context:
+  # IMPORTANT: This is a SUPPLY CHAIN play
+  # Success depends on:
+  # 1. Greenland invasion actually happens
+  # 2. US begins rare earth extraction/contracts
+  # 3. China retaliates (accelerates supply concerns)
+
+  entry_prerequisites:
+    - Trump announces Greenland annexation
+    - Media discusses rare earth implications
+    - Stock gaps up 8%+ on supply story
+    - Volume spikes 2x+ average
+
+  supply_catalysts:
+    - Rare earth mining contracts announced (US/Greenland)
+    - China tariffs on US tech (drives rare earth demand)
+    - Semiconductor shortage news (rare earths critical)
+    - Government rare earth stockpile announcements
+    - EV battery demand surge (rare earths essential)
+
+  why_mp_wins:
+    - MP = US's primary rare earth producer
+    - Currently 8-10% of US supply, rest from China
+    - Greenland could triple US production capacity
+    - Defense/tech will demand domestic supply
+    - Valuation could 2-3x on supply security thesis
+
+  exit_criteria:
+    - Greenland deal cancelled/abandoned
+    - China doesn't retaliate (supply concerns ease)
+    - Rare earth prices collapse (supply increases elsewhere)
+    - 60-day thesis window closes
+    - Overbought exhaustion (RSI 85+)
+
+monitoring:
+  # Set alerts for these keywords
+  twitter_keywords:
+    - "MP Materials rare earth"
+    - "Greenland minerals"
+    - "US rare earth supply"
+    - "China rare earth tariff"
+
+  news_sources:
+    - Mining industry news
+    - Defense supply chain reports
+    - EV battery/semiconductor shortage updates
+    - Geopolitical analysis
+
+  fundamental_drivers:
+    - Rare earth price index
+    - China export restrictions
+    - US defense spending
+    - EV production numbers
+    - Chip shortage news
+
+  check_frequency: "Continuous during trading hours + after hours news"

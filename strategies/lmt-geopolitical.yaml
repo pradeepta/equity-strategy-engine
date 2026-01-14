@@ -1,0 +1,109 @@
+meta:
+  name: "LMT Arctic Buildup (Greenland Event)"
+  symbol: LMT
+  timeframe: 1d
+  description: |
+    Lockheed Martin geopolitical catalyst trade.
+    Triggered by Trump Greenland invasion announcement.
+
+    Thesis: US military expansion to Greenland drives sustained
+    defense spending, defense contractor orders, new weapons systems,
+    Arctic bases, and supply chain dominance.
+
+    Entry: Invasion announcement + +5% gap up
+    Targets: +12-20% (contract speculation), +20-30% (buildup priced in)
+    Duration: 30 days (short-term catalyst)
+
+  event_trigger: "Trump announces Greenland invasion/annexation"
+  catalyst_type: "Geopolitical"
+  risk_level: "High (event-dependent)"
+
+features:
+  - name: volume_zscore
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: rsi
+    type: indicator
+
+rules:
+  # ARM: Pre-invasion anticipation phase
+  # Watch for volume buildup on rumors/headlines
+  arm: |
+    volume_zscore > 1.5 &&
+    close > ema20 &&
+    close > ema50 &&
+    rsi > 45
+
+  # TRIGGER: CRITICAL EVENT
+  # Invasion announced + gap up on news
+  # This is the PRIMARY entry signal
+  trigger: |
+    volume_zscore > 2.5 &&
+    rsi > 55 &&
+    close > ema50 * 1.05
+
+  # EXIT: Catalyst invalidated or exhausted
+  invalidate:
+    when_any:
+      - "close < ema50"  # Lost momentum, thesis breaking
+      - "volume_zscore < -1.5"  # Volume collapse (deal off)
+      - "rsi > 85"  # Overbought exhaustion, take profits
+
+orderPlans:
+  - name: lmt_arctic_catalyst
+    side: buy
+    entryZone: [400, 450]  # Current price range
+    qty: 10                # Larger position for catalyst trade
+    stopPrice: 380         # -4.5% stop (wide for volatility)
+    targets:
+      - price: 480         # +12-20% target 1 (contract spec)
+        ratioOfPosition: 0.5
+      - price: 520         # +20-30% target 2 (buildup confirmed)
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 5     # Act FAST on announcement
+  rthOnly: false          # Trade overnight gaps on news
+
+risk:
+  maxRiskPerTrade: 2000   # Larger position = larger risk
+  maxHoldingDays: 30      # Exit after catalyst period
+
+context:
+  # IMPORTANT: This strategy is EVENT-DEPENDENT
+  # It only works if Trump announces Greenland invasion
+  # Monitor: Twitter, news, press conferences
+
+  entry_prerequisites:
+    - Trump publicly announces intention to acquire Greenland
+    - Stock gaps up 5%+ on news
+    - Volume exceeds 2x average
+
+  catalysts:
+    - Department of Defense contract announcements
+    - Arctic base construction awards
+    - New weapons system contracts for Arctic theater
+    - Congressional defense spending bills
+
+  exit_criteria:
+    - Invasion cancelled or indefinitely delayed
+    - Military buildup scaled back
+    - International sanctions/tariffs crush markets
+    - 30-day catalyst window closes
+
+monitoring:
+  # Set alerts for these keywords
+  twitter_keywords:
+    - "Trump Greenland"
+    - "Arctic expansion"
+    - "US military Greenland"
+
+  news_sources:
+    - Bloomberg Defense
+    - Reuters Military
+    - Defense Industry Digest
+
+  check_frequency: "Continuous during trading hours"

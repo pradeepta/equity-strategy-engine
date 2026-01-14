@@ -14,6 +14,14 @@ import {
   computeMACDLine,
   computeMACDSignal,
   computeMACDHistogram,
+  computeSMA150,
+  computeSMA200,
+  computeSMA50Rising,
+  computeSMA150Rising,
+  computeSMA200Rising,
+  computeFiftyTwoWeekHigh,
+  computeFiftyTwoWeekLow,
+  computeCupHandleConfidence,
 } from './indicators';
 import { computeAbsorption, computeDelta } from './microstructure';
 
@@ -250,6 +258,81 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: computeMACDHistogram,
+  });
+
+  // ========== SEPA INDICATORS (Mark Minervini Growth Screener) ==========
+
+  // SMA50 (50-day Simple Moving Average) - needed for comparisons
+  registry.registerFeature('sma50', {
+    name: 'sma50',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: (ctx: FeatureComputeContext) =>
+      computeEMA(ctx.history, 'close', 50), // Use EMA50 as SMA50 proxy
+  });
+
+  // SMA150 (150-day Simple Moving Average)
+  registry.registerFeature('sma150', {
+    name: 'sma150',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeSMA150,
+  });
+
+  // SMA200 (200-day Simple Moving Average)
+  registry.registerFeature('sma200', {
+    name: 'sma200',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeSMA200,
+  });
+
+  // SMA50_Rising (Is 50-day MA trending up?)
+  registry.registerFeature('sma50_rising', {
+    name: 'sma50_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeSMA50Rising,
+  });
+
+  // SMA150_Rising (Is 150-day MA trending up?)
+  registry.registerFeature('sma150_rising', {
+    name: 'sma150_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeSMA150Rising,
+  });
+
+  // SMA200_Rising (Is 200-day MA trending up?)
+  registry.registerFeature('sma200_rising', {
+    name: 'sma200_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeSMA200Rising,
+  });
+
+  // 52-Week High
+  registry.registerFeature('fifty_two_week_high', {
+    name: 'fifty_two_week_high',
+    type: 'indicator',
+    dependencies: ['high'],
+    compute: computeFiftyTwoWeekHigh,
+  });
+
+  // 52-Week Low
+  registry.registerFeature('fifty_two_week_low', {
+    name: 'fifty_two_week_low',
+    type: 'indicator',
+    dependencies: ['low'],
+    compute: computeFiftyTwoWeekLow,
+  });
+
+  // Cup & Handle Pattern Confidence
+  registry.registerFeature('cup_handle_confidence', {
+    name: 'cup_handle_confidence',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeCupHandleConfidence,
   });
 
   return registry;

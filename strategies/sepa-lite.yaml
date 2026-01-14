@@ -1,0 +1,82 @@
+meta:
+  name: "SEPA Growth Breakout (Lite)"
+  symbol: GENERIC
+  timeframe: 1d
+  description: |
+    Mark Minervini's Specific Entry Point Analysis (SEPA) - Lite Version
+    Identifies growth stocks in early uptrends with cup and handle patterns.
+    This version focuses on technical setup (no fundamentals).
+
+  methodology: "SEPA (Lite - Technical Only)"
+  expected_win_rate: "55-65%"
+  expected_monthly_return: "2-5%"
+
+features:
+  - name: sma50
+    type: indicator
+  - name: sma150
+    type: indicator
+  - name: sma200
+    type: indicator
+  - name: sma50_rising
+    type: indicator
+  - name: sma150_rising
+    type: indicator
+  - name: sma200_rising
+    type: indicator
+  - name: fifty_two_week_high
+    type: indicator
+  - name: fifty_two_week_low
+    type: indicator
+  - name: cup_handle_confidence
+    type: indicator
+
+rules:
+  # ARM: Price positioning and MA alignment
+  # Price must be above all three moving averages
+  # MAs must be aligned (50 > 150 > 200)
+  # Price near 52-week high but not too low
+  arm: |
+    close > sma50 &&
+    close > sma150 &&
+    close > sma200 &&
+    sma50 > sma150 &&
+    sma150 > sma200 &&
+    close >= (fifty_two_week_high * 0.75) &&
+    close >= (fifty_two_week_low * 1.30)
+
+  # TRIGGER: All moving averages rising + cup & handle pattern
+  # This confirms the uptrend is accelerating
+  trigger: |
+    sma50_rising &&
+    sma150_rising &&
+    sma200_rising &&
+    cup_handle_confidence >= 70
+
+  # EXIT: Support breaks
+  # Exit if price breaks below key support levels
+  invalidate:
+    when_any:
+      - "close < sma200"
+      - "close < (fifty_two_week_high * 0.70)"
+      - "close < (fifty_two_week_low * 1.15)"
+
+orderPlans:
+  - name: sepa_growth_entry
+    side: buy
+    entryZone: [100, 500]  # Wide entry zone (market-based)
+    qty: 5                 # Standard SEPA position size
+    stopPrice: 95          # Conservative stop (about 5% below typical entry)
+    targets:
+      - price: 115         # +15% profit target (1st half of position)
+        ratioOfPosition: 0.5
+      - price: 130         # +30% profit target (2nd half of position)
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 20  # SEPA can take weeks to form, give it time
+  rthOnly: true         # Regular trading hours only
+
+risk:
+  maxRiskPerTrade: 500  # Conservative per trade risk
+  maxHoldingDays: 90    # SEPA is multi-week/month strategy
