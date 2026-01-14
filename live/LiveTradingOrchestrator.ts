@@ -220,7 +220,9 @@ export class LiveTradingOrchestrator {
 
         // Calculate sleep interval (based on shortest timeframe)
         const sleepInterval = this.calculateSleepInterval(activeStrategies);
-        console.log(`⏰ Next check in ${Math.round(sleepInterval / 1000)} seconds...`);
+        const sleepSeconds = Math.round(sleepInterval / 1000);
+        const humanReadable = this.formatDuration(sleepInterval);
+        console.log(`⏰ Next check in ${humanReadable} (${sleepSeconds}s)`);
         console.log('');
 
         await this.sleep(sleepInterval);
@@ -353,9 +355,77 @@ export class LiveTradingOrchestrator {
    * Calculate sleep interval based on shortest timeframe
    */
   private calculateSleepInterval(strategies: any[]): number {
-    // For now, use a fixed 5-second interval
-    // TODO: Calculate based on shortest timeframe
-    return 5000;
+    if (strategies.length === 0) {
+      return 30000; // 30 seconds if no strategies
+    }
+
+    // Get all timeframes and find the shortest
+    let shortestIntervalMs = Number.MAX_SAFE_INTEGER;
+
+    for (const strategy of strategies) {
+      const timeframe = strategy.getTimeframe();
+      const intervalMs = this.timeframeToMilliseconds(timeframe);
+
+      if (intervalMs < shortestIntervalMs) {
+        shortestIntervalMs = intervalMs;
+      }
+    }
+
+    // Add 10% buffer to avoid hitting exactly on bar close
+    const bufferMs = Math.floor(shortestIntervalMs * 0.1);
+    return shortestIntervalMs + bufferMs;
+  }
+
+  /**
+   * Convert timeframe string to milliseconds
+   */
+  private timeframeToMilliseconds(timeframe: string): number {
+    // Parse timeframe format like "1m", "5m", "1h", "1d"
+    const match = timeframe.match(/^(\d+)([smhd])$/i);
+
+    if (!match) {
+      console.warn(`Unknown timeframe format: ${timeframe}, defaulting to 5 minutes`);
+      return 5 * 60 * 1000; // 5 minutes default
+    }
+
+    const value = parseInt(match[1]);
+    const unit = match[2].toLowerCase();
+
+    switch (unit) {
+      case 's': // seconds
+        return value * 1000;
+      case 'm': // minutes
+        return value * 60 * 1000;
+      case 'h': // hours
+        return value * 60 * 60 * 1000;
+      case 'd': // days
+        return value * 24 * 60 * 60 * 1000;
+      default:
+        return 5 * 60 * 1000; // 5 minutes default
+    }
+  }
+
+  /**
+   * Format duration in milliseconds to human-readable string
+   */
+  private formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) {
+      const remainingHours = hours % 24;
+      return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+    } else if (hours > 0) {
+      const remainingMinutes = minutes % 60;
+      return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+    } else if (minutes > 0) {
+      const remainingSeconds = seconds % 60;
+      return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+    } else {
+      return `${seconds}s`;
+    }
   }
 
   /**
