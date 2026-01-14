@@ -1,6 +1,6 @@
 # Algorithmic Trading System
 
-A complete algorithmic trading system that lets you define trading strategies in simple YAML format, compile them into type-safe executable code, backtest them against historical data, and deploy them to live trading on Alpaca.
+A complete algorithmic trading system that lets you define trading strategies in simple YAML format, compile them into type-safe executable code, backtest them against historical data, and deploy them to live trading with **Interactive Brokers (TWS)** or Alpaca.
 
 **Now available as an MCP Server!** Use this system programmatically through the Model Context Protocol in Claude Desktop, IDEs, or custom applications.
 
@@ -35,10 +35,50 @@ A complete algorithmic trading system that lets you define trading strategies in
 ### 📈 Workflow
 
 ```
-YAML Strategy → Compile to Typed IR → Backtest on Historical Data → Deploy Live to Alpaca
+YAML Strategy → Compile to Typed IR → Backtest on Historical Data → Deploy Live to TWS/Alpaca
 ```
 
+### 🏦 Broker Support
+
+- **Interactive Brokers (TWS)**: Full support for paper and live trading via TWS API (default)
+- **Alpaca**: REST API integration for paper and live trading
+
 ## Quick Start
+
+### Installation
+
+```bash
+npm install
+npm run build
+```
+
+### Broker Setup
+
+#### Interactive Brokers TWS (Default)
+
+1. Download and install [TWS](https://www.interactivebrokers.com/en/trading/tws.php) or [IB Gateway](https://www.interactivebrokers.com/en/trading/ibgateway-stable.php)
+2. Enable API connections in TWS:
+   - Go to Edit → Global Configuration → API → Settings
+   - Enable "ActiveX and Socket Clients"
+   - Add 127.0.0.1 to "Trusted IP Addresses"
+   - Set Socket port to 7497 (paper) or 7496 (live)
+3. Configure `.env`:
+   ```bash
+   BROKER=tws
+   TWS_HOST=127.0.0.1
+   TWS_PORT=7497  # Paper trading
+   TWS_CLIENT_ID=0
+   ```
+
+#### Alpaca (Alternative)
+
+1. Get API keys from [Alpaca Paper Trading](https://app.alpaca.markets/paper/dashboard/overview)
+2. Configure `.env`:
+   ```bash
+   BROKER=alpaca
+   ALPACA_API_KEY=your_key_here
+   ALPACA_API_SECRET=your_secret_here
+   ```
 
 ### Command Line Usage
 
@@ -46,6 +86,17 @@ YAML Strategy → Compile to Typed IR → Backtest on Historical Data → Deploy
 2. Compile to type-safe intermediate representation
 3. Backtest against historical data
 4. Deploy live with real risk management
+
+```bash
+# Dry-run (no orders submitted)
+npm run live
+
+# Live paper trading with TWS
+LIVE=true npm run live
+
+# Use Alpaca instead
+BROKER=alpaca LIVE=true npm run live
+```
 
 ### MCP Server Usage
 

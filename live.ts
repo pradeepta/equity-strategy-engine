@@ -10,6 +10,8 @@ import { StrategyCompiler } from './compiler/compile';
 import { createStandardRegistry } from './features/registry';
 import { StrategyEngine } from './runtime/engine';
 import { AlpacaRestAdapter } from './broker/alpacaRest';
+import { TwsAdapter } from './broker/twsAdapter';
+import { BaseBrokerAdapter } from './broker/broker';
 import { Bar } from './spec/types';
 
 // Load .env
@@ -282,7 +284,7 @@ async function runLiveTrading(
   strategyYaml: string,
   symbol: string = 'NFLX'
 ): Promise<LiveResult> {
-  console.log('\n📡 Connecting to Alpaca...\n');
+  console.log('\n📡 Connecting for market data...\n');
 
   const alpaca = new AlpacaClient();
   const account = await alpaca.getAccount();
@@ -314,11 +316,27 @@ async function runLiveTrading(
 
   const enableLive = process.env.LIVE === 'true';
 
+  // Broker selection: TWS (default) or Alpaca
+  const brokerType = process.env.BROKER || 'tws';
+  let adapter: BaseBrokerAdapter;
+
+  if (brokerType.toLowerCase() === 'alpaca') {
+    console.log('📊 Using Alpaca broker\n');
+    const baseUrl = process.env.APCA_API_BASE_URL || process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
+    const apiKey = process.env.APCA_API_KEY_ID || process.env.ALPACA_API_KEY || '';
+    const apiSecret = process.env.APCA_API_SECRET_KEY || process.env.ALPACA_API_SECRET || '';
+    adapter = new AlpacaRestAdapter(baseUrl, apiKey, apiSecret);
+  } else {
+    console.log('📊 Using TWS (Interactive Brokers) broker\n');
+    const twsHost = process.env.TWS_HOST || '127.0.0.1';
+    const twsPort = parseInt(process.env.TWS_PORT || '7497'); // 7497 = paper trading, 7496 = live
+    const twsClientId = parseInt(process.env.TWS_CLIENT_ID || '0');
+    adapter = new TwsAdapter(twsHost, twsPort, twsClientId);
+  }
+
   const baseUrl = process.env.APCA_API_BASE_URL || process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
   const apiKey = process.env.APCA_API_KEY_ID || process.env.ALPACA_API_KEY || '';
   const apiSecret = process.env.APCA_API_SECRET_KEY || process.env.ALPACA_API_SECRET || '';
-
-  const adapter = new AlpacaRestAdapter(baseUrl, apiKey, apiSecret);
 
   // Calculate optimal check interval based on timeframe
   const checkIntervalMs = calculateOptimalCheckInterval(timeframeStr);
@@ -467,10 +485,12 @@ async function main() {
   const strategyFile = process.argv[3] || 'nflx-mean-reversion';
   const strategyPath = `./strategies/${strategyFile}.yaml`;
   const liveMode = process.env.LIVE === 'true';
+  const brokerType = (process.env.BROKER || 'tws').toUpperCase();
 
   console.log('\n╔' + '═'.repeat(58) + '╗');
   console.log('║' + ' '.repeat(58) + '║');
   console.log('║' + `LIVE TRADING: ${symbol}`.padEnd(58) + '║');
+  console.log('║' + `Broker: ${brokerType}`.padEnd(58) + '║');
   if (!liveMode) {
     console.log('║' + '[DRY-RUN MODE - Orders NOT submitted]'.padEnd(58) + '║');
   } else {
