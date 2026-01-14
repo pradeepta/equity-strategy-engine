@@ -17,6 +17,8 @@
     "backtest:build": "tsc && node dist/backtest.js",
     "live": "ts-node live.ts",
     "live:build": "tsc && node dist/live.js",
+    "live:multi": "ts-node live-multi.ts",
+    "live:multi:build": "tsc && node dist/live-multi.js",
     "test": "jest",
     "test:tws": "ts-node test-tws.ts",
     "movers": "ts-node fetch-movers.ts",

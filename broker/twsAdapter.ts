@@ -63,9 +63,11 @@ export class TwsAdapter extends BaseBrokerAdapter {
       });
 
       this.client.on('error', (err: Error, code: number, reqId: number) => {
+        // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
+        const infoMessages = [2104, 2106, 2107, 2108, 2158];
         if (!this.connected && code === 502) {
           reject(new Error(`Cannot connect to TWS at ${this.host}:${this.port}. Make sure TWS/IB Gateway is running.`));
-        } else {
+        } else if (!infoMessages.includes(code)) {
           console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
         }
       });

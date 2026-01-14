@@ -50,7 +50,11 @@ export class TwsMarketDataClient {
       });
 
       client.on('error', (err: Error, code: number, reqId: number) => {
-        console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
+        // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
+        const infoMessages = [2104, 2106, 2107, 2108, 2158];
+        if (!infoMessages.includes(code)) {
+          console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
+        }
         if (!connected && code === 502) {
           clearTimeout(timeout);
           reject(new Error(`Cannot connect to TWS at ${this.host}:${this.port}`));
