@@ -9,7 +9,7 @@ import * as path from 'path';
 export class FilesystemWatcher {
   private watchDir: string;
   private pollInterval: number;
-  private knownFiles: Set<string>;
+  private knownFiles: Map<string, number>;  // file path -> last modified time
   private callbacks: Array<(filePath: string) => void>;
   private intervalId?: NodeJS.Timeout;
   private running: boolean = false;
@@ -17,7 +17,7 @@ export class FilesystemWatcher {
   constructor(watchDir: string, pollInterval: number) {
     this.watchDir = watchDir;
     this.pollInterval = pollInterval;
-    this.knownFiles = new Set();
+    this.knownFiles = new Map();
     this.callbacks = [];
   }
 
@@ -33,14 +33,14 @@ export class FilesystemWatcher {
     console.log(`📁 Poll interval: ${this.pollInterval}ms`);
 
     // Initial scan
-    this.scanDirectory().then(files => {
-      files.forEach(file => this.knownFiles.add(file));
+    this.scanDirectoryWithTimes().then(files => {
+      files.forEach(({ path, mtime }) => this.knownFiles.set(path, mtime));
       console.log(`📁 Found ${files.length} existing strategy files`);
     });
 
     // Start polling
     this.intervalId = setInterval(() => {
-      this.detectNewFiles();
+      this.detectChanges();
     }, this.pollInterval);
 
     this.running = true;
@@ -66,9 +66,9 @@ export class FilesystemWatcher {
   }
 
   /**
-   * Scan directory for YAML files
+   * Scan directory for YAML files with modification times
    */
-  private async scanDirectory(): Promise<string[]> {
+  private async scanDirectoryWithTimes(): Promise<Array<{ path: string; mtime: number }>> {
     try {
       // Check if directory exists
       if (!fs.existsSync(this.watchDir)) {
@@ -79,10 +79,19 @@ export class FilesystemWatcher {
       // Read directory
       const entries = await fs.promises.readdir(this.watchDir, { withFileTypes: true });
 
-      // Filter for .yaml files
-      const yamlFiles = entries
-        .filter(entry => entry.isFile() && entry.name.endsWith('.yaml'))
-        .map(entry => path.join(this.watchDir, entry.name));
+      // Filter for .yaml files and get stats
+      const yamlFiles: Array<{ path: string; mtime: number }> = [];
+
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith('.yaml')) {
+          const filePath = path.join(this.watchDir, entry.name);
+          const stats = await fs.promises.stat(filePath);
+          yamlFiles.push({
+            path: filePath,
+            mtime: stats.mtimeMs
+          });
+        }
+      }
 
       return yamlFiles;
     } catch (error) {
@@ -92,23 +101,33 @@ export class FilesystemWatcher {
   }
 
   /**
-   * Detect new files (not in knownFiles)
+   * Detect new or modified files
    */
-  private async detectNewFiles(): Promise<void> {
+  private async detectChanges(): Promise<void> {
     try {
-      const currentFiles = await this.scanDirectory();
+      const currentFiles = await this.scanDirectoryWithTimes();
+      const changedFiles: string[] = [];
 
-      // Find new files
-      const newFiles = currentFiles.filter(file => !this.knownFiles.has(file));
+      // Check for new or modified files
+      for (const { path: filePath, mtime } of currentFiles) {
+        const lastMtime = this.knownFiles.get(filePath);
 
-      if (newFiles.length > 0) {
-        console.log(`📁 Detected ${newFiles.length} new strategy file(s)`);
+        if (lastMtime === undefined) {
+          // New file
+          console.log(`📁 Detected new file: ${path.basename(filePath)}`);
+          changedFiles.push(filePath);
+          this.knownFiles.set(filePath, mtime);
+        } else if (mtime > lastMtime) {
+          // Modified file
+          console.log(`📝 Detected modified file: ${path.basename(filePath)}`);
+          changedFiles.push(filePath);
+          this.knownFiles.set(filePath, mtime);
+        }
+      }
 
-        for (const file of newFiles) {
-          // Add to known files
-          this.knownFiles.add(file);
-
-          // Trigger callbacks
+      // Trigger callbacks for changed files
+      if (changedFiles.length > 0) {
+        for (const file of changedFiles) {
           for (const callback of this.callbacks) {
             try {
               callback(file);
@@ -119,7 +138,7 @@ export class FilesystemWatcher {
         }
       }
     } catch (error) {
-      console.error('Error detecting new files:', error);
+      console.error('Error detecting file changes:', error);
     }
   }
 

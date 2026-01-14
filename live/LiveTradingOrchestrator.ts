@@ -37,6 +37,7 @@ export class LiveTradingOrchestrator {
   private mainLoopInterval?: NodeJS.Timeout;
   private swappingSymbols: Set<string> = new Set();  // Track symbols being swapped
   private deployedFiles: Set<string> = new Set();  // Track files deployed by swaps
+  private currentSleepResolve?: () => void;  // Resolve function to interrupt sleep
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -234,10 +235,10 @@ export class LiveTradingOrchestrator {
   }
 
   /**
-   * Handle new strategy file detected by watcher
+   * Handle new or modified strategy file detected by watcher
    */
   private async handleNewStrategyFile(filePath: string): Promise<void> {
-    console.log(`📥 New strategy file detected: ${filePath}`);
+    console.log(`📥 Strategy file change detected: ${filePath}`);
 
     try {
       // Check if this file was deployed by a swap operation
@@ -258,18 +259,30 @@ export class LiveTradingOrchestrator {
         return;
       }
 
-      // Check max concurrent strategies
-      if (this.multiStrategyManager.getActiveCount() >= this.config.maxConcurrentStrategies) {
-        console.warn(
-          `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new file.`
-        );
-        return;
+      // Check if strategy for this symbol already exists (file modification)
+      if (symbol && this.multiStrategyManager.getStrategyBySymbol(symbol)) {
+        console.log(`🔄 Reloading modified strategy for ${symbol}...`);
+
+        // Remove old version
+        await this.multiStrategyManager.removeStrategy(symbol);
+        console.log(`✓ Removed old version of ${symbol}`);
+      } else {
+        // Check max concurrent strategies (only for new strategies)
+        if (this.multiStrategyManager.getActiveCount() >= this.config.maxConcurrentStrategies) {
+          console.warn(
+            `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new file.`
+          );
+          return;
+        }
       }
 
       // Load strategy
       await this.multiStrategyManager.loadStrategy(filePath);
 
-      console.log(`✓ Successfully loaded new strategy from ${filePath}`);
+      console.log(`✓ Successfully loaded strategy from ${filePath}`);
+
+      // Wake up main loop to recalculate interval immediately
+      this.wakeUpEarly();
     } catch (error: any) {
       console.error(`Failed to load strategy from ${filePath}:`, error.message);
 
@@ -429,10 +442,27 @@ export class LiveTradingOrchestrator {
   }
 
   /**
-   * Sleep for specified milliseconds
+   * Sleep for specified milliseconds (interruptible)
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve => {
+      this.currentSleepResolve = resolve;
+      setTimeout(() => {
+        this.currentSleepResolve = undefined;
+        resolve();
+      }, ms);
+    });
+  }
+
+  /**
+   * Interrupt current sleep and wake up immediately
+   */
+  private wakeUpEarly(): void {
+    if (this.currentSleepResolve) {
+      console.log('⚡ Waking up early due to new strategy...');
+      this.currentSleepResolve();
+      this.currentSleepResolve = undefined;
+    }
   }
 
   /**

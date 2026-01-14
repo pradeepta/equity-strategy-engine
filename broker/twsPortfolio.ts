@@ -84,17 +84,31 @@ export class PortfolioDataFetcher {
       return this.cache;
     }
 
-    // Connect if not connected
+    // Reconnect if disconnected
     if (!this.connected) {
+      console.log('📡 Reconnecting to TWS for portfolio data...');
       await this.connect();
     }
 
-    // Fetch fresh data
-    const snapshot = await this.fetchPortfolioData();
-    this.cache = snapshot;
-    this.lastFetchTime = now;
-
-    return snapshot;
+    // Fetch fresh data with retry logic
+    try {
+      const snapshot = await this.fetchPortfolioData();
+      this.cache = snapshot;
+      this.lastFetchTime = now;
+      return snapshot;
+    } catch (error: any) {
+      // If fetch fails, try reconnecting once
+      if (error.message.includes('unsubscribed') || !this.connected) {
+        console.log('⚠️  Portfolio fetch failed, attempting reconnect...');
+        this.connected = false;
+        await this.connect();
+        const snapshot = await this.fetchPortfolioData();
+        this.cache = snapshot;
+        this.lastFetchTime = now;
+        return snapshot;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -106,11 +120,8 @@ export class PortfolioDataFetcher {
       const positions: Array<any> = [];
       let accountId: string = process.env.TWS_ACCOUNT_ID || 'N/A';
 
-      // Request account updates
-      this.client.reqAccountUpdates(true, accountId === 'N/A' ? '' : accountId);
-
-      // Handle account value updates
-      this.client.on('updateAccountValue', (key: string, value: string, currency: string, accountName: string) => {
+      // Create temporary handlers that will be cleaned up
+      const handleAccountValue = (key: string, value: string, _currency: string, accountName: string) => {
         if (accountName) {
           accountId = accountName;
         }
@@ -120,18 +131,17 @@ export class PortfolioDataFetcher {
         if (!isNaN(numValue)) {
           accountValues.set(key, numValue);
         }
-      });
+      };
 
-      // Handle position updates
-      this.client.on('updatePortfolio', (
+      const handlePortfolio = (
         contract: any,
         position: number,
         marketPrice: number,
         marketValue: number,
         averageCost: number,
         unrealizedPNL: number,
-        realizedPNL: number,
-        accountName: string
+        _realizedPNL: number,
+        _accountName: string
       ) => {
         positions.push({
           symbol: contract.symbol,
@@ -141,10 +151,14 @@ export class PortfolioDataFetcher {
           unrealizedPnL: unrealizedPNL,
           marketValue: marketValue,
         });
-      });
+      };
 
-      // Handle account download end
-      this.client.on('accountDownloadEnd', (accountName: string) => {
+      const handleDownloadEnd = (accountName: string) => {
+        // Clean up listeners
+        this.client.removeListener('updateAccountValue', handleAccountValue);
+        this.client.removeListener('updatePortfolio', handlePortfolio);
+        this.client.removeListener('accountDownloadEnd', handleDownloadEnd);
+
         // Stop updates
         this.client.reqAccountUpdates(false, accountName);
 
@@ -161,7 +175,15 @@ export class PortfolioDataFetcher {
         };
 
         resolve(snapshot);
-      });
+      };
+
+      // Attach listeners
+      this.client.on('updateAccountValue', handleAccountValue);
+      this.client.on('updatePortfolio', handlePortfolio);
+      this.client.on('accountDownloadEnd', handleDownloadEnd);
+
+      // Request account updates
+      this.client.reqAccountUpdates(true, accountId === 'N/A' ? '' : accountId);
 
       // Timeout after 10 seconds
       setTimeout(() => {
