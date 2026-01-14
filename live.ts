@@ -40,6 +40,7 @@ class AlpacaClient {
   private apiKey: string;
   private apiSecret: string;
   private baseUrl: string;
+  private dataUrl: string;
 
   constructor() {
     // Support both naming conventions
@@ -49,6 +50,8 @@ class AlpacaClient {
       process.env.APCA_API_BASE_URL ||
       process.env.ALPACA_BASE_URL ||
       'https://paper-api.alpaca.markets';
+    // v2 Data API endpoint (same for paper and live)
+    this.dataUrl = 'https://data.alpaca.markets';
 
     if (!this.apiKey || !this.apiSecret) {
       throw new Error(
@@ -104,51 +107,60 @@ class AlpacaClient {
     limit: number = 100,
     timeframe: string = '1day'
   ): Promise<Bar[]> {
-    try {
-      // Try v1 endpoint first
-      const response = await this.request(
-        'GET',
-        `/v1/bars/${timeframe}?symbols=${symbol}&limit=${limit}`
-      );
+    // Use v2 Data API endpoint with correct URL
+    const url = new URL(`${this.dataUrl}/v2/stocks/${symbol}/bars`);
+    url.searchParams.set('timeframe', timeframe);
+    url.searchParams.set('limit', limit.toString());
 
-      if (response[symbol] && response[symbol].length > 0) {
-        const bars: Bar[] = response[symbol].map((bar: AlpacaBar) => ({
-          timestamp: bar.t * 1000, // Convert to ms
-          open: bar.o,
-          high: bar.h,
-          low: bar.l,
-          close: bar.c,
-          volume: bar.v,
-        }));
-        return bars;
-      }
-    } catch (e) {
-      // Fallback to v2 endpoint
-      console.log('  (v1 endpoint not available, trying v2)');
-    }
+    // Add date range for better results (last 30 days)
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 30);
+    url.searchParams.set('start', start.toISOString().split('T')[0]);
+    url.searchParams.set('end', end.toISOString().split('T')[0]);
 
-    try {
-      const response = await this.request(
-        'GET',
-        `/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`
-      );
+    const options: https.RequestOptions = {
+      method: 'GET',
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      headers: {
+        'APCA-API-KEY-ID': this.apiKey,
+        'APCA-API-SECRET-KEY': this.apiSecret,
+      },
+    };
 
-      if (response.bars && response.bars.length > 0) {
-        const bars: Bar[] = response.bars.map((bar: any) => ({
-          timestamp: bar.t * 1000, // Convert to ms
-          open: bar.o,
-          high: bar.h,
-          low: bar.l,
-          close: bar.c,
-          volume: bar.v,
-        }));
-        return bars;
-      }
-    } catch (e) {
-      // Continue to error below
-    }
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const response = JSON.parse(data);
 
-    throw new Error(`No bars available for ${symbol}`);
+            if (response.bars && response.bars.length > 0) {
+              const bars: Bar[] = response.bars.map((bar: any) => ({
+                timestamp: new Date(bar.t).getTime(),
+                open: bar.o,
+                high: bar.h,
+                low: bar.l,
+                close: bar.c,
+                volume: bar.v,
+              }));
+              resolve(bars);
+            } else {
+              reject(new Error(`No bars available for ${symbol} (${response.message || 'no data returned'})`));
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse response: ${data.substring(0, 200)}`));
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.end();
+    });
   }
 
   async getLatestBar(symbol: string): Promise<Bar | null> {
@@ -175,6 +187,44 @@ class AlpacaClient {
 }
 
 // ============================================================================
+// Calculate Optimal Check Interval
+// ============================================================================
+
+function calculateOptimalCheckInterval(timeframeStr: string): number {
+  // Parse timeframe string (e.g., "1h", "15m", "1d", "5m")
+  const match = timeframeStr.match(/^(\d+)([hmd])$/i);
+
+  if (!match) {
+    // Default to 1 minute if can't parse
+    return 60000;
+  }
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2].toLowerCase();
+
+  let barDurationMs = 0;
+
+  if (unit === 'm') {
+    // Minutes
+    barDurationMs = value * 60 * 1000;
+  } else if (unit === 'h') {
+    // Hours
+    barDurationMs = value * 60 * 60 * 1000;
+  } else if (unit === 'd') {
+    // Days
+    barDurationMs = value * 24 * 60 * 60 * 1000;
+  }
+
+  // Check at 1/3 of bar interval (so we catch new bars quickly)
+  const checkInterval = Math.max(
+    barDurationMs / 3,
+    5000  // Minimum 5 seconds
+  );
+
+  return Math.round(checkInterval);
+}
+
+// ============================================================================
 // Live Trading Engine
 // ============================================================================
 
@@ -192,98 +242,40 @@ interface LiveResult {
   logs: string[];
 }
 
-async function fetchHistoricalBars(symbol: string, days: number = 30): Promise<Bar[]> {
-  return new Promise((resolve) => {
-    const now = Math.floor(Date.now() / 1000);
-    const past = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
+async function fetchHistoricalBars(
+  symbol: string,
+  alpaca: AlpacaClient,
+  days: number = 30,
+  timeframe: string = '1day'
+): Promise<Bar[]> {
+  try {
+    console.log(`📊 Fetching ${symbol} historical data from Alpaca (${days} days, ${timeframe})...\n`);
 
-    const url =
-      `https://query1.finance.yahoo.com/v7/finance/download/${symbol}?` +
-      `period1=${past}&period2=${now}&interval=1d&events=history`;
+    // Convert strategy timeframe to Alpaca v2 API format
+    // v2 API uses: 1Min, 5Min, 15Min, 1Hour, 1Day
+    let alpacaTimeframe = timeframe;
+    if (timeframe === '1m') alpacaTimeframe = '1Min';
+    if (timeframe === '5m') alpacaTimeframe = '5Min';
+    if (timeframe === '15m') alpacaTimeframe = '15Min';
+    if (timeframe === '1h') alpacaTimeframe = '1Hour';
+    if (timeframe === '1d') alpacaTimeframe = '1Day';
 
-    console.log(`📊 Fetching ${symbol} historical data (${days} days)...\n`);
+    // Use Alpaca API for historical bars
+    const bars = await alpaca.getBars(symbol, Math.max(days * 2, 100), alpacaTimeframe);
 
-    https
-      .get(url, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const lines = data.split('\n');
-            const bars: Bar[] = [];
+    if (bars.length === 0) {
+      throw new Error('No bars returned from Alpaca');
+    }
 
-            for (let i = 1; i < lines.length; i++) {
-              const line = lines[i].trim();
-              if (!line) continue;
-              const parts = line.split(',');
-              if (parts.length < 5 || parts[1] === 'null' || parts[1] === 'null') continue;
+    console.log(`✓ Got ${bars.length} bars from Alpaca`);
+    const latest = bars[bars.length - 1];
+    console.log(`  Latest: $${latest.close.toFixed(2)}\n`);
 
-              try {
-                const date = new Date(parts[0]);
-                if (isNaN(date.getTime())) continue;
-
-                bars.push({
-                  timestamp: date.getTime(),
-                  open: parseFloat(parts[1]),
-                  high: parseFloat(parts[2]),
-                  low: parseFloat(parts[3]),
-                  close: parseFloat(parts[4]),
-                  volume: parseInt(parts[6], 10) || 0,
-                });
-              } catch (e) {
-                continue;
-              }
-            }
-
-            if (bars.length === 0) {
-              throw new Error('No valid bars parsed');
-            }
-
-            console.log(`✓ Got ${bars.length} bars`);
-            const latest = bars[bars.length - 1];
-            console.log(`  Latest: $${latest.close.toFixed(2)}\n`);
-            resolve(bars);
-          } catch (e) {
-            console.log('(Using mock data instead)\n');
-            resolve(generateMockBars(symbol));
-          }
-        });
-      })
-      .on('error', () => {
-        resolve(generateMockBars(symbol));
-      });
-  });
-}
-
-function generateMockBars(symbol: string): Bar[] {
-  const bars: Bar[] = [];
-  let price = 350;
-  let timestamp = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000) * 1000;
-
-  for (let i = 0; i < 30; i++) {
-    const change = (Math.random() - 0.5) * 5;
-    const open = price;
-    const close = price + change;
-    const high = Math.max(open, close) * (1 + Math.random() * 0.02);
-    const low = Math.min(open, close) * (1 - Math.random() * 0.02);
-    const volume = 40000000 + Math.random() * 20000000;
-
-    bars.push({
-      timestamp,
-      open,
-      high,
-      low,
-      close,
-      volume: Math.floor(volume),
-    });
-
-    price = close;
-    timestamp += 24 * 60 * 60 * 1000;
+    return bars;
+  } catch (e) {
+    console.error(`❌ Failed to fetch from Alpaca: ${(e as Error).message}`);
+    throw e;
   }
-
-  return bars;
 }
 
 async function runLiveTrading(
@@ -300,21 +292,25 @@ async function runLiveTrading(
   console.log(`  Cash: $${parseFloat(account.cash).toFixed(2)}`);
   console.log(`  Buying Power: $${parseFloat(account.buying_power).toFixed(2)}\n`);
 
-  // Fetch recent bars (use historical data since live market data requires subscription)
-  const bars = await fetchHistoricalBars(symbol, 30);
+  // Compile strategy FIRST to get timeframe
+  const compiler = new StrategyCompiler(createStandardRegistry());
+  const registry = createStandardRegistry();
+  const ir = compiler.compileFromYAML(strategyYaml);
 
-  if (bars.length === 0) {
+  // Extract timeframe from strategy
+  const timeframeStr = ir.timeframe || '1d';
+
+  // Fetch initial historical bars with correct timeframe
+  const initialBars = await fetchHistoricalBars(symbol, alpaca, 30, timeframeStr);
+
+  if (initialBars.length === 0) {
     throw new Error(`No bars available for ${symbol}`);
   }
 
-  console.log(`✓ Got ${bars.length} bars`);
-  const latest = bars[bars.length - 1];
+  console.log(`✓ Loaded ${initialBars.length} historical bars`);
+  const latest = initialBars[initialBars.length - 1];
   const date = new Date(latest.timestamp).toISOString();
   console.log(`  Latest: ${date} @ $${latest.close.toFixed(2)}\n`);
-
-  // Compile strategy
-  const compiler = new StrategyCompiler(createStandardRegistry());
-  const registry = createStandardRegistry();
 
   const enableLive = process.env.LIVE === 'true';
 
@@ -324,11 +320,18 @@ async function runLiveTrading(
 
   const adapter = new AlpacaRestAdapter(baseUrl, apiKey, apiSecret);
 
-  const ir = compiler.compileFromYAML(strategyYaml);
+  // Calculate optimal check interval based on timeframe
+  const checkIntervalMs = calculateOptimalCheckInterval(timeframeStr);
+  const checkIntervalSec = Math.round(checkIntervalMs / 1000);
 
   console.log('═'.repeat(60));
-  console.log('RUNNING STRATEGY');
+  console.log('RUNNING LIVE TRADING LOOP');
   console.log('═'.repeat(60) + '\n');
+
+  console.log(`⏰ Market hours: 9:30 AM - 4:00 PM ET`);
+  console.log(`📍 Current time: ${new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' })}`);
+  console.log(`📊 Strategy timeframe: ${timeframeStr}`);
+  console.log(`🔄 Checking for new bars every ${checkIntervalSec} seconds...\n`);
 
   // Create engine
   const engine = new StrategyEngine(ir, registry, adapter, {
@@ -338,31 +341,104 @@ async function runLiveTrading(
     apiSecret,
   });
 
-  // Process bars
-  const logs: string[] = [];
-
-  for (let i = 0; i < Math.min(bars.length, 20); i++) {
-    const bar = bars[i];
-    const date = new Date(bar.timestamp).toLocaleTimeString();
-
+  // Initialize with historical data
+  for (const bar of initialBars) {
     await engine.processBar(bar);
-    const state = engine.getState();
-    const stateStr = state.currentState;
+  }
 
-    const log = `[${date}] [${stateStr}] $${bar.close.toFixed(2)} V:${(bar.volume / 1e6).toFixed(1)}M`;
-    logs.push(log);
-    console.log(log);
+  // Trading loop
+  const logs: string[] = [];
+  const allBars = [...initialBars];
+  let lastBarTimestamp = initialBars[initialBars.length - 1].timestamp;
+  const startTime = Date.now();
+  const maxDuration = 7 * 60 * 60 * 1000; // 7 hours (safe margin beyond market hours)
 
-    // Show new events
-    if (state.log.length > 0) {
-      const lastLog = state.log[state.log.length - 1];
-      if (lastLog.message) {
-        console.log(`  └─ ${lastLog.message}`);
-        if (lastLog.data) {
-          console.log(`     ${JSON.stringify(lastLog.data)}`);
+  console.log(`✅ Starting live trading loop at ${new Date().toLocaleTimeString()}\n`);
+
+  // Continuous loop
+  while (Date.now() - startTime < maxDuration) {
+    // Check if market is closed (after 4 PM ET)
+    const now = new Date();
+    const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const hours = etTime.getHours();
+    const minutes = etTime.getMinutes();
+
+    if (hours >= 16) {
+      // 4:00 PM or later - close everything and exit
+      console.log('\n⏰ Market closing (4:00 PM ET)...');
+      const finalState = engine.getState();
+
+      if (finalState.currentState !== 'IDLE' && finalState.currentState !== 'EXITED') {
+        console.log('🔴 Closing all positions at market close...');
+        // Force exit by processing invalidation
+        const lastBar = allBars[allBars.length - 1];
+        const closeBar: Bar = {
+          timestamp: Date.now(),
+          open: lastBar.close,
+          high: lastBar.close,
+          low: lastBar.close,
+          close: lastBar.close,
+          volume: 0,
+        };
+        await engine.processBar(closeBar);
+      }
+
+      return {
+        symbol,
+        timestamp: new Date().toISOString(),
+        account: {
+          portfolio_value: account.portfolio_value,
+          buying_power: account.buying_power,
+          cash: account.cash,
+        },
+        bars: allBars.slice(-5),
+        state: engine.getState().currentState,
+        ordersPlaced: engine.getState().openOrders.length,
+        logs,
+      };
+    }
+
+    // Fetch latest bar
+    try {
+      const newBars = await fetchHistoricalBars(symbol, alpaca, 2, timeframeStr);
+
+      if (newBars.length > 0) {
+        const latestBar = newBars[newBars.length - 1];
+
+        // Process only new bars
+        if (latestBar.timestamp > lastBarTimestamp) {
+          lastBarTimestamp = latestBar.timestamp;
+          allBars.push(latestBar);
+
+          // Process the new bar
+          await engine.processBar(latestBar);
+          const state = engine.getState();
+          const stateStr = state.currentState;
+          const timeStr = new Date(latestBar.timestamp).toLocaleTimeString();
+
+          const log = `[${timeStr}] [${stateStr}] $${latestBar.close.toFixed(2)} V:${(latestBar.volume / 1e6).toFixed(1)}M`;
+          logs.push(log);
+          console.log(log);
+
+          // Show new events
+          if (state.log.length > 0) {
+            const lastLog = state.log[state.log.length - 1];
+            if (lastLog.message) {
+              console.log(`  └─ ${lastLog.message}`);
+              if (lastLog.data) {
+                console.log(`     ${JSON.stringify(lastLog.data)}`);
+              }
+            }
+          }
         }
       }
+    } catch (e) {
+      // Silently continue on network errors
+      console.log(`  (connection check, retrying...)`);
     }
+
+    // Check at optimal interval based on timeframe
+    await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
   }
 
   const finalState = engine.getState();
@@ -375,7 +451,7 @@ async function runLiveTrading(
       buying_power: account.buying_power,
       cash: account.cash,
     },
-    bars: bars.slice(-5), // Last 5 bars
+    bars: allBars.slice(-5),
     state: finalState.currentState,
     ordersPlaced: finalState.openOrders.length,
     logs,

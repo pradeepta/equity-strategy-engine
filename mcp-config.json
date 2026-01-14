@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "stocks-trading": {
+      "command": "node",
+      "args": ["dist/mcp-server.js"],
+      "description": "Algorithmic Trading Strategy System - compile, backtest, and execute trading strategies"
+    }
+  }
+}
