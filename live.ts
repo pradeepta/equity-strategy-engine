@@ -11,6 +11,7 @@ import { createStandardRegistry } from './features/registry';
 import { StrategyEngine } from './runtime/engine';
 import { AlpacaRestAdapter } from './broker/alpacaRest';
 import { TwsAdapter } from './broker/twsAdapter';
+import { TwsMarketDataClient } from './broker/twsMarketData';
 import { BaseBrokerAdapter } from './broker/broker';
 import { Bar } from './spec/types';
 
@@ -286,13 +287,8 @@ async function runLiveTrading(
 ): Promise<LiveResult> {
   console.log('\n📡 Connecting for market data...\n');
 
-  const alpaca = new AlpacaClient();
-  const account = await alpaca.getAccount();
-
-  console.log(`✓ Connected to account: ${account.account_number}`);
-  console.log(`  Portfolio: $${parseFloat(account.portfolio_value).toFixed(2)}`);
-  console.log(`  Cash: $${parseFloat(account.cash).toFixed(2)}`);
-  console.log(`  Buying Power: $${parseFloat(account.buying_power).toFixed(2)}\n`);
+  // Check broker type
+  const brokerType = process.env.BROKER || 'tws';
 
   // Compile strategy FIRST to get timeframe
   const compiler = new StrategyCompiler(createStandardRegistry());
@@ -302,8 +298,41 @@ async function runLiveTrading(
   // Extract timeframe from strategy
   const timeframeStr = ir.timeframe || '1d';
 
-  // Fetch initial historical bars with correct timeframe
-  const initialBars = await fetchHistoricalBars(symbol, alpaca, 30, timeframeStr);
+  let initialBars: Bar[];
+  let account: any;
+
+  if (brokerType.toLowerCase() === 'tws') {
+    // Use TWS for market data
+    console.log('📊 Using TWS for market data\n');
+    const twsHost = process.env.TWS_HOST || '127.0.0.1';
+    const twsPort = parseInt(process.env.TWS_PORT || '7497');
+    const twsMarketData = new TwsMarketDataClient(twsHost, twsPort, 2);
+
+    initialBars = await twsMarketData.getHistoricalBars(symbol, 30, timeframeStr);
+
+    // Mock account info for TWS (TWS doesn't provide portfolio data through this API)
+    account = {
+      account_number: 'TWS-' + twsPort,
+      portfolio_value: 'N/A',
+      cash: 'N/A',
+      buying_power: 'N/A',
+    };
+  } else {
+    // Use Alpaca for market data
+    console.log('📊 Using Alpaca for market data\n');
+    const alpaca = new AlpacaClient();
+    account = await alpaca.getAccount();
+    initialBars = await fetchHistoricalBars(symbol, alpaca, 30, timeframeStr);
+  }
+
+  console.log(`✓ Connected to account: ${account.account_number}`);
+  if (account.portfolio_value !== 'N/A') {
+    console.log(`  Portfolio: $${parseFloat(account.portfolio_value).toFixed(2)}`);
+    console.log(`  Cash: $${parseFloat(account.cash).toFixed(2)}`);
+    console.log(`  Buying Power: $${parseFloat(account.buying_power).toFixed(2)}\n`);
+  } else {
+    console.log(`  Using TWS for trading\n`);
+  }
 
   if (initialBars.length === 0) {
     throw new Error(`No bars available for ${symbol}`);
@@ -316,18 +345,17 @@ async function runLiveTrading(
 
   const enableLive = process.env.LIVE === 'true';
 
-  // Broker selection: TWS (default) or Alpaca
-  const brokerType = process.env.BROKER || 'tws';
+  // Broker adapter selection (brokerType already declared above)
   let adapter: BaseBrokerAdapter;
 
   if (brokerType.toLowerCase() === 'alpaca') {
-    console.log('📊 Using Alpaca broker\n');
+    console.log('📊 Using Alpaca broker for order execution\n');
     const baseUrl = process.env.APCA_API_BASE_URL || process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
     const apiKey = process.env.APCA_API_KEY_ID || process.env.ALPACA_API_KEY || '';
     const apiSecret = process.env.APCA_API_SECRET_KEY || process.env.ALPACA_API_SECRET || '';
     adapter = new AlpacaRestAdapter(baseUrl, apiKey, apiSecret);
   } else {
-    console.log('📊 Using TWS (Interactive Brokers) broker\n');
+    console.log('📊 Using TWS (Interactive Brokers) broker for order execution\n');
     const twsHost = process.env.TWS_HOST || '127.0.0.1';
     const twsPort = parseInt(process.env.TWS_PORT || '7497'); // 7497 = paper trading, 7496 = live
     const twsClientId = parseInt(process.env.TWS_CLIENT_ID || '0');
@@ -418,7 +446,19 @@ async function runLiveTrading(
 
     // Fetch latest bar
     try {
-      const newBars = await fetchHistoricalBars(symbol, alpaca, 2, timeframeStr);
+      let newBars: Bar[];
+
+      if (brokerType.toLowerCase() === 'tws') {
+        // Use TWS for real-time data
+        const twsHost = process.env.TWS_HOST || '127.0.0.1';
+        const twsPort = parseInt(process.env.TWS_PORT || '7497');
+        const twsMarketData = new TwsMarketDataClient(twsHost, twsPort, 2);
+        newBars = await twsMarketData.getHistoricalBars(symbol, 2, timeframeStr);
+      } else {
+        // Use Alpaca for real-time data
+        const alpaca = new AlpacaClient();
+        newBars = await fetchHistoricalBars(symbol, alpaca, 2, timeframeStr);
+      }
 
       if (newBars.length > 0) {
         const latestBar = newBars[newBars.length - 1];

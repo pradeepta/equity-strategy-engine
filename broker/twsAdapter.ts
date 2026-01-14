@@ -2,9 +2,10 @@
  * Interactive Brokers TWS API Adapter
  * Converts order plans into IB TWS API calls for paper trading
  */
-import * as ib from 'ib';
 import { OrderPlan, Order, BrokerEnvironment } from '../spec/types';
 import { BaseBrokerAdapter } from './broker';
+
+const IB = require('ib');
 
 interface IBOrder {
   orderId: number;
@@ -48,7 +49,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     }
 
     return new Promise((resolve, reject) => {
-      this.client = new ib.IBApi({
+      this.client = new IB({
         clientId: this.clientId,
         host: this.host,
         port: this.port,
