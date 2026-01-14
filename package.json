@@ -19,6 +19,7 @@
     "live:build": "tsc && node dist/live.js",
     "test": "jest",
     "test:tws": "ts-node test-tws.ts",
+    "movers": "ts-node fetch-movers.ts",
     "clean": "rm -rf dist",
     "prepare": "npm run build"
   },
