@@ -36,6 +36,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
   private orderIdMap: Map<string, number> = new Map();
   private pendingOrders: Map<number, IBOrder> = new Map();
   private bracketOrders: Map<number, BracketOrderSet> = new Map(); // Maps parent order ID to bracket set
+  private orderIdReady: boolean = false; // Track if we've received nextValidId
 
   private host: string;
   private port: number;
@@ -82,7 +83,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
       this.client.on('nextValidId', (orderId: number) => {
         this.nextOrderId = orderId;
-        console.log(`Next valid order ID: ${orderId}`);
+        this.orderIdReady = true;
+        console.log(`✅ TWS assigned next valid order ID: ${orderId}`);
       });
 
       this.client.on('orderStatus', (orderId: number, status: string, filled: number, remaining: number, avgFillPrice: number) => {
@@ -122,6 +124,23 @@ export class TwsAdapter extends BaseBrokerAdapter {
     if (this.client && this.connected) {
       this.client.disconnect();
       this.connected = false;
+    }
+  }
+
+  /**
+   * Wait for TWS to provide the next valid order ID
+   */
+  private async waitForOrderId(timeoutMs: number = 5000): Promise<void> {
+    if (this.orderIdReady) {
+      return;
+    }
+
+    const startTime = Date.now();
+    while (!this.orderIdReady) {
+      if (Date.now() - startTime > timeoutMs) {
+        throw new Error('Timeout waiting for TWS to provide next valid order ID');
+      }
+      await this.sleep(100);
     }
   }
 
@@ -200,6 +219,9 @@ export class TwsAdapter extends BaseBrokerAdapter {
       throw new Error('Not connected to TWS');
     }
 
+    // Wait for TWS to provide next valid order ID
+    await this.waitForOrderId();
+
     // Create contract
     const contract = {
       symbol: plan.symbol,
@@ -208,8 +230,25 @@ export class TwsAdapter extends BaseBrokerAdapter {
       currency: 'USD',
     };
 
-    // Parent order (entry)
+    // Allocate THREE fresh order IDs for this bracket
     const parentOrderId = this.nextOrderId++;
+    const takeProfitOrderId = this.nextOrderId++;
+    const stopLossOrderId = this.nextOrderId++;
+
+    console.log(`\n🔵 ALLOCATING BRACKET IDs for ${plan.symbol}: Parent=${parentOrderId}, TakeProfit=${takeProfitOrderId}, StopLoss=${stopLossOrderId}`);
+
+    // Safety check: ensure we're not reusing IDs
+    if (this.pendingOrders.has(parentOrderId) || this.bracketOrders.has(parentOrderId)) {
+      console.error(`⚠️  WARNING: Reusing order ID ${parentOrderId}! This will cause TWS to reject or overwrite orders.`);
+    }
+    if (this.pendingOrders.has(takeProfitOrderId)) {
+      console.error(`⚠️  WARNING: Reusing order ID ${takeProfitOrderId}! This will cause TWS to reject or overwrite orders.`);
+    }
+    if (this.pendingOrders.has(stopLossOrderId)) {
+      console.error(`⚠️  WARNING: Reusing order ID ${stopLossOrderId}! This will cause TWS to reject or overwrite orders.`);
+    }
+
+    // Parent order (entry)
     const parentOrder = {
       action: plan.side === 'buy' ? 'BUY' : 'SELL',
       orderType: 'LMT',
@@ -219,7 +258,6 @@ export class TwsAdapter extends BaseBrokerAdapter {
     };
 
     // Take profit order
-    const takeProfitOrderId = this.nextOrderId++;
     const takeProfitOrder = {
       action: plan.side === 'buy' ? 'SELL' : 'BUY',
       orderType: 'LMT',
@@ -230,7 +268,6 @@ export class TwsAdapter extends BaseBrokerAdapter {
     };
 
     // Stop loss order
-    const stopLossOrderId = this.nextOrderId++;
     const stopLossOrder = {
       action: plan.side === 'buy' ? 'SELL' : 'BUY',
       orderType: 'STP',
@@ -240,17 +277,53 @@ export class TwsAdapter extends BaseBrokerAdapter {
       transmit: true, // Transmit entire bracket when stop loss is placed
     };
 
+    // Log detailed order information
+    console.log(`\n🔵 PLACING BRACKET for ${plan.symbol}:`);
+    console.log(`   📋 clientId=${this.clientId}, permId will be assigned by TWS`);
+    console.log(`   📊 Parent Order ID: ${parentOrderId}`);
+    console.log(`      action=${parentOrder.action}, qty=${parentOrder.totalQuantity}, lmtPrice=$${plan.targetEntryPrice.toFixed(2)}, transmit=${parentOrder.transmit}`);
+    console.log(`   📊 Take Profit Order ID: ${takeProfitOrderId}`);
+    console.log(`      action=${takeProfitOrder.action}, qty=${takeProfitOrder.totalQuantity}, lmtPrice=$${bracket.takeProfit.limitPrice?.toFixed(2)}, parentId=${takeProfitOrder.parentId}, transmit=${takeProfitOrder.transmit}`);
+    console.log(`   📊 Stop Loss Order ID: ${stopLossOrderId}`);
+    console.log(`      action=${stopLossOrder.action}, qty=${stopLossOrder.totalQuantity}, auxPrice=$${(bracket.stopLoss.stopPrice || plan.stopPrice).toFixed(2)}, parentId=${stopLossOrder.parentId}, transmit=${stopLossOrder.transmit}`);
+
     // Place orders
-    console.log(`Placing parent order ${parentOrderId}...`);
     this.client.placeOrder(parentOrderId, contract, parentOrder);
-
-    console.log(`Placing take profit order ${takeProfitOrderId}...`);
     this.client.placeOrder(takeProfitOrderId, contract, takeProfitOrder);
-
-    console.log(`Placing stop loss order ${stopLossOrderId}...`);
     this.client.placeOrder(stopLossOrderId, contract, stopLossOrder);
 
-    // Store order info
+    // Store all three orders in pending orders map
+    this.pendingOrders.set(parentOrderId, {
+      orderId: parentOrderId,
+      symbol: plan.symbol,
+      qty: bracket.entryOrder.qty,
+      side: plan.side === 'buy' ? 'BUY' : 'SELL',
+      orderType: 'LMT',
+      limitPrice: plan.targetEntryPrice,
+      status: 'Submitted',
+    });
+
+    this.pendingOrders.set(takeProfitOrderId, {
+      orderId: takeProfitOrderId,
+      symbol: plan.symbol,
+      qty: bracket.takeProfit.qty,
+      side: plan.side === 'buy' ? 'SELL' : 'BUY',
+      orderType: 'LMT',
+      limitPrice: bracket.takeProfit.limitPrice,
+      status: 'Submitted',
+    });
+
+    this.pendingOrders.set(stopLossOrderId, {
+      orderId: stopLossOrderId,
+      symbol: plan.symbol,
+      qty: bracket.stopLoss.qty,
+      side: plan.side === 'buy' ? 'SELL' : 'BUY',
+      orderType: 'STP',
+      stopPrice: bracket.stopLoss.stopPrice || plan.stopPrice,
+      status: 'Submitted',
+    });
+
+    // Return parent order info
     const ibOrder: IBOrder = {
       orderId: parentOrderId,
       symbol: plan.symbol,
@@ -261,8 +334,6 @@ export class TwsAdapter extends BaseBrokerAdapter {
       status: 'Submitted',
     };
 
-    this.pendingOrders.set(parentOrderId, ibOrder);
-
     // Store bracket order set for cancellation
     const bracketSet: BracketOrderSet = {
       parentOrderId,
@@ -271,6 +342,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
       symbol: plan.symbol,
     };
     this.bracketOrders.set(parentOrderId, bracketSet);
+
+    console.log(`✅ BRACKET PLACED for ${plan.symbol} successfully with orders: ${parentOrderId}, ${takeProfitOrderId}, ${stopLossOrderId}\n`);
 
     // Wait a bit for confirmation
     await this.sleep(500);
@@ -286,28 +359,34 @@ export class TwsAdapter extends BaseBrokerAdapter {
     const bracketSet = this.bracketOrders.get(parentOrderId);
 
     if (bracketSet) {
-      // Cancel all three orders in the bracket
-      console.log(`  Cancelling bracket: parent=${parentOrderId}, TP=${bracketSet.takeProfitOrderId}, SL=${bracketSet.stopLossOrderId}`);
+      // Clear message about what we're cancelling
+      console.log(`\n🔴 CANCELLING BRACKET for ${bracketSet.symbol} with orders: Parent=${bracketSet.parentOrderId}, TakeProfit=${bracketSet.takeProfitOrderId}, StopLoss=${bracketSet.stopLossOrderId}`);
 
       // Cancel parent order
+      console.log(`   → Cancelling parent order ${parentOrderId}`);
       this.client.cancelOrder(parentOrderId);
       this.pendingOrders.delete(parentOrderId);
 
       // Cancel take profit order
+      console.log(`   → Cancelling take profit order ${bracketSet.takeProfitOrderId}`);
       this.client.cancelOrder(bracketSet.takeProfitOrderId);
       this.pendingOrders.delete(bracketSet.takeProfitOrderId);
 
       // Cancel stop loss order
+      console.log(`   → Cancelling stop loss order ${bracketSet.stopLossOrderId}`);
       this.client.cancelOrder(bracketSet.stopLossOrderId);
       this.pendingOrders.delete(bracketSet.stopLossOrderId);
 
       // Remove bracket from tracking
       this.bracketOrders.delete(parentOrderId);
+
+      console.log(`✅ BRACKET CANCELLED for ${bracketSet.symbol} successfully with orders: ${bracketSet.parentOrderId}, ${bracketSet.takeProfitOrderId}, ${bracketSet.stopLossOrderId}\n`);
     } else {
       // Not a bracket order, just cancel the single order
-      console.log(`  Cancelling single order ${parentOrderId}`);
+      console.log(`\n🔴 CANCELLING SINGLE ORDER: ${parentOrderId}`);
       this.client.cancelOrder(parentOrderId);
       this.pendingOrders.delete(parentOrderId);
+      console.log(`✅ SINGLE ORDER CANCELLED: ${parentOrderId}\n`);
     }
   }
 
@@ -319,8 +398,9 @@ export class TwsAdapter extends BaseBrokerAdapter {
     orders: Order[],
     env: BrokerEnvironment
   ): Promise<CancellationResult> {
-    console.log(`\nTWS: Cancelling ${orders.length} orders for ${symbol}`);
-    console.log(`Available order mappings: ${Array.from(this.orderIdMap.entries()).map(([k, v]) => `${k}->${v}`).join(', ')}`);
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(`TWS: CANCELLING ${orders.length} ORDER(S) FOR ${symbol}`);
+    console.log(`${'='.repeat(70)}`);
 
     const result: CancellationResult = {
       succeeded: [],
@@ -332,7 +412,6 @@ export class TwsAdapter extends BaseBrokerAdapter {
     }
 
     for (const order of orders) {
-      console.log(`Cancelling order ${order.id}`);
 
       if (!env.dryRun) {
         // Try direct lookup first (order.id is already TWS ID)
@@ -383,7 +462,9 @@ export class TwsAdapter extends BaseBrokerAdapter {
       }
     }
 
-    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(`SUMMARY: Cancelled ${result.succeeded.length} order(s) for ${symbol}`);
+    console.log(`${'='.repeat(70)}\n`);
     return result;
   }
 
