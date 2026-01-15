@@ -3,16 +3,20 @@
  * Fetches historical bar data from Interactive Brokers TWS
  */
 
-import { Bar } from '../spec/types';
+import { Bar } from "../spec/types";
 
-const IB = require('ib');
+const IB = require("ib");
 
 export class TwsMarketDataClient {
   private host: string;
   private port: number;
   private clientId: number;
 
-  constructor(host: string = '127.0.0.1', port: number = 7497, clientId: number = 2) {
+  constructor(
+    host: string = "127.0.0.1",
+    port: number = 7497,
+    clientId: number = 2
+  ) {
     this.host = host;
     this.port = port;
     this.clientId = clientId; // Use different client ID from trading client
@@ -24,7 +28,7 @@ export class TwsMarketDataClient {
   async getHistoricalBars(
     symbol: string,
     days: number = 30,
-    timeframe: string = '1day'
+    timeframe: string = "1day"
   ): Promise<Bar[]> {
     const client = new IB({
       clientId: this.clientId,
@@ -39,25 +43,33 @@ export class TwsMarketDataClient {
     // Wait for connection
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Connection timeout. Make sure TWS/IB Gateway is running.'));
+        reject(
+          new Error("Connection timeout. Make sure TWS/IB Gateway is running.")
+        );
       }, 10000);
 
-      client.on('connected', () => {
-        console.log(`✓ Connected to TWS for market data at ${this.host}:${this.port}`);
+      client.on("connected", () => {
+        console.log(
+          `✓ Connected to TWS for market data at ${this.host}:${this.port}`
+        );
         connected = true;
         clearTimeout(timeout);
         resolve();
       });
 
-      client.on('error', (err: Error, code: number, reqId: number) => {
+      client.on("error", (err: Error, code: number, reqId: number) => {
         // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2104, 2106, 2107, 2108, 2158];
         if (!infoMessages.includes(code)) {
-          console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
+          console.error(
+            `TWS Error [${code}]: ${err.message} (reqId: ${reqId})`
+          );
         }
         if (!connected && code === 502) {
           clearTimeout(timeout);
-          reject(new Error(`Cannot connect to TWS at ${this.host}:${this.port}`));
+          reject(
+            new Error(`Cannot connect to TWS at ${this.host}:${this.port}`)
+          );
         }
       });
 
@@ -68,86 +80,110 @@ export class TwsMarketDataClient {
     const reqId = 1;
     const contract = {
       symbol,
-      secType: 'STK',
-      exchange: 'SMART',
-      currency: 'USD',
+      secType: "STK",
+      exchange: "SMART",
+      currency: "USD",
     };
 
     // Convert timeframe to IB format
     const barSize = this.convertTimeframeToIB(timeframe);
     const duration = `${days} D`;
-    const endDateTime = ''; // Empty string means current time
+    const endDateTime = ""; // Empty string means current time
 
     // Set up data handlers
-    client.on('historicalData', (
-      id: number,
-      date: string,
-      open: number,
-      high: number,
-      low: number,
-      close: number,
-      volume: number
-    ) => {
-      // Skip the "finished-" marker or invalid bars
-      if (id !== reqId || date.startsWith('finished') || open < 0 || close < 0) {
-        return;
-      }
+    client.on(
+      "historicalData",
+      (
+        id: number,
+        date: string,
+        open: number,
+        high: number,
+        low: number,
+        close: number,
+        volume: number
+      ) => {
+        // Skip the "finished-" marker or invalid bars
+        if (
+          id !== reqId ||
+          date.startsWith("finished") ||
+          open < 0 ||
+          close < 0
+        ) {
+          return;
+        }
 
-      console.log(`Received bar: ${date} - O:${open} H:${high} L:${low} C:${close} V:${volume}`);
+        // console.log(`Received bar: ${date} - O:${open} H:${high} L:${low} C:${close} V:${volume}`);
 
-      // Parse date - TWS returns format like "20251202" or "20251202  10:30:00"
-      let timestamp: number;
+        // Parse date - TWS returns format like "20251202" or "20251202  10:30:00"
+        let timestamp: number;
 
-      if (date.includes(' ')) {
-        // Has time component: "20251202  10:30:00"
-        const [dateStr, timeStr] = date.split(/\s+/);
-        const year = parseInt(dateStr.substring(0, 4));
-        const month = parseInt(dateStr.substring(4, 6)) - 1; // JS months are 0-indexed
-        const day = parseInt(dateStr.substring(6, 8));
+        if (date.includes(" ")) {
+          // Has time component: "20251202  10:30:00"
+          const [dateStr, timeStr] = date.split(/\s+/);
+          const year = parseInt(dateStr.substring(0, 4));
+          const month = parseInt(dateStr.substring(4, 6)) - 1; // JS months are 0-indexed
+          const day = parseInt(dateStr.substring(6, 8));
 
-        if (timeStr) {
-          const [hours, minutes, seconds] = timeStr.split(':').map(s => parseInt(s));
-          timestamp = new Date(year, month, day, hours, minutes, seconds).getTime();
+          if (timeStr) {
+            const [hours, minutes, seconds] = timeStr
+              .split(":")
+              .map((s) => parseInt(s));
+            timestamp = new Date(
+              year,
+              month,
+              day,
+              hours,
+              minutes,
+              seconds
+            ).getTime();
+          } else {
+            timestamp = new Date(year, month, day).getTime();
+          }
         } else {
+          // Date only: "20251202"
+          const year = parseInt(date.substring(0, 4));
+          const month = parseInt(date.substring(4, 6)) - 1; // JS months are 0-indexed
+          const day = parseInt(date.substring(6, 8));
           timestamp = new Date(year, month, day).getTime();
         }
-      } else {
-        // Date only: "20251202"
-        const year = parseInt(date.substring(0, 4));
-        const month = parseInt(date.substring(4, 6)) - 1; // JS months are 0-indexed
-        const day = parseInt(date.substring(6, 8));
-        timestamp = new Date(year, month, day).getTime();
-      }
 
-      bars.push({
-        timestamp,
-        open,
-        high,
-        low,
-        close,
-        volume,
-      });
-    });
-
-    client.on('historicalDataEnd', (id: number, startDateStr: string, endDateStr: string) => {
-      console.log(`Historical data complete for reqId ${id}: ${startDateStr} to ${endDateStr}`);
-      if (id === reqId) {
-        dataComplete = true;
+        bars.push({
+          timestamp,
+          open,
+          high,
+          low,
+          close,
+          volume,
+        });
       }
-    });
+    );
+
+    client.on(
+      "historicalDataEnd",
+      (id: number, startDateStr: string, endDateStr: string) => {
+        console.log(
+          `Historical data complete for reqId ${id}: ${startDateStr} to ${endDateStr}`
+        );
+        if (id === reqId) {
+          dataComplete = true;
+        }
+      }
+    );
 
     // Request the data
-    console.log(`Requesting ${days} days of ${timeframe} bars for ${symbol}...`);
+    console.log(
+      `Requesting ${days} days of ${timeframe} bars for ${symbol}...`
+    );
     client.reqHistoricalData(
       reqId,
       contract,
       endDateTime,
       duration,
       barSize,
-      'TRADES',  // whatToShow: TRADES, MIDPOINT, BID, ASK
-      1,         // useRTH: 1 = regular trading hours only
-      1,         // formatDate: 1 = yyyymmdd{space}{space}hh:mm:dd
-      false      // keepUpToDate: false for historical data only
+      "TRADES", // whatToShow: TRADES, MIDPOINT, BID, ASK
+      1, // useRTH: 1 = regular trading hours only
+      1, // formatDate: 1 = yyyymmdd{space}{space}hh:mm:dd
+      false // keepUpToDate: false for historical data only
     );
 
     // Wait for data to complete (with timeout)
@@ -156,7 +192,9 @@ export class TwsMarketDataClient {
       const checkInterval = setInterval(() => {
         if (dataComplete || bars.length > 0) {
           clearInterval(checkInterval);
-          console.log(`Data collection complete (${bars.length} bars received)`);
+          console.log(
+            `Data collection complete (${bars.length} bars received)`
+          );
           resolve();
         }
       }, 100);
@@ -184,7 +222,7 @@ export class TwsMarketDataClient {
    */
   async getLatestBar(symbol: string): Promise<Bar | null> {
     // Get just 1 day of 1-minute bars and return the latest
-    const bars = await this.getHistoricalBars(symbol, 1, '1 min');
+    const bars = await this.getHistoricalBars(symbol, 1, "1 min");
     return bars.length > 0 ? bars[bars.length - 1] : null;
   }
 
@@ -193,15 +231,15 @@ export class TwsMarketDataClient {
    */
   private convertTimeframeToIB(timeframe: string): string {
     const mapping: Record<string, string> = {
-      '1m': '1 min',
-      '5m': '5 mins',
-      '15m': '15 mins',
-      '30m': '30 mins',
-      '1h': '1 hour',
-      '1d': '1 day',
-      '1day': '1 day',
+      "1m": "1 min",
+      "5m": "5 mins",
+      "15m": "15 mins",
+      "30m": "30 mins",
+      "1h": "1 hour",
+      "1d": "1 day",
+      "1day": "1 day",
     };
 
-    return mapping[timeframe.toLowerCase()] || '1 day';
+    return mapping[timeframe.toLowerCase()] || "1 day";
   }
 }

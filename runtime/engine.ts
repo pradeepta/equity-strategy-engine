@@ -215,6 +215,19 @@ export class StrategyEngine {
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
+              // FOOLPROOF: Always cancel any existing pending entry orders before placing new ones
+              // This prevents duplicate orders when strategy retriggers
+              if (this.state.openOrders.length > 0) {
+                this.log('info', `Cancelling ${this.state.openOrders.length} existing order(s) before placing new order plan`);
+                await this.brokerAdapter.cancelOpenEntries(
+                  this.ir.symbol,
+                  this.state.openOrders,
+                  this.brokerEnv
+                );
+                this.state.openOrders = [];
+              }
+
+              // Now submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
                 plan,
                 this.brokerEnv

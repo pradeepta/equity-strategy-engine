@@ -61,12 +61,13 @@ export class StrategyEvaluatorClient {
     // Simulate network delay
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    // 20% chance to recommend swap (for testing)
-    const shouldSwap = Math.random() > 0.8;
+    // 80% chance to recommend swap (for testing)
+    const shouldSwap = Math.random() > 0.2;
 
     if (shouldSwap) {
-      // Modify trigger point slightly (±2-5%)
-      const modifiedYaml = this.modifyTriggerPoint(request.currentStrategy.yamlContent);
+      // Modify strategy with current market price
+      const currentPrice = request.marketData.currentBar.close;
+      const modifiedYaml = this.modifyStrategy(request.currentStrategy.yamlContent, currentPrice);
 
       return {
         timestamp: Date.now(),
@@ -77,7 +78,7 @@ export class StrategyEvaluatorClient {
         suggestedStrategy: {
           yamlContent: modifiedYaml,
           name: `${request.currentStrategy.name}-adjusted-${Date.now()}`,
-          reasoning: 'Widened entry zone by 3% based on volatility spike'
+          reasoning: 'Adjusted trigger and order prices based on current market price'
         }
       };
     }
@@ -101,41 +102,69 @@ export class StrategyEvaluatorClient {
   }
 
   /**
-   * Modify trigger point in YAML strategy
-   * Randomly adjusts trigger condition by ±2-5%
+   * Modify strategy with adjusted trigger conditions and order prices
+   * Adjusts trigger by ±2-5% and scales order prices to current market price
    */
-  private modifyTriggerPoint(yamlContent: string): string {
+  private modifyStrategy(yamlContent: string, currentPrice: number): string {
     try {
       const strategy = YAML.parse(yamlContent);
 
-      // Parse the trigger condition
+      // Adjustment factor for trigger condition (±2-5%)
+      const triggerAdjustmentFactor = 1 + (Math.random() * 0.06 - 0.02);
+
+      // Adjust trigger condition
       const trigger = strategy.rules?.trigger;
-      if (!trigger) {
-        return yamlContent;
+      if (trigger) {
+        // Match standalone numbers (not part of variable names like ema20)
+        const modifiedTrigger = trigger.replace(/([<>=!&|(\s,])(\s*)(\d+\.?\d*)(?![a-zA-Z_\d])/g, (_match: string, prefix: string, space: string, num: string) => {
+          const numValue = parseFloat(num);
+          const adjusted = numValue * triggerAdjustmentFactor;
+          return `${prefix}${space}${adjusted.toFixed(2)}`;
+        });
+        strategy.rules.trigger = modifiedTrigger;
       }
 
-      // Look for numeric values in trigger condition and adjust them
-      const adjustmentFactor = 1 + (Math.random() * 0.06 - 0.02); // ±2-5%
+      // Adjust order prices based on current market price
+      if (strategy.orderPlans && Array.isArray(strategy.orderPlans)) {
+        for (const plan of strategy.orderPlans) {
+          // Calculate scale factor ONCE using ORIGINAL entry zone midpoint
+          let scaleFactor = 1.0;
+          if (plan.entryZone && Array.isArray(plan.entryZone)) {
+            const oldMidpoint = (plan.entryZone[0] + plan.entryZone[1]) / 2;
+            scaleFactor = currentPrice / oldMidpoint;
 
-      // Match standalone numbers (not part of variable names like ema20)
-      // Only match numbers that appear after operators or spaces, not after alphanumeric chars
-      const modifiedTrigger = trigger.replace(/([<>=!&|(\s,])(\s*)(\d+\.?\d*)(?![a-zA-Z_\d])/g, (match: string, prefix: string, space: string, num: string) => {
-        const numValue = parseFloat(num);
-        const adjusted = numValue * adjustmentFactor;
-        return `${prefix}${space}${adjusted.toFixed(2)}`;
-      });
+            // Scale entry zone to current price
+            plan.entryZone = [
+              parseFloat((plan.entryZone[0] * scaleFactor).toFixed(2)),
+              parseFloat((plan.entryZone[1] * scaleFactor).toFixed(2))
+            ];
+          }
 
-      strategy.rules.trigger = modifiedTrigger;
+          // Adjust stopPrice using the SAME scale factor
+          if (typeof plan.stopPrice === 'number') {
+            plan.stopPrice = parseFloat((plan.stopPrice * scaleFactor).toFixed(2));
+          }
+
+          // Adjust targets using the SAME scale factor
+          if (plan.targets && Array.isArray(plan.targets)) {
+            for (const target of plan.targets) {
+              if (typeof target.price === 'number') {
+                target.price = parseFloat((target.price * scaleFactor).toFixed(2));
+              }
+            }
+          }
+        }
+      }
 
       // Add comment to meta indicating adjustment
       if (!strategy.meta.description) {
         strategy.meta.description = '';
       }
-      strategy.meta.description += ` [Auto-adjusted: trigger ${((adjustmentFactor - 1) * 100).toFixed(1)}%]`;
+      strategy.meta.description += ` [Auto-adjusted: trigger ${((triggerAdjustmentFactor - 1) * 100).toFixed(1)}%, prices scaled to $${currentPrice.toFixed(2)}]`;
 
       return YAML.stringify(strategy);
     } catch (error) {
-      console.warn('Failed to modify trigger point, returning original YAML:', error);
+      console.warn('Failed to modify strategy, returning original YAML:', error);
       return yamlContent;
     }
   }

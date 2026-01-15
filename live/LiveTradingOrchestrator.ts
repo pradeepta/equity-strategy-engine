@@ -3,14 +3,14 @@
  * Main orchestrator for multi-strategy trading system
  */
 
-import * as fs from 'fs';
-import { MultiStrategyManager } from './MultiStrategyManager';
-import { StrategyLifecycleManager } from './StrategyLifecycleManager';
-import { FilesystemWatcher } from './FilesystemWatcher';
-import { PortfolioDataFetcher } from '../broker/twsPortfolio';
-import { StrategyEvaluatorClient } from '../evaluation/StrategyEvaluatorClient';
-import { BaseBrokerAdapter } from '../broker/broker';
-import { BrokerEnvironment } from '../spec/types';
+import * as fs from "fs";
+import { MultiStrategyManager } from "./MultiStrategyManager";
+import { StrategyLifecycleManager } from "./StrategyLifecycleManager";
+import { FilesystemWatcher } from "./FilesystemWatcher";
+import { PortfolioDataFetcher } from "../broker/twsPortfolio";
+import { StrategyEvaluatorClient } from "../evaluation/StrategyEvaluatorClient";
+import { BaseBrokerAdapter } from "../broker/broker";
+import { BrokerEnvironment } from "../spec/types";
 
 export interface OrchestratorConfig {
   brokerAdapter: BaseBrokerAdapter;
@@ -35,21 +35,27 @@ export class LiveTradingOrchestrator {
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
-  private swappingSymbols: Set<string> = new Set();  // Track symbols being swapped
-  private deployedFiles: Set<string> = new Set();  // Track files deployed by swaps
-  private currentSleepResolve?: () => void;  // Resolve function to interrupt sleep
+  private swappingSymbols: Set<string> = new Set(); // Track symbols being swapped
+  private deployedFiles: Set<string> = new Set(); // Track files deployed by swaps
+  private currentSleepResolve?: () => void; // Resolve function to interrupt sleep
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
 
     // Initialize components
-    this.multiStrategyManager = new MultiStrategyManager(config.brokerAdapter, config.brokerEnv);
+    this.multiStrategyManager = new MultiStrategyManager(
+      config.brokerAdapter,
+      config.brokerEnv
+    );
 
-    const twsHost = config.twsHost || process.env.TWS_HOST || '127.0.0.1';
-    const twsPort = config.twsPort || parseInt(process.env.TWS_PORT || '7497');
+    const twsHost = config.twsHost || process.env.TWS_HOST || "127.0.0.1";
+    const twsPort = config.twsPort || parseInt(process.env.TWS_PORT || "7497");
 
     this.portfolioFetcher = new PortfolioDataFetcher(twsHost, twsPort, 3);
-    this.evaluatorClient = new StrategyEvaluatorClient(config.evalEndpoint, config.evalEnabled);
+    this.evaluatorClient = new StrategyEvaluatorClient(
+      config.evalEndpoint,
+      config.evalEnabled
+    );
 
     this.lifecycleManager = new StrategyLifecycleManager(
       this.multiStrategyManager,
@@ -63,48 +69,82 @@ export class LiveTradingOrchestrator {
     // Set orchestrator reference for locking during swaps
     this.lifecycleManager.setOrchestrator(this);
 
-    this.filesystemWatcher = new FilesystemWatcher(config.liveDir, config.watchInterval);
+    this.filesystemWatcher = new FilesystemWatcher(
+      config.liveDir,
+      config.watchInterval
+    );
   }
 
   /**
    * Initialize orchestrator
    */
   async initialize(): Promise<void> {
-    console.log('');
-    console.log('╔══════════════════════════════════════════════════════════╗');
-    console.log('║                                                          ║');
-    console.log('║          MULTI-STRATEGY LIVE TRADING SYSTEM              ║');
-    console.log('║                                                          ║');
-    console.log('╚══════════════════════════════════════════════════════════╝');
-    console.log('');
+    console.log("");
+    console.log("╔══════════════════════════════════════════════════════════╗");
+    console.log("║                                                          ║");
+    console.log("║          MULTI-STRATEGY LIVE TRADING SYSTEM              ║");
+    console.log("║                                                          ║");
+    console.log("╚══════════════════════════════════════════════════════════╝");
+    console.log("");
 
     // Ensure directories exist
     await this.ensureDirectories();
 
     // Connect to TWS for portfolio data
-    console.log('📡 Connecting to TWS for portfolio data...');
+    console.log("📡 Connecting to TWS for portfolio data...");
     await this.portfolioFetcher.connect();
 
     // Fetch and display portfolio value
     try {
       const portfolio = await this.portfolioFetcher.getPortfolioSnapshot();
-      console.log('');
-      console.log('💰 Portfolio Summary:');
+      console.log("");
+      console.log("💰 Portfolio Summary:");
       console.log(`   Account ID: ${portfolio.accountId}`);
-      console.log(`   Total Value: $${portfolio.totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Cash: $${portfolio.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Buying Power: $${portfolio.buyingPower.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Unrealized P&L: $${portfolio.unrealizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Realized P&L: $${portfolio.realizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+      console.log(
+        `   Total Value: $${portfolio.totalValue.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
+      console.log(
+        `   Cash: $${portfolio.cash.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
+      console.log(
+        `   Buying Power: $${portfolio.buyingPower.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
+      console.log(
+        `   Unrealized P&L: $${portfolio.unrealizedPnL.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
+      console.log(
+        `   Realized P&L: $${portfolio.realizedPnL.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
       if (portfolio.positions.length > 0) {
         console.log(`   Open Positions: ${portfolio.positions.length}`);
-        portfolio.positions.forEach(pos => {
-          console.log(`      ${pos.symbol}: ${pos.quantity} shares @ $${pos.currentPrice.toFixed(2)} (P&L: $${pos.unrealizedPnL.toFixed(2)})`);
+        portfolio.positions.forEach((pos) => {
+          console.log(
+            `      ${pos.symbol}: ${
+              pos.quantity
+            } shares @ $${pos.currentPrice.toFixed(
+              2
+            )} (P&L: $${pos.unrealizedPnL.toFixed(2)})`
+          );
         });
       }
-      console.log('');
+      console.log("");
     } catch (error) {
-      console.warn('⚠️  Could not fetch portfolio data:', error);
+      console.warn("⚠️  Could not fetch portfolio data:", error);
     }
 
     // Load existing strategies from live directory
@@ -115,8 +155,8 @@ export class LiveTradingOrchestrator {
       await this.handleNewStrategyFile(filePath);
     });
 
-    console.log('✓ Orchestrator initialized');
-    console.log('');
+    console.log("✓ Orchestrator initialized");
+    console.log("");
   }
 
   /**
@@ -124,7 +164,7 @@ export class LiveTradingOrchestrator {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.warn('Orchestrator already running');
+      console.warn("Orchestrator already running");
       return;
     }
 
@@ -133,10 +173,10 @@ export class LiveTradingOrchestrator {
     // Start filesystem watcher
     this.filesystemWatcher.start();
 
-    console.log('════════════════════════════════════════════════════════════');
-    console.log('RUNNING MULTI-STRATEGY TRADING LOOP');
-    console.log('════════════════════════════════════════════════════════════');
-    console.log('');
+    console.log("════════════════════════════════════════════════════════════");
+    console.log("RUNNING MULTI-STRATEGY TRADING LOOP");
+    console.log("════════════════════════════════════════════════════════════");
+    console.log("");
 
     // Run main loop
     await this.mainLoop();
@@ -150,8 +190,8 @@ export class LiveTradingOrchestrator {
       return;
     }
 
-    console.log('');
-    console.log('🛑 Stopping orchestrator...');
+    console.log("");
+    console.log("🛑 Stopping orchestrator...");
 
     this.running = false;
 
@@ -173,7 +213,7 @@ export class LiveTradingOrchestrator {
     // Close evaluator client
     await this.evaluatorClient.close();
 
-    console.log('✓ Orchestrator stopped');
+    console.log("✓ Orchestrator stopped");
   }
 
   /**
@@ -183,17 +223,20 @@ export class LiveTradingOrchestrator {
     while (this.running) {
       try {
         // Check if market is open
-        if (!this.isMarketOpen()) {
-          console.log('📴 Market is closed. Exiting orchestrator.');
-          await this.stop();
-          return;
-        }
+        // if (!this.isMarketOpen()) {
+        //   console.log('📴 Market is closed. Exiting orchestrator.');
+        //   await this.stop();
+        //   return;
+        // }
 
         // Get all active strategies
-        const activeStrategies = this.multiStrategyManager.getActiveStrategies();
+        const activeStrategies =
+          this.multiStrategyManager.getActiveStrategies();
 
         if (activeStrategies.length === 0) {
-          console.log('⏸️  No active strategies. Waiting for strategies to be added...');
+          console.log(
+            "⏸️  No active strategies. Waiting for strategies to be added..."
+          );
           await this.sleep(30000); // Wait 30 seconds
           continue;
         }
@@ -210,16 +253,26 @@ export class LiveTradingOrchestrator {
         }
 
         if (strategiesNeedingBars.length === 0) {
-          console.log(`⏭️  No strategies need bar updates yet (all waiting for timeframe intervals)`);
+          console.log(
+            `⏭️  No strategies need bar updates yet (all waiting for timeframe intervals)`
+          );
         } else {
-          console.log(`🔄 Fetching bars for ${strategiesNeedingBars.length}/${activeStrategies.length} strategy(ies): ${strategiesNeedingBars.join(', ')}`);
+          console.log(
+            `🔄 Fetching bars for ${strategiesNeedingBars.length}/${
+              activeStrategies.length
+            } strategy(ies): ${strategiesNeedingBars.join(", ")}`
+          );
 
           // Fetch latest bars only for symbols that need updates
-          const latestBars = await this.multiStrategyManager.fetchLatestBarsForSymbols(strategiesNeedingBars);
+          const latestBars =
+            await this.multiStrategyManager.fetchLatestBarsForSymbols(
+              strategiesNeedingBars
+            );
 
           // Process bars for each strategy
           for (const [symbol, bars] of latestBars.entries()) {
-            const instance = this.multiStrategyManager.getStrategyBySymbol(symbol);
+            const instance =
+              this.multiStrategyManager.getStrategyBySymbol(symbol);
             if (!instance) continue;
 
             // Mark bars as fetched
@@ -242,11 +295,11 @@ export class LiveTradingOrchestrator {
         const sleepSeconds = Math.round(sleepInterval / 1000);
         const humanReadable = this.formatDuration(sleepInterval);
         console.log(`⏰ Next check in ${humanReadable} (${sleepSeconds}s)`);
-        console.log('');
+        console.log("");
 
         await this.sleep(sleepInterval);
       } catch (error) {
-        console.error('Error in main loop:', error);
+        console.error("Error in main loop:", error);
         await this.sleep(60000); // Wait 1 minute on error
       }
     }
@@ -261,19 +314,23 @@ export class LiveTradingOrchestrator {
     try {
       // Check if this file was deployed by a swap operation
       if (this.deployedFiles.has(filePath)) {
-        console.log(`⏸️  File ${filePath} was deployed by swap. Skipping auto-load (already loaded).`);
-        this.deployedFiles.delete(filePath);  // Clean up
+        console.log(
+          `⏸️  File ${filePath} was deployed by swap. Skipping auto-load (already loaded).`
+        );
+        this.deployedFiles.delete(filePath); // Clean up
         return;
       }
 
       // Extract symbol from filename to check if it's being swapped
-      const filename = filePath.split('/').pop() || '';
+      const filename = filePath.split("/").pop() || "";
       const symbolMatch = filename.match(/^([A-Z]+)-/);
       const symbol = symbolMatch ? symbolMatch[1] : null;
 
       // Check if this symbol is currently being swapped
       if (symbol && this.swappingSymbols.has(symbol)) {
-        console.log(`⏸️  Symbol ${symbol} is currently being swapped. Skipping auto-load (swap will handle it).`);
+        console.log(
+          `⏸️  Symbol ${symbol} is currently being swapped. Skipping auto-load (swap will handle it).`
+        );
         return;
       }
 
@@ -286,7 +343,10 @@ export class LiveTradingOrchestrator {
         console.log(`✓ Removed old version of ${symbol}`);
       } else {
         // Check max concurrent strategies (only for new strategies)
-        if (this.multiStrategyManager.getActiveCount() >= this.config.maxConcurrentStrategies) {
+        if (
+          this.multiStrategyManager.getActiveCount() >=
+          this.config.maxConcurrentStrategies
+        ) {
           console.warn(
             `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new file.`
           );
@@ -306,10 +366,13 @@ export class LiveTradingOrchestrator {
 
       // Move to archive if invalid
       try {
-        const archivedPath = await this.lifecycleManager.moveToArchive(filePath, 'invalid');
+        const archivedPath = await this.lifecycleManager.moveToArchive(
+          filePath,
+          "invalid"
+        );
         console.log(`📦 Moved invalid strategy to: ${archivedPath}`);
       } catch (archiveError) {
-        console.error('Failed to archive invalid strategy:', archiveError);
+        console.error("Failed to archive invalid strategy:", archiveError);
       }
     }
   }
@@ -328,7 +391,7 @@ export class LiveTradingOrchestrator {
 
     // Read directory
     const files = await fs.promises.readdir(this.config.liveDir);
-    const yamlFiles = files.filter(file => file.endsWith('.yaml'));
+    const yamlFiles = files.filter((file) => file.endsWith(".yaml"));
 
     console.log(`Found ${yamlFiles.length} strategy file(s)`);
 
@@ -343,28 +406,37 @@ export class LiveTradingOrchestrator {
 
         // Move to archive
         try {
-          const archivedPath = await this.lifecycleManager.moveToArchive(filePath, 'invalid');
+          const archivedPath = await this.lifecycleManager.moveToArchive(
+            filePath,
+            "invalid"
+          );
           console.log(`📦 Moved invalid strategy to: ${archivedPath}`);
         } catch (archiveError) {
-          console.error('Failed to archive invalid strategy:', archiveError);
+          console.error("Failed to archive invalid strategy:", archiveError);
         }
       }
     }
 
-    console.log(`✓ Loaded ${this.multiStrategyManager.getActiveCount()} strategy(ies)`);
+    console.log(
+      `✓ Loaded ${this.multiStrategyManager.getActiveCount()} strategy(ies)`
+    );
   }
 
   /**
    * Ensure all required directories exist
    */
   private async ensureDirectories(): Promise<void> {
-    const dirs = [this.config.liveDir, this.config.closedDir, this.config.archiveDir];
+    const dirs = [
+      this.config.liveDir,
+      this.config.closedDir,
+      this.config.archiveDir,
+    ];
 
     for (const dir of dirs) {
       await fs.promises.mkdir(dir, { recursive: true });
     }
 
-    console.log('✓ Ensured directory structure exists');
+    console.log("✓ Ensured directory structure exists");
   }
 
   /**
@@ -415,7 +487,9 @@ export class LiveTradingOrchestrator {
     const match = timeframe.match(/^(\d+)([smhd])$/i);
 
     if (!match) {
-      console.warn(`Unknown timeframe format: ${timeframe}, defaulting to 5 minutes`);
+      console.warn(
+        `Unknown timeframe format: ${timeframe}, defaulting to 5 minutes`
+      );
       return 5 * 60 * 1000; // 5 minutes default
     }
 
@@ -423,13 +497,13 @@ export class LiveTradingOrchestrator {
     const unit = match[2].toLowerCase();
 
     switch (unit) {
-      case 's': // seconds
+      case "s": // seconds
         return value * 1000;
-      case 'm': // minutes
+      case "m": // minutes
         return value * 60 * 1000;
-      case 'h': // hours
+      case "h": // hours
         return value * 60 * 60 * 1000;
-      case 'd': // days
+      case "d": // days
         return value * 24 * 60 * 60 * 1000;
       default:
         return 5 * 60 * 1000; // 5 minutes default
@@ -450,10 +524,14 @@ export class LiveTradingOrchestrator {
       return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
     } else if (hours > 0) {
       const remainingMinutes = minutes % 60;
-      return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+      return remainingMinutes > 0
+        ? `${hours}h ${remainingMinutes}m`
+        : `${hours}h`;
     } else if (minutes > 0) {
       const remainingSeconds = seconds % 60;
-      return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+      return remainingSeconds > 0
+        ? `${minutes}m ${remainingSeconds}s`
+        : `${minutes}m`;
     } else {
       return `${seconds}s`;
     }
@@ -463,7 +541,7 @@ export class LiveTradingOrchestrator {
    * Sleep for specified milliseconds (interruptible)
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       this.currentSleepResolve = resolve;
       setTimeout(() => {
         this.currentSleepResolve = undefined;
@@ -477,7 +555,7 @@ export class LiveTradingOrchestrator {
    */
   private wakeUpEarly(): void {
     if (this.currentSleepResolve) {
-      console.log('⚡ Waking up early due to new strategy...');
+      console.log("⚡ Waking up early due to new strategy...");
       this.currentSleepResolve();
       this.currentSleepResolve = undefined;
     }
