@@ -3,7 +3,7 @@
  * Demonstrates how to call MCP tools for order execution
  * (Stub: shows the interface structure but doesn't actually call MCP)
  */
-import { OrderPlan, Order, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerEnvironment, CancellationResult } from '../spec/types';
 import { BaseBrokerAdapter } from './broker';
 
 /**
@@ -91,8 +91,13 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void> {
+  ): Promise<CancellationResult> {
     console.log(`\nALPACA MCP: Cancelling ${orders.length} orders via MCP`);
+
+    const result: CancellationResult = {
+      succeeded: [],
+      failed: [],
+    };
 
     for (const order of orders) {
       const toolName = 'alpaca_cancel_order';
@@ -107,22 +112,35 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
 
       if (env.dryRun) {
         console.log('→ DRY RUN: Would call MCP tool');
+        result.succeeded.push(order.id);
       } else {
         try {
           console.log('→ Calling MCP tool...');
           const response = await this.mcpClient.callTool(toolName, args);
 
           if (response.error) {
-            console.error(`✗ MCP Error: ${response.error}`);
+            const reason = `MCP Error: ${response.error}`;
+            console.error(`✗ ${reason}`);
+            result.failed.push({ orderId: order.id, reason });
+            // FAIL FAST: Throw immediately on MCP error
+            throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
           } else {
             console.log('← Cancelled via MCP');
+            result.succeeded.push(order.id);
           }
         } catch (e) {
           const err = e as Error;
-          console.error(`Failed to cancel via MCP: ${err.message}`);
+          const reason = `MCP call failed: ${err.message}`;
+          console.error(`✗ ${reason}`);
+          result.failed.push({ orderId: order.id, reason });
+          // FAIL FAST: Throw immediately on exception
+          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       }
     }
+
+    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    return result;
   }
 
   /**

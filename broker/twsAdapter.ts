@@ -2,7 +2,7 @@
  * Interactive Brokers TWS API Adapter
  * Converts order plans into IB TWS API calls for paper trading
  */
-import { OrderPlan, Order, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerEnvironment, CancellationResult } from '../spec/types';
 import { BaseBrokerAdapter } from './broker';
 
 const IB = require('ib');
@@ -227,7 +227,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
       action: plan.side === 'buy' ? 'SELL' : 'BUY',
       orderType: 'STP',
       totalQuantity: bracket.stopLoss.qty,
-      auxPrice: bracket.stopLoss.limitPrice, // Stop price
+      auxPrice: bracket.stopLoss.stopPrice || plan.stopPrice, // FIXED: Use stopPrice field
       parentId: parentOrderId,
       transmit: true, // Transmit entire bracket when stop loss is placed
     };
@@ -268,9 +268,14 @@ export class TwsAdapter extends BaseBrokerAdapter {
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void> {
+  ): Promise<CancellationResult> {
     console.log(`\nTWS: Cancelling ${orders.length} orders for ${symbol}`);
     console.log(`Available order mappings: ${Array.from(this.orderIdMap.entries()).map(([k, v]) => `${k}->${v}`).join(', ')}`);
+
+    const result: CancellationResult = {
+      succeeded: [],
+      failed: [],
+    };
 
     if (!env.dryRun && !this.connected) {
       await this.connect();
@@ -280,34 +285,58 @@ export class TwsAdapter extends BaseBrokerAdapter {
       console.log(`Cancelling order ${order.id}`);
 
       if (!env.dryRun) {
-        try {
-          // Try direct lookup first (order.id is already TWS ID)
-          const orderIdNum = parseInt(order.id);
-          if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
+        // Try direct lookup first (order.id is already TWS ID)
+        const orderIdNum = parseInt(order.id);
+        if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
+          try {
             this.client.cancelOrder(orderIdNum);
             console.log(`✓ Cancelled TWS order ${orderIdNum}`);
             this.pendingOrders.delete(orderIdNum);
-            continue; // Move to next order
+            result.succeeded.push(order.id);
+            continue;
+          } catch (e) {
+            const err = e as Error;
+            const reason = `Direct cancellation failed: ${err.message}`;
+            console.error(`✗ ${reason}`);
+            result.failed.push({ orderId: order.id, reason });
+            // FAIL FAST: Throw immediately on first failure
+            throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
           }
+        }
 
-          // Try mapping lookup (order.id is original ID)
-          const ibOrderId = this.orderIdMap.get(order.id);
-          if (ibOrderId !== undefined) {
+        // Try mapping lookup (order.id is original ID)
+        const ibOrderId = this.orderIdMap.get(order.id);
+        if (ibOrderId !== undefined) {
+          try {
             this.client.cancelOrder(ibOrderId);
             console.log(`✓ Cancelled (mapped ${order.id} -> ${ibOrderId})`);
             this.pendingOrders.delete(ibOrderId);
             this.orderIdMap.delete(order.id);
-          } else {
-            console.warn(`Order ${order.id} not found in TWS (not in pendingOrders or orderIdMap)`);
+            result.succeeded.push(order.id);
+          } catch (e) {
+            const err = e as Error;
+            const reason = `Mapped cancellation failed: ${err.message}`;
+            console.error(`✗ ${reason}`);
+            result.failed.push({ orderId: order.id, reason });
+            // FAIL FAST: Throw immediately on first failure
+            throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
           }
-        } catch (e) {
-          const err = e as Error;
-          console.error(`✗ Failed to cancel order ${order.id}: ${err.message}`);
+        } else {
+          // Order not found - this is a failure condition
+          const reason = 'Order not found in TWS (not in pendingOrders or orderIdMap)';
+          console.error(`✗ Order ${order.id}: ${reason}`);
+          result.failed.push({ orderId: order.id, reason });
+          // FAIL FAST: Throw immediately when order not found
+          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       } else {
         console.log('→ DRY RUN: Would cancel');
+        result.succeeded.push(order.id);
       }
     }
+
+    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    return result;
   }
 
   /**

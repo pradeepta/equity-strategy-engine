@@ -1,7 +1,7 @@
 /**
  * Broker interface (abstract)
  */
-import { OrderPlan, Order, BrokerAdapter, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerAdapter, BrokerEnvironment, CancellationResult } from '../spec/types';
 
 /**
  * Base broker adapter - defines the contract all adapters must implement
@@ -12,7 +12,7 @@ export abstract class BaseBrokerAdapter implements BrokerAdapter {
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void>;
+  ): Promise<CancellationResult>;
   abstract getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]>;
 
   /**
@@ -68,7 +68,7 @@ export abstract class BaseBrokerAdapter implements BrokerAdapter {
         side: plan.side === 'buy' ? 'sell' : 'buy',
         qty: partialQty,
         type: 'limit',
-        limitPrice: plan.stopPrice,
+        stopPrice: plan.stopPrice,  // FIXED: Use stopPrice, not limitPrice
         status: 'pending',
       };
 
@@ -96,7 +96,7 @@ export abstract class BaseBrokerAdapter implements BrokerAdapter {
       lines.push(
         `    ├─ TP: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`
       );
-      lines.push(`    └─ SL: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
+      lines.push(`    └─ SL: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.stopPrice || bracket.stopLoss.limitPrice}`);
     }
 
     return lines.join('\n');

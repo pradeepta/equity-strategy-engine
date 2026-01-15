@@ -8,7 +8,7 @@ import { StrategyCompiler } from '../compiler/compile';
 import { createStandardRegistry } from '../features/registry';
 import { StrategyEngine } from '../runtime/engine';
 import { BaseBrokerAdapter } from '../broker/broker';
-import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment } from '../spec/types';
+import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult } from '../spec/types';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -96,21 +96,36 @@ export class StrategyInstance {
   /**
    * Cancel all open orders
    */
-  async cancelAllOrders(): Promise<void> {
+  async cancelAllOrders(): Promise<CancellationResult> {
     const state = this.engine.getState();
 
     if (state.openOrders.length === 0) {
-      return;
+      return {
+        succeeded: [],
+        failed: [],
+      };
     }
 
     console.log(`Cancelling ${state.openOrders.length} open orders for ${this.symbol}...`);
 
-    try {
-      // Cancel via broker adapter
-      await this.brokerAdapter.cancelOpenEntries(this.symbol, state.openOrders, this.brokerEnv);
-    } catch (error) {
-      console.error(`Failed to cancel orders for ${this.symbol}:`, error);
+    // Cancel via broker adapter - let errors propagate
+    const result = await this.brokerAdapter.cancelOpenEntries(
+      this.symbol,
+      state.openOrders,
+      this.brokerEnv
+    );
+
+    // Log results
+    if (result.succeeded.length > 0) {
+      console.log(`✓ Successfully cancelled ${result.succeeded.length} orders for ${this.symbol}`);
     }
+    if (result.failed.length > 0) {
+      console.error(`✗ Failed to cancel ${result.failed.length} orders for ${this.symbol}:`,
+        result.failed.map(f => `${f.orderId}: ${f.reason}`).join(', ')
+      );
+    }
+
+    return result;
   }
 
   /**

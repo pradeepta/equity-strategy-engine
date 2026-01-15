@@ -224,6 +224,11 @@ model StrategyExecution {
   // Metadata
   metadata          Json?             // Flexible JSON for additional context
 
+  // Operation tracking (Phase 4)
+  operationId       String?           // Links to OperationQueue for idempotency
+  initiatedBy       String?           // User ID or 'system'
+  completedAt       DateTime?
+
   // Relationships
   strategy          Strategy          @relation(fields: [strategyId], references: [id], onDelete: Cascade)
 
@@ -232,6 +237,7 @@ model StrategyExecution {
   @@index([strategyId])
   @@index([eventType])
   @@index([createdAt])
+  @@index([operationId])
   @@map("strategy_executions")
 }
 
@@ -458,4 +464,86 @@ enum LogLevel {
   INFO
   WARN
   ERROR
+}
+
+// ============================================================================
+// OPERATION QUEUE & IDEMPOTENCY (Phase 2)
+// ============================================================================
+
+model OperationQueue {
+  id              String            @id @default(cuid())
+  operationId     String            @unique  // UUID for idempotency
+  operationType   OperationType
+  targetSymbol    String?
+  strategyId      String?
+  status          OperationStatus
+  priority        Int               @default(0)
+  retryCount      Int               @default(0)
+  maxRetries      Int               @default(3)
+  lockedUntil     DateTime?
+  lockedBy        String?           // Process ID holding lock
+  payload         Json              // Operation parameters
+  result          Json?             // Result for idempotent replay
+  errorMessage    String?           @db.Text
+  createdAt       DateTime          @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  @@index([status, priority, createdAt])
+  @@index([operationId])
+  @@index([targetSymbol, status])
+  @@map("operation_queue")
+}
+
+enum OperationType {
+  SWAP_STRATEGY
+  CANCEL_ORDERS
+  SUBMIT_ORDERS
+  EVALUATE_STRATEGY
+  CLOSE_STRATEGY
+  RECONCILE_ORDERS
+}
+
+enum OperationStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ============================================================================
+// ORDER AUDIT LOG (Phase 4)
+// ============================================================================
+
+model OrderAuditLog {
+  id              String            @id @default(cuid())
+  orderId         String?
+  brokerOrderId   String?
+  strategyId      String
+  eventType       OrderEventType
+  oldStatus       OrderStatus?
+  newStatus       OrderStatus?
+  quantity        Float?
+  price           Float?
+  errorMessage    String?           @db.Text
+  metadata        Json?
+  createdAt       DateTime          @default(now())
+
+  @@index([orderId, createdAt])
+  @@index([brokerOrderId, createdAt])
+  @@index([strategyId, createdAt])
+  @@index([eventType])
+  @@map("order_audit_log")
+}
+
+enum OrderEventType {
+  SUBMITTED
+  CANCELLED
+  FILLED
+  PARTIALLY_FILLED
+  REJECTED
+  RECONCILED
+  ORPHANED
+  MISSING
 }

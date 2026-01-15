@@ -108,7 +108,18 @@ export class MultiStrategyManager {
     // Cancel orders on old strategy
     const oldInstance = this.instances.get(symbol);
     if (oldInstance) {
-      await oldInstance.cancelAllOrders();
+      // CRITICAL: Verify cancellation succeeded before proceeding with swap
+      const cancelResult = await oldInstance.cancelAllOrders();
+
+      if (cancelResult.failed.length > 0) {
+        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const errorMsg = `Cannot swap strategy for ${symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+
+      console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${symbol}`);
       await this.removeStrategy(symbol);
     }
 

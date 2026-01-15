@@ -202,4 +202,41 @@ export class OrderRepository {
 
     return result.count;
   }
+
+  /**
+   * Find open orders by symbol (for reconciliation)
+   */
+  async findOpenBySymbol(symbol: string): Promise<Array<{
+    id: string;
+    planId: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    qty: number;
+    type: 'limit' | 'market';
+    status: string;
+    limitPrice?: number | null;
+    stopPrice?: number | null;
+    filledQty?: number | null;
+  }>> {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        symbol,
+        status: { in: ['PENDING', 'SUBMITTED', 'PARTIALLY_FILLED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return orders.map(order => ({
+      id: order.id,
+      planId: order.planId,
+      symbol: order.symbol,
+      side: order.side.toLowerCase() as 'buy' | 'sell',
+      qty: order.qty,
+      type: order.type.toLowerCase() as 'limit' | 'market',
+      status: order.status.toLowerCase(),
+      limitPrice: order.limitPrice,
+      stopPrice: order.stopPrice,
+      filledQty: order.filledQty,
+    }));
+  }
 }

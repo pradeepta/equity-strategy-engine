@@ -123,8 +123,27 @@ export class StrategyLifecycleManager {
 
       const oldStrategyId = instance.strategyId;
 
-      // Cancel all open orders
-      await instance.cancelAllOrders();
+      // Cancel all open orders - CRITICAL: Verify success before proceeding
+      const cancelResult = await instance.cancelAllOrders();
+
+      if (cancelResult.failed.length > 0) {
+        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const errorMsg = `Cannot swap strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
+        console.error(`❌ ${errorMsg}`);
+
+        // Log the failed swap attempt
+        await this.execHistoryRepo.logEvaluation({
+          strategyId: oldStrategyId,
+          recommendation: 'SWAP',
+          confidence: response.confidence,
+          reason: `Swap aborted: ${errorMsg}`,
+        });
+
+        throw new Error(errorMsg);
+      }
+
+      console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${instance.symbol}`);
 
       // Check for active position
       const state = instance.getState();

@@ -215,19 +215,38 @@ export class StrategyEngine {
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
-              // FOOLPROOF: Always cancel any existing pending entry orders before placing new ones
+              // CRITICAL: Always cancel any existing pending entry orders before placing new ones
               // This prevents duplicate orders when strategy retriggers
               if (this.state.openOrders.length > 0) {
                 this.log('info', `Cancelling ${this.state.openOrders.length} existing order(s) before placing new order plan`);
-                await this.brokerAdapter.cancelOpenEntries(
+
+                const cancelResult = await this.brokerAdapter.cancelOpenEntries(
                   this.ir.symbol,
                   this.state.openOrders,
                   this.brokerEnv
                 );
-                this.state.openOrders = [];
+
+                // CRITICAL: Verify cancellation succeeded before proceeding
+                if (cancelResult.failed.length > 0) {
+                  const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+                  const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+                  this.log('error', `Failed to cancel orders: ${failedIds}. Reasons: ${reasons}`);
+
+                  // DO NOT proceed with new order submission
+                  throw new Error(
+                    `Cannot place new orders - cancellation failed for: ${failedIds}`
+                  );
+                }
+
+                // Only clear state if cancellation succeeded
+                this.state.openOrders = this.state.openOrders.filter(
+                  o => !cancelResult.succeeded.includes(o.id)
+                );
+
+                this.log('info', `Successfully cancelled ${cancelResult.succeeded.length} orders`);
               }
 
-              // Now submit the new order plan
+              // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
                 plan,
                 this.brokerEnv
@@ -241,13 +260,28 @@ export class StrategyEngine {
           break;
 
         case 'cancel_entries':
-          await this.brokerAdapter.cancelOpenEntries(
-            this.ir.symbol,
-            this.state.openOrders,
-            this.brokerEnv
-          );
-          this.state.openOrders = [];
-          this.log('info', 'Cancelled all entries');
+          if (this.state.openOrders.length > 0) {
+            const cancelResult = await this.brokerAdapter.cancelOpenEntries(
+              this.ir.symbol,
+              this.state.openOrders,
+              this.brokerEnv
+            );
+
+            // Verify cancellation succeeded
+            if (cancelResult.failed.length > 0) {
+              const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+              const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+              this.log('error', `Failed to cancel orders: ${failedIds}. Reasons: ${reasons}`);
+              throw new Error(`Order cancellation failed for: ${failedIds}`);
+            }
+
+            // Only clear successfully cancelled orders
+            this.state.openOrders = this.state.openOrders.filter(
+              o => !cancelResult.succeeded.includes(o.id)
+            );
+
+            this.log('info', `Cancelled ${cancelResult.succeeded.length} entries`);
+          }
           break;
 
         case 'log':

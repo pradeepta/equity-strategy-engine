@@ -206,13 +206,28 @@ export interface RuntimeLog {
 // ============================================================================
 // Broker Adapter
 // ============================================================================
+
+/**
+ * Result of order cancellation operation
+ * Tracks which orders were successfully cancelled and which failed
+ */
+export interface CancellationResult {
+  /** Order IDs that were successfully cancelled */
+  succeeded: string[];
+  /** Orders that failed to cancel with error reasons */
+  failed: Array<{
+    orderId: string;
+    reason: string;
+  }>;
+}
+
 export interface BrokerAdapter {
   submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]>;
   cancelOpenEntries(
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void>;
+  ): Promise<CancellationResult>;
   getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]>;
 }
 

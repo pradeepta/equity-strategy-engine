@@ -3,7 +3,7 @@
  * Converts order plans into Alpaca API calls
  */
 import * as https from 'https';
-import { OrderPlan, Order, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerEnvironment, CancellationResult } from '../spec/types';
 import { BaseBrokerAdapter } from './broker';
 
 interface AlpacaOrderRequest {
@@ -110,8 +110,13 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void> {
+  ): Promise<CancellationResult> {
     console.log(`\nALPACA: Cancelling ${orders.length} orders for ${symbol}`);
+
+    const result: CancellationResult = {
+      succeeded: [],
+      failed: [],
+    };
 
     for (const order of orders) {
       console.log(`DELETE /v2/orders/${order.id}`);
@@ -120,14 +125,23 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
         try {
           await this.cancelOrderAtAlpaca(order.id, env);
           console.log('✓ Cancelled');
+          result.succeeded.push(order.id);
         } catch (e) {
           const err = e as Error;
-          console.error(`✗ Failed to cancel order ${order.id}: ${err.message}`);
+          const reason = `Alpaca API error: ${err.message}`;
+          console.error(`✗ Failed to cancel order ${order.id}: ${reason}`);
+          result.failed.push({ orderId: order.id, reason });
+          // FAIL FAST: Throw immediately on first failure
+          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       } else {
         console.log('→ DRY RUN: Would cancel');
+        result.succeeded.push(order.id);
       }
     }
+
+    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    return result;
   }
 
   /**
