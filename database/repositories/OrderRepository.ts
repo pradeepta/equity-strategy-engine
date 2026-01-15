@@ -213,10 +213,10 @@ export class OrderRepository {
     side: 'buy' | 'sell';
     qty: number;
     type: 'limit' | 'market';
-    status: string;
-    limitPrice?: number | null;
-    stopPrice?: number | null;
-    filledQty?: number | null;
+    status: 'pending' | 'submitted' | 'filled' | 'partially_filled' | 'cancelled' | 'rejected';
+    limitPrice?: number;
+    stopPrice?: number;
+    filledQty?: number;
   }>> {
     const orders = await this.prisma.order.findMany({
       where: {
@@ -233,10 +233,10 @@ export class OrderRepository {
       side: order.side.toLowerCase() as 'buy' | 'sell',
       qty: order.qty,
       type: order.type.toLowerCase() as 'limit' | 'market',
-      status: order.status.toLowerCase(),
-      limitPrice: order.limitPrice,
-      stopPrice: order.stopPrice,
-      filledQty: order.filledQty,
+      status: order.status.toLowerCase() as 'pending' | 'submitted' | 'filled' | 'partially_filled' | 'cancelled' | 'rejected',
+      limitPrice: order.limitPrice ?? undefined,
+      stopPrice: order.stopPrice ?? undefined,
+      filledQty: order.filledQty ?? undefined,
     }));
   }
 }

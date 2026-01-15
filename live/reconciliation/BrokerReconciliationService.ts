@@ -200,7 +200,7 @@ export class BrokerReconciliationService {
     for (const order of missingOrders) {
       try {
         // Mark as cancelled in database (order no longer exists at broker)
-        await this.orderRepo.updateStatus(order.id, 'cancelled');
+        await this.orderRepo.updateStatus(order.id, 'CANCELLED');
 
         console.log(`✓ Marked order ${order.id} as cancelled in database (missing from broker)`);
         report.actionsToken.push(`Marked order ${order.id} as cancelled (missing from broker)`);

@@ -18,6 +18,13 @@ interface IBOrder {
   status: string;
 }
 
+interface BracketOrderSet {
+  parentOrderId: number;
+  takeProfitOrderId: number;
+  stopLossOrderId: number;
+  symbol: string;
+}
+
 /**
  * TWS broker adapter for Interactive Brokers
  * Connects to TWS/IB Gateway via socket API
@@ -28,6 +35,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
   private nextOrderId: number = 1;
   private orderIdMap: Map<string, number> = new Map();
   private pendingOrders: Map<number, IBOrder> = new Map();
+  private bracketOrders: Map<number, BracketOrderSet> = new Map(); // Maps parent order ID to bracket set
 
   private host: string;
   private port: number;
@@ -255,10 +263,52 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
     this.pendingOrders.set(parentOrderId, ibOrder);
 
+    // Store bracket order set for cancellation
+    const bracketSet: BracketOrderSet = {
+      parentOrderId,
+      takeProfitOrderId,
+      stopLossOrderId,
+      symbol: plan.symbol,
+    };
+    this.bracketOrders.set(parentOrderId, bracketSet);
+
     // Wait a bit for confirmation
     await this.sleep(500);
 
     return ibOrder;
+  }
+
+  /**
+   * Cancel a bracket order (parent + take profit + stop loss)
+   */
+  private async cancelBracketOrder(parentOrderId: number): Promise<void> {
+    // Check if this is a bracket order
+    const bracketSet = this.bracketOrders.get(parentOrderId);
+
+    if (bracketSet) {
+      // Cancel all three orders in the bracket
+      console.log(`  Cancelling bracket: parent=${parentOrderId}, TP=${bracketSet.takeProfitOrderId}, SL=${bracketSet.stopLossOrderId}`);
+
+      // Cancel parent order
+      this.client.cancelOrder(parentOrderId);
+      this.pendingOrders.delete(parentOrderId);
+
+      // Cancel take profit order
+      this.client.cancelOrder(bracketSet.takeProfitOrderId);
+      this.pendingOrders.delete(bracketSet.takeProfitOrderId);
+
+      // Cancel stop loss order
+      this.client.cancelOrder(bracketSet.stopLossOrderId);
+      this.pendingOrders.delete(bracketSet.stopLossOrderId);
+
+      // Remove bracket from tracking
+      this.bracketOrders.delete(parentOrderId);
+    } else {
+      // Not a bracket order, just cancel the single order
+      console.log(`  Cancelling single order ${parentOrderId}`);
+      this.client.cancelOrder(parentOrderId);
+      this.pendingOrders.delete(parentOrderId);
+    }
   }
 
   /**
@@ -289,9 +339,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
         const orderIdNum = parseInt(order.id);
         if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
           try {
-            this.client.cancelOrder(orderIdNum);
-            console.log(`✓ Cancelled TWS order ${orderIdNum}`);
-            this.pendingOrders.delete(orderIdNum);
+            await this.cancelBracketOrder(orderIdNum);
+            console.log(`✓ Cancelled TWS bracket order ${orderIdNum}`);
             result.succeeded.push(order.id);
             continue;
           } catch (e) {
@@ -308,9 +357,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
         const ibOrderId = this.orderIdMap.get(order.id);
         if (ibOrderId !== undefined) {
           try {
-            this.client.cancelOrder(ibOrderId);
-            console.log(`✓ Cancelled (mapped ${order.id} -> ${ibOrderId})`);
-            this.pendingOrders.delete(ibOrderId);
+            await this.cancelBracketOrder(ibOrderId);
+            console.log(`✓ Cancelled bracket (mapped ${order.id} -> ${ibOrderId})`);
             this.orderIdMap.delete(order.id);
             result.succeeded.push(order.id);
           } catch (e) {
@@ -330,7 +378,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       } else {
-        console.log('→ DRY RUN: Would cancel');
+        console.log('→ DRY RUN: Would cancel bracket order');
         result.succeeded.push(order.id);
       }
     }

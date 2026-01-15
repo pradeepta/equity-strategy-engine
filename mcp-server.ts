@@ -349,7 +349,10 @@ async function handleBacktestStrategy(args: any) {
       }];
     },
     async cancelOpenEntries(_symbol: string, _orders: any[], _env: any) {
-      return;
+      return {
+        succeeded: [],
+        failed: [],
+      };
     },
     async getOpenOrders(_symbol: string, _env: any) {
       return [];
