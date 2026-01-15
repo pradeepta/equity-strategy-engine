@@ -1,10 +1,9 @@
 /**
  * Strategy Instance Wrapper
  * Encapsulates a single strategy's complete lifecycle
+ * Updated to work with database instead of filesystem
  */
 
-import * as fs from 'fs';
-import * as YAML from 'yaml';
 import { StrategyCompiler } from '../compiler/compile';
 import { createStandardRegistry } from '../features/registry';
 import { StrategyEngine } from '../runtime/engine';
@@ -12,9 +11,10 @@ import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment } from '../spec/types';
 
 export class StrategyInstance {
+  readonly strategyId: string;  // Database ID
+  readonly userId: string;      // Owner
   readonly symbol: string;
   readonly strategyName: string;
-  readonly yamlPath: string;
 
   private engine!: StrategyEngine;
   private compiler: StrategyCompiler;
@@ -22,48 +22,49 @@ export class StrategyInstance {
   private brokerEnv: BrokerEnvironment;
   private ir!: CompiledIR;
   private barsSinceLastEval: number = 0;
-  private yamlContent: string = '';
+  private yamlContent: string;
   private initialized: boolean = false;
   private lastBarFetchTime: number = 0;  // Track last time we fetched bars
 
-  constructor(yamlPath: string, adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment) {
-    this.yamlPath = yamlPath;
+  constructor(
+    strategyId: string,
+    userId: string,
+    yamlContent: string,
+    symbol: string,
+    name: string,
+    adapter: BaseBrokerAdapter,
+    brokerEnv: BrokerEnvironment
+  ) {
+    this.strategyId = strategyId;
+    this.userId = userId;
+    this.yamlContent = yamlContent;
+    this.symbol = symbol;
+    this.strategyName = name;
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
 
     // Create compiler with standard registry
     const featureRegistry = createStandardRegistry();
     this.compiler = new StrategyCompiler(featureRegistry);
-
-    // Will be populated in initialize()
-    this.symbol = '';
-    this.strategyName = '';
   }
 
   /**
-   * Initialize strategy: load YAML, compile, create engine
+   * Initialize strategy: compile YAML, create engine
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
       return;
     }
 
-    // Read YAML file
-    this.yamlContent = await fs.promises.readFile(this.yamlPath, 'utf-8');
-
-    // Compile YAML to IR
+    // Compile YAML to IR (yamlContent already provided in constructor)
     this.ir = this.compiler.compileFromYAML(this.yamlContent);
-
-    // Extract symbol from IR
-    (this.symbol as any) = this.ir.symbol;
-    (this.strategyName as any) = this.ir.symbol || 'unnamed'; // Use symbol as name for now
 
     // Create engine
     const featureRegistry = createStandardRegistry();
     this.engine = new StrategyEngine(this.ir, featureRegistry, this.brokerAdapter, this.brokerEnv);
 
     this.initialized = true;
-    console.log(`✓ Initialized strategy: ${this.strategyName} for ${this.symbol}`);
+    console.log(`✓ Initialized strategy: ${this.strategyName} for ${this.symbol} (ID: ${this.strategyId})`);
   }
 
   /**

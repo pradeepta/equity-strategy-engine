@@ -1,23 +1,23 @@
 /**
  * Live Trading Orchestrator
  * Main orchestrator for multi-strategy trading system
+ * Updated to use database instead of filesystem
  */
 
-import * as fs from "fs";
 import { MultiStrategyManager } from "./MultiStrategyManager";
 import { StrategyLifecycleManager } from "./StrategyLifecycleManager";
-import { FilesystemWatcher } from "./FilesystemWatcher";
+import { DatabasePoller } from "./DatabasePoller";
 import { PortfolioDataFetcher } from "../broker/twsPortfolio";
 import { StrategyEvaluatorClient } from "../evaluation/StrategyEvaluatorClient";
 import { BaseBrokerAdapter } from "../broker/broker";
 import { BrokerEnvironment } from "../spec/types";
+import { RepositoryFactory } from "../database/RepositoryFactory";
+import { Strategy } from "@prisma/client";
 
 export interface OrchestratorConfig {
   brokerAdapter: BaseBrokerAdapter;
   brokerEnv: BrokerEnvironment;
-  liveDir: string;
-  closedDir: string;
-  archiveDir: string;
+  userId: string; // User ID for database queries
   evalEndpoint: string;
   evalEnabled: boolean;
   maxConcurrentStrategies: number;
@@ -29,23 +29,30 @@ export interface OrchestratorConfig {
 export class LiveTradingOrchestrator {
   private multiStrategyManager: MultiStrategyManager;
   private lifecycleManager: StrategyLifecycleManager;
-  private filesystemWatcher: FilesystemWatcher;
+  private databasePoller: DatabasePoller;
   private portfolioFetcher: PortfolioDataFetcher;
   private evaluatorClient: StrategyEvaluatorClient;
+  private repositoryFactory: RepositoryFactory;
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
   private swappingSymbols: Set<string> = new Set(); // Track symbols being swapped
-  private deployedFiles: Set<string> = new Set(); // Track files deployed by swaps
   private currentSleepResolve?: () => void; // Resolve function to interrupt sleep
+  private currentSleepTimeout?: NodeJS.Timeout; // Timeout reference to clear
 
-  constructor(config: OrchestratorConfig) {
+  constructor(config: OrchestratorConfig, repositoryFactory?: RepositoryFactory) {
     this.config = config;
+    this.repositoryFactory = repositoryFactory || new RepositoryFactory();
+
+    // Get repositories
+    const strategyRepo = this.repositoryFactory.getStrategyRepo();
+    const execHistoryRepo = this.repositoryFactory.getExecutionHistoryRepo();
 
     // Initialize components
     this.multiStrategyManager = new MultiStrategyManager(
       config.brokerAdapter,
-      config.brokerEnv
+      config.brokerEnv,
+      strategyRepo
     );
 
     const twsHost = config.twsHost || process.env.TWS_HOST || "127.0.0.1";
@@ -61,16 +68,16 @@ export class LiveTradingOrchestrator {
       this.multiStrategyManager,
       this.evaluatorClient,
       this.portfolioFetcher,
-      config.liveDir,
-      config.closedDir,
-      config.archiveDir
+      strategyRepo,
+      execHistoryRepo
     );
 
     // Set orchestrator reference for locking during swaps
     this.lifecycleManager.setOrchestrator(this);
 
-    this.filesystemWatcher = new FilesystemWatcher(
-      config.liveDir,
+    this.databasePoller = new DatabasePoller(
+      strategyRepo,
+      config.userId,
       config.watchInterval
     );
   }
@@ -83,12 +90,17 @@ export class LiveTradingOrchestrator {
     console.log("╔══════════════════════════════════════════════════════════╗");
     console.log("║                                                          ║");
     console.log("║          MULTI-STRATEGY LIVE TRADING SYSTEM              ║");
+    console.log("║            (Database-Backed)                             ║");
     console.log("║                                                          ║");
     console.log("╚══════════════════════════════════════════════════════════╝");
     console.log("");
 
-    // Ensure directories exist
-    await this.ensureDirectories();
+    // Check database connection
+    const dbHealthy = await this.repositoryFactory.healthCheck();
+    if (!dbHealthy) {
+      throw new Error("Database connection failed");
+    }
+    console.log("✓ Database connection verified");
 
     // Connect to TWS for portfolio data
     console.log("📡 Connecting to TWS for portfolio data...");
@@ -147,12 +159,12 @@ export class LiveTradingOrchestrator {
       console.warn("⚠️  Could not fetch portfolio data:", error);
     }
 
-    // Load existing strategies from live directory
+    // Load existing strategies from database
     await this.loadExistingStrategies();
 
-    // Register filesystem watcher callback
-    this.filesystemWatcher.onNewFile(async (filePath) => {
-      await this.handleNewStrategyFile(filePath);
+    // Register database poller callback
+    this.databasePoller.onNewStrategy(async (strategy) => {
+      await this.handleNewStrategyFromDB(strategy);
     });
 
     console.log("✓ Orchestrator initialized");
@@ -170,8 +182,8 @@ export class LiveTradingOrchestrator {
 
     this.running = true;
 
-    // Start filesystem watcher
-    this.filesystemWatcher.start();
+    // Start database poller
+    this.databasePoller.start();
 
     console.log("════════════════════════════════════════════════════════════");
     console.log("RUNNING MULTI-STRATEGY TRADING LOOP");
@@ -195,8 +207,8 @@ export class LiveTradingOrchestrator {
 
     this.running = false;
 
-    // Stop filesystem watcher
-    this.filesystemWatcher.stop();
+    // Stop database poller
+    this.databasePoller.stop();
 
     // Clear main loop interval
     if (this.mainLoopInterval) {
@@ -306,137 +318,80 @@ export class LiveTradingOrchestrator {
   }
 
   /**
-   * Handle new or modified strategy file detected by watcher
+   * Handle new strategy detected by database poller
    */
-  private async handleNewStrategyFile(filePath: string): Promise<void> {
-    console.log(`📥 Strategy file change detected: ${filePath}`);
+  private async handleNewStrategyFromDB(strategy: Strategy): Promise<void> {
+    console.log(`📥 New strategy detected: ${strategy.name} (${strategy.symbol})`);
 
     try {
-      // Check if this file was deployed by a swap operation
-      if (this.deployedFiles.has(filePath)) {
-        console.log(
-          `⏸️  File ${filePath} was deployed by swap. Skipping auto-load (already loaded).`
-        );
-        this.deployedFiles.delete(filePath); // Clean up
-        return;
-      }
-
-      // Extract symbol from filename to check if it's being swapped
-      const filename = filePath.split("/").pop() || "";
-      const symbolMatch = filename.match(/^([A-Z]+)-/);
-      const symbol = symbolMatch ? symbolMatch[1] : null;
-
       // Check if this symbol is currently being swapped
-      if (symbol && this.swappingSymbols.has(symbol)) {
+      if (this.swappingSymbols.has(strategy.symbol)) {
         console.log(
-          `⏸️  Symbol ${symbol} is currently being swapped. Skipping auto-load (swap will handle it).`
+          `⏸️  Symbol ${strategy.symbol} is currently being swapped. Skipping auto-load (swap will handle it).`
         );
         return;
       }
 
-      // Check if strategy for this symbol already exists (file modification)
-      if (symbol && this.multiStrategyManager.getStrategyBySymbol(symbol)) {
-        console.log(`🔄 Reloading modified strategy for ${symbol}...`);
+      // Check if strategy for this symbol already exists
+      if (this.multiStrategyManager.getStrategyBySymbol(strategy.symbol)) {
+        console.log(`⚠️  Strategy for ${strategy.symbol} already loaded. Skipping.`);
+        return;
+      }
 
-        // Remove old version
-        await this.multiStrategyManager.removeStrategy(symbol);
-        console.log(`✓ Removed old version of ${symbol}`);
-      } else {
-        // Check max concurrent strategies (only for new strategies)
-        if (
-          this.multiStrategyManager.getActiveCount() >=
-          this.config.maxConcurrentStrategies
-        ) {
-          console.warn(
-            `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new file.`
-          );
-          return;
-        }
+      // Check max concurrent strategies
+      if (
+        this.multiStrategyManager.getActiveCount() >=
+        this.config.maxConcurrentStrategies
+      ) {
+        console.warn(
+          `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new strategy.`
+        );
+        return;
       }
 
       // Load strategy
-      await this.multiStrategyManager.loadStrategy(filePath);
+      await this.multiStrategyManager.loadStrategy(strategy.id);
 
-      console.log(`✓ Successfully loaded strategy from ${filePath}`);
+      // Mark as active
+      await this.repositoryFactory.getStrategyRepo().activate(strategy.id);
+
+      console.log(`✓ Successfully loaded strategy ${strategy.name}`);
 
       // Wake up main loop to recalculate interval immediately
       this.wakeUpEarly();
     } catch (error: any) {
-      console.error(`Failed to load strategy from ${filePath}:`, error.message);
+      console.error(`Failed to load strategy ${strategy.name}:`, error.message);
 
-      // Move to archive if invalid
-      try {
-        const archivedPath = await this.lifecycleManager.moveToArchive(
-          filePath,
-          "invalid"
-        );
-        console.log(`📦 Moved invalid strategy to: ${archivedPath}`);
-      } catch (archiveError) {
-        console.error("Failed to archive invalid strategy:", archiveError);
-      }
+      // Mark strategy as failed
+      await this.repositoryFactory.getStrategyRepo().markFailed(strategy.id, error.message);
     }
   }
 
   /**
-   * Load existing strategies from live directory
+   * Load existing strategies from database
    */
   private async loadExistingStrategies(): Promise<void> {
-    console.log(`📂 Loading existing strategies from: ${this.config.liveDir}`);
+    console.log(`📊 Loading existing strategies from database for user: ${this.config.userId}`);
 
-    // Check if directory exists
-    if (!fs.existsSync(this.config.liveDir)) {
-      console.log(`⚠️  Live directory does not exist: ${this.config.liveDir}`);
-      return;
-    }
-
-    // Read directory
-    const files = await fs.promises.readdir(this.config.liveDir);
-    const yamlFiles = files.filter((file) => file.endsWith(".yaml"));
-
-    console.log(`Found ${yamlFiles.length} strategy file(s)`);
+    const strategies = await this.repositoryFactory.getStrategyRepo().findActiveByUser(this.config.userId);
+    console.log(`Found ${strategies.length} active strategy(ies)`);
 
     // Load each strategy
-    for (const file of yamlFiles) {
-      const filePath = `${this.config.liveDir}/${file}`;
-
+    for (const strategy of strategies) {
       try {
-        await this.multiStrategyManager.loadStrategy(filePath);
+        await this.multiStrategyManager.loadStrategy(strategy.id);
+        console.log(`✓ Loaded ${strategy.name} (${strategy.symbol})`);
       } catch (error: any) {
-        console.error(`Failed to load ${file}:`, error.message);
+        console.error(`Failed to load ${strategy.name}:`, error.message);
 
-        // Move to archive
-        try {
-          const archivedPath = await this.lifecycleManager.moveToArchive(
-            filePath,
-            "invalid"
-          );
-          console.log(`📦 Moved invalid strategy to: ${archivedPath}`);
-        } catch (archiveError) {
-          console.error("Failed to archive invalid strategy:", archiveError);
-        }
+        // Mark as failed
+        await this.repositoryFactory.getStrategyRepo().markFailed(strategy.id, error.message);
       }
     }
 
     console.log(
       `✓ Loaded ${this.multiStrategyManager.getActiveCount()} strategy(ies)`
     );
-  }
-
-  /**
-   * Ensure all required directories exist
-   */
-  private async ensureDirectories(): Promise<void> {
-    const dirs = [
-      this.config.liveDir,
-      this.config.closedDir,
-      this.config.archiveDir,
-    ];
-
-    for (const dir of dirs) {
-      await fs.promises.mkdir(dir, { recursive: true });
-    }
-
-    console.log("✓ Ensured directory structure exists");
   }
 
   /**
@@ -543,8 +498,9 @@ export class LiveTradingOrchestrator {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
       this.currentSleepResolve = resolve;
-      setTimeout(() => {
+      this.currentSleepTimeout = setTimeout(() => {
         this.currentSleepResolve = undefined;
+        this.currentSleepTimeout = undefined;
         resolve();
       }, ms);
     });
@@ -554,6 +510,10 @@ export class LiveTradingOrchestrator {
    * Interrupt current sleep and wake up immediately
    */
   private wakeUpEarly(): void {
+    if (this.currentSleepTimeout) {
+      clearTimeout(this.currentSleepTimeout);
+      this.currentSleepTimeout = undefined;
+    }
     if (this.currentSleepResolve) {
       console.log("⚡ Waking up early due to new strategy...");
       this.currentSleepResolve();
@@ -573,12 +533,5 @@ export class LiveTradingOrchestrator {
    */
   unlockSymbol(symbol: string): void {
     this.swappingSymbols.delete(symbol);
-  }
-
-  /**
-   * Mark a file as deployed by swap operation (to prevent auto-load)
-   */
-  markFileAsDeployed(filePath: string): void {
-    this.deployedFiles.add(filePath);
   }
 }

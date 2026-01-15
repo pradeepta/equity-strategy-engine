@@ -151,11 +151,18 @@ export class TwsAdapter extends BaseBrokerAdapter {
       } else {
         // Real submission to TWS
         try {
+          // Save original order ID before submitting
+          const originalOrderId = bracket.entryOrder.id;
+
           const parentOrder = await this.submitBracketToTWS(bracket, plan);
           console.log('← Response: Bracket order submitted successfully');
           console.log(`  Parent Order ID: ${parentOrder.orderId}`);
+          console.log(`  Order ID mapping: ${originalOrderId} -> ${parentOrder.orderId}`);
 
-          // Map response to Order objects
+          // Map original order ID to TWS order ID for cancellation
+          this.orderIdMap.set(originalOrderId, parentOrder.orderId);
+
+          // Update order object with TWS order ID
           bracket.entryOrder.id = parentOrder.orderId.toString();
           bracket.entryOrder.status = 'submitted';
           submittedOrders.push(bracket.entryOrder);
@@ -247,7 +254,6 @@ export class TwsAdapter extends BaseBrokerAdapter {
     };
 
     this.pendingOrders.set(parentOrderId, ibOrder);
-    this.orderIdMap.set(bracket.entryOrder.id, parentOrderId);
 
     // Wait a bit for confirmation
     await this.sleep(500);
@@ -264,6 +270,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     env: BrokerEnvironment
   ): Promise<void> {
     console.log(`\nTWS: Cancelling ${orders.length} orders for ${symbol}`);
+    console.log(`Available order mappings: ${Array.from(this.orderIdMap.entries()).map(([k, v]) => `${k}->${v}`).join(', ')}`);
 
     if (!env.dryRun && !this.connected) {
       await this.connect();
@@ -274,14 +281,24 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
       if (!env.dryRun) {
         try {
+          // Try direct lookup first (order.id is already TWS ID)
+          const orderIdNum = parseInt(order.id);
+          if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
+            this.client.cancelOrder(orderIdNum);
+            console.log(`✓ Cancelled TWS order ${orderIdNum}`);
+            this.pendingOrders.delete(orderIdNum);
+            continue; // Move to next order
+          }
+
+          // Try mapping lookup (order.id is original ID)
           const ibOrderId = this.orderIdMap.get(order.id);
           if (ibOrderId !== undefined) {
             this.client.cancelOrder(ibOrderId);
-            console.log('✓ Cancelled');
+            console.log(`✓ Cancelled (mapped ${order.id} -> ${ibOrderId})`);
             this.pendingOrders.delete(ibOrderId);
             this.orderIdMap.delete(order.id);
           } else {
-            console.warn(`Order ${order.id} not found in TWS order map`);
+            console.warn(`Order ${order.id} not found in TWS (not in pendingOrders or orderIdMap)`);
           }
         } catch (e) {
           const err = e as Error;

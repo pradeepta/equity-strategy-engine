@@ -1,14 +1,14 @@
 /**
  * Multi-Strategy Manager
  * Manages multiple StrategyInstance objects, coordinates bar distribution
+ * Updated to work with database instead of filesystem
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { StrategyInstance } from './StrategyInstance';
 import { TwsMarketDataClient } from '../broker/twsMarketData';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, BrokerEnvironment } from '../spec/types';
+import { StrategyRepository } from '../database/repositories/StrategyRepository';
 
 export class MultiStrategyManager {
   private instances: Map<string, StrategyInstance>;  // symbol -> instance
@@ -16,40 +16,52 @@ export class MultiStrategyManager {
   private brokerEnv: BrokerEnvironment;
   private marketDataClients: Map<string, TwsMarketDataClient>;  // symbol -> client
   private clientIdCounter: number = 10;  // Start at 10 to avoid conflicts with main clients
+  private strategyRepo: StrategyRepository;
 
-  constructor(adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment) {
+  constructor(adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment, strategyRepo: StrategyRepository) {
     this.instances = new Map();
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
     this.marketDataClients = new Map();
+    this.strategyRepo = strategyRepo;
   }
 
   /**
-   * Load a strategy from YAML file
+   * Load a strategy from database by ID
    */
-  async loadStrategy(yamlPath: string): Promise<StrategyInstance> {
-    // Check if file exists
-    if (!fs.existsSync(yamlPath)) {
-      throw new Error(`Strategy file not found: ${yamlPath}`);
+  async loadStrategy(strategyId: string): Promise<StrategyInstance> {
+    console.log(`Loading strategy from database: ${strategyId}`);
+
+    // Fetch strategy from database
+    const strategy = await this.strategyRepo.findByIdWithRelations(strategyId);
+
+    if (!strategy || strategy.deletedAt) {
+      throw new Error(`Strategy not found: ${strategyId}`);
     }
 
-    console.log(`Loading strategy from: ${yamlPath}`);
-
-    // Create strategy instance
-    const instance = new StrategyInstance(yamlPath, this.brokerAdapter, this.brokerEnv);
-
-    // Initialize (loads YAML, compiles, creates engine)
-    await instance.initialize();
-
     // Check for duplicate symbol
-    if (this.instances.has(instance.symbol)) {
+    if (this.instances.has(strategy.symbol)) {
       throw new Error(
-        `Strategy for ${instance.symbol} already loaded. Remove existing first or use swapStrategy().`
+        `Strategy for ${strategy.symbol} already loaded. Remove existing first or use swapStrategyById().`
       );
     }
 
+    // Create strategy instance
+    const instance = new StrategyInstance(
+      strategy.id,
+      strategy.userId,
+      strategy.yamlContent,
+      strategy.symbol,
+      strategy.name,
+      this.brokerAdapter,
+      this.brokerEnv
+    );
+
+    // Initialize (compiles YAML, creates engine)
+    await instance.initialize();
+
     // Store instance
-    this.instances.set(instance.symbol, instance);
+    this.instances.set(strategy.symbol, instance);
 
     // Create market data client for this symbol
     const clientId = this.clientIdCounter++;
@@ -58,7 +70,7 @@ export class MultiStrategyManager {
     const marketDataClient = new TwsMarketDataClient(twsHost, twsPort, clientId);
     this.marketDataClients.set(instance.symbol, marketDataClient);
 
-    console.log(`✓ Loaded strategy: ${instance.strategyName} for ${instance.symbol}`);
+    console.log(`✓ Loaded strategy: ${instance.strategyName} for ${instance.symbol} (ID: ${strategyId})`);
 
     return instance;
   }
@@ -88,9 +100,9 @@ export class MultiStrategyManager {
   }
 
   /**
-   * Swap strategy for a symbol (remove old, load new)
+   * Swap strategy for a symbol by ID (remove old, load new)
    */
-  async swapStrategy(symbol: string, newYamlPath: string): Promise<void> {
+  async swapStrategyById(symbol: string, newStrategyId: string): Promise<void> {
     console.log(`Swapping strategy for ${symbol}...`);
 
     // Cancel orders on old strategy
@@ -100,8 +112,23 @@ export class MultiStrategyManager {
       await this.removeStrategy(symbol);
     }
 
-    // Load new strategy
-    await this.loadStrategy(newYamlPath);
+    // Load new strategy from database
+    await this.loadStrategy(newStrategyId);
+
+    // Fetch and process latest bar for new strategy immediately
+    console.log(`Fetching latest bar for newly swapped ${symbol} strategy...`);
+    const latestBars = await this.fetchLatestBarsForSymbols([symbol]);
+    const bars = latestBars.get(symbol);
+    if (bars && bars.length > 0) {
+      const newInstance = this.instances.get(symbol);
+      if (newInstance) {
+        newInstance.markBarsFetched();
+        for (const bar of bars) {
+          await newInstance.processBar(bar);
+        }
+        console.log(`✓ Processed ${bars.length} bar(s) for newly swapped ${symbol} strategy`);
+      }
+    }
 
     console.log(`✓ Swapped strategy for ${symbol}`);
   }

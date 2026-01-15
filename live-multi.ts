@@ -26,13 +26,14 @@ async function main() {
     dryRun: !(process.env.LIVE === 'true' || process.env.LIVE === '1'),
   };
 
+  // User ID for database queries (from env or default)
+  const userId = process.env.USER_ID || 'default-user';
+
   // Orchestrator configuration
   const config = {
     brokerAdapter: adapter,
     brokerEnv: brokerEnv,
-    liveDir: process.env.STRATEGY_LIVE_DIR || './strategies/live',
-    closedDir: process.env.STRATEGY_CLOSED_DIR || './strategies/closed',
-    archiveDir: process.env.STRATEGY_ARCHIVE_DIR || './strategies/archive',
+    userId: userId,
     evalEndpoint: process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8080/evaluate',
     evalEnabled: process.env.STRATEGY_EVAL_ENABLED === 'true',
     maxConcurrentStrategies: parseInt(process.env.MAX_CONCURRENT_STRATEGIES || '10'),

@@ -79,3 +79,5 @@ Thumbs.db
 # results/
 
 strategies/
+
+/generated/prisma

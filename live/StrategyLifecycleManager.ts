@@ -1,39 +1,37 @@
 /**
  * Strategy Lifecycle Manager
- * Orchestrates strategy evaluation, swapping, and file management
+ * Orchestrates strategy evaluation, swapping, and database operations
+ * Updated to use repositories instead of filesystem
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { StrategyInstance } from './StrategyInstance';
 import { MultiStrategyManager } from './MultiStrategyManager';
 import { StrategyEvaluatorClient } from '../evaluation/StrategyEvaluatorClient';
 import { PortfolioDataFetcher } from '../broker/twsPortfolio';
 import { EvaluationRequest, EvaluationResponse } from '../evaluation/types';
+import { StrategyRepository } from '../database/repositories/StrategyRepository';
+import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
 
 export class StrategyLifecycleManager {
   private multiStrategyManager: MultiStrategyManager;
   private evaluatorClient: StrategyEvaluatorClient;
   private portfolioFetcher: PortfolioDataFetcher;
-  private liveDir: string;
-  private closedDir: string;
-  private archiveDir: string;
+  private strategyRepo: StrategyRepository;
+  private execHistoryRepo: ExecutionHistoryRepository;
   private orchestrator?: any;  // Reference to orchestrator for locking
 
   constructor(
     manager: MultiStrategyManager,
     evaluator: StrategyEvaluatorClient,
     portfolio: PortfolioDataFetcher,
-    liveDir: string,
-    closedDir: string,
-    archiveDir: string
+    strategyRepo: StrategyRepository,
+    execHistoryRepo: ExecutionHistoryRepository
   ) {
     this.multiStrategyManager = manager;
     this.evaluatorClient = evaluator;
     this.portfolioFetcher = portfolio;
-    this.liveDir = liveDir;
-    this.closedDir = closedDir;
-    this.archiveDir = archiveDir;
+    this.strategyRepo = strategyRepo;
+    this.execHistoryRepo = execHistoryRepo;
   }
 
   /**
@@ -118,13 +116,12 @@ export class StrategyLifecycleManager {
     console.log(`🔄 Swapping strategy for ${instance.symbol}...`);
 
     try {
-      // Lock the symbol to prevent filesystem watcher from loading during swap
+      // Lock the symbol to prevent concurrent operations
       if (this.orchestrator) {
         this.orchestrator.lockSymbol(instance.symbol);
       }
 
-      // Save old yaml path before any modifications
-      const oldYamlPath = instance.yamlPath;
+      const oldStrategyId = instance.strategyId;
 
       // Cancel all open orders
       await instance.cancelAllOrders();
@@ -138,24 +135,40 @@ export class StrategyLifecycleManager {
 
       // Deploy new strategy if suggested
       if (response.suggestedStrategy) {
-        const newYamlPath = await this.deployNewStrategy(
-          instance.symbol,
-          response.suggestedStrategy.yamlContent,
-          response.suggestedStrategy.name
-        );
-        console.log(`✅ Deployed new strategy: ${newYamlPath}`);
+        // Log evaluation to database
+        const evaluation = await this.execHistoryRepo.logEvaluation({
+          strategyId: oldStrategyId,
+          recommendation: 'SWAP',
+          confidence: response.confidence,
+          reason: response.reason,
+          suggestedYaml: response.suggestedStrategy.yamlContent,
+          suggestedName: response.suggestedStrategy.name,
+          suggestedReasoning: response.suggestedStrategy.reasoning,
+        });
 
-        // Mark file as deployed to prevent filesystem watcher from auto-loading
-        if (this.orchestrator) {
-          this.orchestrator.markFileAsDeployed(newYamlPath);
-        }
+        // Close old strategy in database
+        await this.strategyRepo.close(oldStrategyId, response.reason);
 
-        // Swap in MultiStrategyManager (removes old, loads new)
-        await this.multiStrategyManager.swapStrategy(instance.symbol, newYamlPath);
+        // Create new strategy in database
+        const newStrategy = await this.strategyRepo.createWithVersion({
+          userId: instance.userId,
+          symbol: instance.symbol,
+          name: response.suggestedStrategy.name,
+          timeframe: instance.getTimeframe(),
+          yamlContent: response.suggestedStrategy.yamlContent,
+          changeReason: 'Auto-swap by evaluator',
+        });
 
-        // Now move old strategy to closed (using saved path)
-        const closedPath = await this.moveStrategyToClosed(oldYamlPath);
-        console.log(`📦 Archived old strategy to: ${closedPath}`);
+        console.log(`✅ Created new strategy in database: ${newStrategy.id}`);
+
+        // Activate new strategy
+        await this.strategyRepo.activate(newStrategy.id);
+
+        // Mark evaluation action as taken
+        await this.execHistoryRepo.markActionTaken(evaluation.id, 'Swapped successfully');
+
+        // Swap in MultiStrategyManager (removes old, loads new from database)
+        await this.multiStrategyManager.swapStrategyById(instance.symbol, newStrategy.id);
 
         console.log(`✓ Strategy swap complete for ${instance.symbol}`);
       }
@@ -179,12 +192,23 @@ export class StrategyLifecycleManager {
     console.log(`❌ Closing strategy for ${instance.symbol}...`);
 
     try {
+      // Log evaluation to database
+      await this.execHistoryRepo.logEvaluation({
+        strategyId: instance.strategyId,
+        recommendation: 'CLOSE',
+        confidence: response.confidence,
+        reason: response.reason,
+      });
+
       // Cancel all open orders
       await instance.cancelAllOrders();
 
-      // Move to closed
-      const closedPath = await this.moveStrategyToClosed(instance.yamlPath);
-      console.log(`📦 Archived strategy to: ${closedPath}`);
+      // Close strategy in database
+      await this.strategyRepo.close(instance.strategyId, response.reason);
+      console.log(`📦 Strategy closed in database: ${instance.strategyId}`);
+
+      // Log deactivation
+      await this.execHistoryRepo.logDeactivation(instance.strategyId, response.reason);
 
       // Remove from MultiStrategyManager
       await this.multiStrategyManager.removeStrategy(instance.symbol);
@@ -193,55 +217,5 @@ export class StrategyLifecycleManager {
     } catch (error) {
       console.error(`Failed to close strategy for ${instance.symbol}:`, error);
     }
-  }
-
-  /**
-   * Move strategy YAML to closed directory with timestamp
-   */
-  async moveStrategyToClosed(yamlPath: string): Promise<string> {
-    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const originalName = path.basename(yamlPath);
-    const closedName = `${timestamp}_${originalName}`;
-    const closedPath = path.join(this.closedDir, closedName);
-
-    // Ensure closed directory exists
-    await fs.promises.mkdir(this.closedDir, { recursive: true });
-
-    // Move file
-    await fs.promises.rename(yamlPath, closedPath);
-
-    return closedPath;
-  }
-
-  /**
-   * Deploy new strategy to live directory
-   */
-  async deployNewStrategy(symbol: string, yamlContent: string, name: string): Promise<string> {
-    const sanitizedName = name.replace(/[^a-zA-Z0-9-_]/g, '-');
-    const filename = `${symbol}-${sanitizedName}.yaml`;
-    const newYamlPath = path.join(this.liveDir, filename);
-
-    // Ensure live directory exists
-    await fs.promises.mkdir(this.liveDir, { recursive: true });
-
-    // Write new YAML
-    await fs.promises.writeFile(newYamlPath, yamlContent, 'utf-8');
-
-    return newYamlPath;
-  }
-
-  /**
-   * Move invalid strategy to archive
-   */
-  async moveToArchive(yamlPath: string, reason: string = 'invalid'): Promise<string> {
-    const invalidDir = path.join(this.archiveDir, reason);
-    await fs.promises.mkdir(invalidDir, { recursive: true });
-
-    const filename = path.basename(yamlPath);
-    const archivePath = path.join(invalidDir, filename);
-
-    await fs.promises.rename(yamlPath, archivePath);
-
-    return archivePath;
   }
 }
