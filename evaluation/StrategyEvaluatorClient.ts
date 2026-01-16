@@ -69,6 +69,10 @@ export class StrategyEvaluatorClient {
       const currentPrice = request.marketData.currentBar.close;
       const modifiedYaml = this.modifyStrategy(request.currentStrategy.yamlContent, currentPrice);
 
+      const baseName = this.stripAdjustmentSuffix(
+        request.currentStrategy.name
+      );
+
       return {
         timestamp: Date.now(),
         symbol: request.currentStrategy.symbol,
@@ -77,7 +81,7 @@ export class StrategyEvaluatorClient {
         reason: 'Market volatility increased; adjusting entry zone',
         suggestedStrategy: {
           yamlContent: modifiedYaml,
-          name: `${request.currentStrategy.name}-adjusted-${Date.now()}`,
+          name: `${baseName}-adjusted-${Date.now()}`,
           reasoning: 'Adjusted trigger and order prices based on current market price'
         }
       };
@@ -167,6 +171,10 @@ export class StrategyEvaluatorClient {
       console.warn('Failed to modify strategy, returning original YAML:', error);
       return yamlContent;
     }
+  }
+
+  private stripAdjustmentSuffix(name: string): string {
+    return name.replace(/(-adjusted-\d+)+$/, '');
   }
 
   /**

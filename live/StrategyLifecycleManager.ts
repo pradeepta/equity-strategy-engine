@@ -4,14 +4,14 @@
  * Updated to use repositories instead of filesystem
  */
 
-import { StrategyInstance } from './StrategyInstance';
-import { MultiStrategyManager } from './MultiStrategyManager';
-import { StrategyEvaluatorClient } from '../evaluation/StrategyEvaluatorClient';
-import { PortfolioDataFetcher } from '../broker/twsPortfolio';
-import { EvaluationRequest, EvaluationResponse } from '../evaluation/types';
-import { StrategyRepository } from '../database/repositories/StrategyRepository';
-import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
-import { OperationQueueService } from './queue/OperationQueueService';
+import { StrategyInstance } from "./StrategyInstance";
+import { MultiStrategyManager } from "./MultiStrategyManager";
+import { StrategyEvaluatorClient } from "../evaluation/StrategyEvaluatorClient";
+import { PortfolioDataFetcher } from "../broker/twsPortfolio";
+import { EvaluationRequest, EvaluationResponse } from "../evaluation/types";
+import { StrategyRepository } from "../database/repositories/StrategyRepository";
+import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHistoryRepository";
+import { OperationQueueService } from "./queue/OperationQueueService";
 
 export class StrategyLifecycleManager {
   private multiStrategyManager: MultiStrategyManager;
@@ -20,7 +20,7 @@ export class StrategyLifecycleManager {
   private strategyRepo: StrategyRepository;
   private execHistoryRepo: ExecutionHistoryRepository;
   private operationQueue: OperationQueueService;
-  private orchestrator?: any;  // Reference to orchestrator for locking
+  private orchestrator?: any; // Reference to orchestrator for locking
 
   constructor(
     manager: MultiStrategyManager,
@@ -49,7 +49,9 @@ export class StrategyLifecycleManager {
    * Evaluate strategy appropriateness
    */
   async evaluateStrategy(instance: StrategyInstance): Promise<void> {
-    console.log(`🔍 Evaluating strategy: ${instance.strategyName} for ${instance.symbol}`);
+    console.log(
+      `🔍 Evaluating strategy: ${instance.strategyName} for ${instance.symbol}`
+    );
 
     try {
       // Fetch portfolio snapshot
@@ -61,7 +63,7 @@ export class StrategyLifecycleManager {
       const recentBars = instance.getBarHistory(20);
 
       if (!state.currentBar) {
-        console.warn('No current bar available for evaluation');
+        console.warn("No current bar available for evaluation");
         return;
       }
 
@@ -97,9 +99,9 @@ export class StrategyLifecycleManager {
       console.log(`   Reason: ${response.reason}`);
 
       // Handle recommendation
-      if (response.recommendation === 'swap') {
+      if (response.recommendation === "swap") {
         await this.handleSwapRecommendation(instance, response);
-      } else if (response.recommendation === 'close') {
+      } else if (response.recommendation === "close") {
         await this.handleCloseRecommendation(instance, response);
       }
 
@@ -122,11 +124,11 @@ export class StrategyLifecycleManager {
     const state = instance.getState();
     const suggestedHash = response.suggestedStrategy
       ? this.hashString(response.suggestedStrategy.yamlContent)
-      : 'none';
+      : "none";
 
     // Enqueue swap operation for idempotency and retry
     const operationId = await this.operationQueue.enqueue({
-      operationType: 'SWAP_STRATEGY',
+      operationType: "SWAP_STRATEGY",
       targetSymbol: instance.symbol,
       strategyId: instance.strategyId,
       priority: 1, // High priority for swaps
@@ -143,7 +145,9 @@ export class StrategyLifecycleManager {
     // This prevents unnecessary lock contention when operation already completed
     if (await this.operationQueue.isCompleted(operationId)) {
       const result = await this.operationQueue.getResult(operationId);
-      console.log(`✓ Strategy swap already completed (idempotent): ${result?.newStrategyId}`);
+      console.log(
+        `✓ Strategy swap already completed (idempotent): ${result?.newStrategyId}`
+      );
       return;
     }
 
@@ -160,11 +164,17 @@ export class StrategyLifecycleManager {
       // Lock the symbol to prevent concurrent operations (distributed lock)
       // Using 5-second timeout instead of 30 seconds to fail fast on contention
       if (this.orchestrator) {
-        const lockAcquired = await this.orchestrator.lockSymbol(instance.symbol);
+        const lockAcquired = await this.orchestrator.lockSymbol(
+          instance.symbol
+        );
         if (!lockAcquired) {
-          console.warn(`⚠️  Failed to acquire lock for ${instance.symbol}. Another swap is in progress.`);
+          console.warn(
+            `⚠️  Failed to acquire lock for ${instance.symbol}. Another swap is in progress.`
+          );
           // Don't throw - mark as failed and let retry queue handle it
-          await failOperation(`Lock acquisition failed - another swap in progress`);
+          await failOperation(
+            `Lock acquisition failed - another swap in progress`
+          );
           return; // Exit gracefully instead of throwing
         }
       }
@@ -175,15 +185,15 @@ export class StrategyLifecycleManager {
       const cancelResult = await instance.cancelAllOrders();
 
       if (cancelResult.failed.length > 0) {
-        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
-        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const failedIds = cancelResult.failed.map((f) => f.orderId).join(", ");
+        const reasons = cancelResult.failed.map((f) => f.reason).join("; ");
         const errorMsg = `Cannot swap strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
         console.error(`❌ ${errorMsg}`);
 
         // Log the failed swap attempt
         await this.execHistoryRepo.logEvaluation({
           strategyId: oldStrategyId,
-          recommendation: 'SWAP',
+          recommendation: "SWAP",
           confidence: response.confidence,
           reason: `Swap aborted: ${errorMsg}`,
         });
@@ -193,18 +203,26 @@ export class StrategyLifecycleManager {
         return;
       }
 
-      console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${instance.symbol}`);
+      console.log(
+        `✓ Cancelled ${cancelResult.succeeded.length} orders for ${instance.symbol}`
+      );
 
       const positionQty = await this.getPositionQuantity(instance.symbol);
       if (positionQty !== 0) {
-        console.warn(`⚠️ Active position detected for ${instance.symbol} during swap: ${positionQty}`);
+        console.warn(
+          `⚠️ Active position detected for ${instance.symbol} during swap: ${positionQty}`
+        );
         await this.closePositionAndWait(instance, positionQty);
       }
 
       // Check for active position
-      if (state.currentState === 'MANAGING' || state.openOrders.length > 0) {
-        console.warn(`⚠️ Strategy ${instance.symbol} has active position during swap.`);
-        console.warn(`📍 Position for ${instance.symbol} may be unmanaged. Monitor manually.`);
+      if (state.currentState === "MANAGING" || state.openOrders.length > 0) {
+        console.warn(
+          `⚠️ Strategy ${instance.symbol} has active position during swap.`
+        );
+        console.warn(
+          `📍 Position for ${instance.symbol} may be unmanaged. Monitor manually.`
+        );
       }
 
       // Deploy new strategy if suggested
@@ -213,7 +231,7 @@ export class StrategyLifecycleManager {
         console.error(`❌ ${errorMsg}`);
         await this.execHistoryRepo.logEvaluation({
           strategyId: oldStrategyId,
-          recommendation: 'SWAP',
+          recommendation: "SWAP",
           confidence: response.confidence,
           reason: `Swap aborted: ${errorMsg}`,
         });
@@ -224,7 +242,7 @@ export class StrategyLifecycleManager {
       // Log evaluation to database
       const evaluation = await this.execHistoryRepo.logEvaluation({
         strategyId: oldStrategyId,
-        recommendation: 'SWAP',
+        recommendation: "SWAP",
         confidence: response.confidence,
         reason: response.reason,
         suggestedYaml: response.suggestedStrategy.yamlContent,
@@ -239,19 +257,26 @@ export class StrategyLifecycleManager {
         name: response.suggestedStrategy.name,
         timeframe: instance.getTimeframe(),
         yamlContent: response.suggestedStrategy.yamlContent,
-        changeReason: 'Auto-swap by evaluator',
+        changeReason: "Auto-swap by evaluator",
       });
 
       console.log(`✅ Created new strategy in database: ${newStrategy.id}`);
 
       try {
         // Swap in MultiStrategyManager (removes old, loads new from database)
-        await this.multiStrategyManager.swapStrategyById(instance.symbol, newStrategy.id, {
-          skipOrderCancel: true,
-        });
+        await this.multiStrategyManager.swapStrategyById(
+          instance.symbol,
+          newStrategy.id,
+          {
+            skipOrderCancel: true,
+          }
+        );
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`Failed to swap runtime strategy for ${instance.symbol}:`, error);
+        console.error(
+          `Failed to swap runtime strategy for ${instance.symbol}:`,
+          error
+        );
         await this.strategyRepo.markFailed(newStrategy.id, errorMsg);
         await failOperation(errorMsg);
         return;
@@ -264,7 +289,10 @@ export class StrategyLifecycleManager {
       await this.strategyRepo.close(oldStrategyId, response.reason);
 
       // Mark evaluation action as taken
-      await this.execHistoryRepo.markActionTaken(evaluation.id, 'Swapped successfully');
+      await this.execHistoryRepo.markActionTaken(
+        evaluation.id,
+        "Swapped successfully"
+      );
 
       console.log(`✓ Strategy swap complete for ${instance.symbol}`);
 
@@ -300,7 +328,7 @@ export class StrategyLifecycleManager {
 
     // Enqueue close operation for idempotency and retry
     const operationId = await this.operationQueue.enqueue({
-      operationType: 'CLOSE_STRATEGY',
+      operationType: "CLOSE_STRATEGY",
       targetSymbol: instance.symbol,
       strategyId: instance.strategyId,
       priority: 2, // High priority for closes
@@ -322,13 +350,13 @@ export class StrategyLifecycleManager {
       // Cancel all open orders
       const cancelResult = await instance.cancelAllOrders();
       if (cancelResult.failed.length > 0) {
-        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
-        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const failedIds = cancelResult.failed.map((f) => f.orderId).join(", ");
+        const reasons = cancelResult.failed.map((f) => f.reason).join("; ");
         const errorMsg = `Cannot close strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
         console.error(`❌ ${errorMsg}`);
         await this.execHistoryRepo.logEvaluation({
           strategyId: instance.strategyId,
-          recommendation: 'CLOSE',
+          recommendation: "CLOSE",
           confidence: response.confidence,
           reason: `Close aborted: ${errorMsg}`,
         });
@@ -338,14 +366,16 @@ export class StrategyLifecycleManager {
 
       const positionQty = await this.getPositionQuantity(instance.symbol);
       if (positionQty !== 0) {
-        console.warn(`⚠️ Active position detected for ${instance.symbol} during close: ${positionQty}`);
+        console.warn(
+          `⚠️ Active position detected for ${instance.symbol} during close: ${positionQty}`
+        );
         await this.closePositionAndWait(instance, positionQty);
       }
 
       // Log evaluation to database after successful cancellation
       await this.execHistoryRepo.logEvaluation({
         strategyId: instance.strategyId,
-        recommendation: 'CLOSE',
+        recommendation: "CLOSE",
         confidence: response.confidence,
         reason: response.reason,
       });
@@ -355,7 +385,10 @@ export class StrategyLifecycleManager {
       console.log(`📦 Strategy closed in database: ${instance.strategyId}`);
 
       // Log deactivation
-      await this.execHistoryRepo.logDeactivation(instance.strategyId, response.reason);
+      await this.execHistoryRepo.logDeactivation(
+        instance.strategyId,
+        response.reason
+      );
 
       // Remove from MultiStrategyManager
       await this.multiStrategyManager.removeStrategy(instance.symbol);
@@ -383,7 +416,7 @@ export class StrategyLifecycleManager {
     let hash = 0;
     for (let i = 0; i < value.length; i++) {
       const char = value.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
+      hash = (hash << 5) - hash + char;
       hash |= 0;
     }
     return Math.abs(hash);
@@ -391,7 +424,7 @@ export class StrategyLifecycleManager {
 
   private async getPositionQuantity(symbol: string): Promise<number> {
     const portfolio = await this.portfolioFetcher.getPortfolioSnapshot(true);
-    const position = portfolio.positions.find(p => p.symbol === symbol);
+    const position = portfolio.positions.find((p) => p.symbol === symbol);
     return position ? position.quantity : 0;
   }
 
@@ -414,6 +447,13 @@ export class StrategyLifecycleManager {
 
     await instance.closePositionMarket(positionQty);
 
+    if (!this.isMarketOpenNow()) {
+      console.warn(
+        `⚠️  Market closed - skipping position close wait for ${instance.symbol}`
+      );
+      return;
+    }
+
     const timeoutMs = 15000;
     const pollIntervalMs = 500;
     const start = Date.now();
@@ -427,10 +467,46 @@ export class StrategyLifecycleManager {
       await this.sleep(pollIntervalMs);
     }
 
-    throw new Error(`Timeout waiting for position to close for ${instance.symbol}`);
+    throw new Error(
+      `Timeout waiting for position to close for ${instance.symbol}`
+    );
   }
 
   private async sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isMarketOpenNow(): boolean {
+    try {
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        weekday: "short",
+        hour: "numeric",
+        minute: "numeric",
+        hour12: false,
+      });
+
+      const parts = formatter.formatToParts(new Date());
+      const weekday = parts.find((p) => p.type === "weekday")?.value || "";
+      const hour = parseInt(
+        parts.find((p) => p.type === "hour")?.value || "0",
+        10
+      );
+      const minute = parseInt(
+        parts.find((p) => p.type === "minute")?.value || "0",
+        10
+      );
+
+      if (["Sat", "Sun"].includes(weekday)) {
+        return false;
+      }
+
+      const minutes = hour * 60 + minute;
+      const open = 9 * 60 + 30;
+      const close = 16 * 60;
+      return minutes >= open && minutes < close;
+    } catch {
+      return false;
+    }
   }
 }
