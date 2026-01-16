@@ -16,7 +16,9 @@ export class SystemLogRepository {
     return this.prisma.systemLog.create({
       data: {
         ...params,
-        metadata: (params.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+        metadata: (params.metadata ?? undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
       },
     });
   }

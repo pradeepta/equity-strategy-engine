@@ -310,7 +310,10 @@ export class StrategyLifecycleManager {
 
       // Close old strategy in database after successful swap
       await this.strategyRepo.close(oldStrategyId, response.reason);
-      await this.execHistoryRepo.logDeactivation(oldStrategyId, response.reason);
+      await this.execHistoryRepo.logDeactivation(
+        oldStrategyId,
+        response.reason
+      );
 
       // Audit swap execution
       await this.execHistoryRepo.logEvent({
@@ -494,6 +497,17 @@ export class StrategyLifecycleManager {
     instance: StrategyInstance,
     positionQty: number
   ): Promise<void> {
+    const existingExit = await this.orderRepo.findOpenMarketExit(
+      instance.strategyId,
+      instance.symbol
+    );
+    if (existingExit) {
+      console.warn(
+        `⚠️ Existing market-exit order already open for ${instance.symbol} (${existingExit.id}); skipping duplicate exit`
+      );
+      return;
+    }
+
     if (this.orchestrator?.config?.brokerEnv?.dryRun) {
       console.warn(
         `⚠️  Dry-run mode active - skipping market exit for ${instance.symbol} (position ${positionQty})`
