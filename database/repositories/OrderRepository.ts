@@ -3,7 +3,7 @@
  * Handles all database operations for orders and fills
  */
 
-import { PrismaClient, Order, OrderStatus, OrderSide, OrderType } from '@prisma/client';
+import { PrismaClient, Order, OrderStatus, OrderSide, OrderType, Prisma } from '@prisma/client';
 
 export class OrderRepository {
   constructor(private prisma: PrismaClient) {}
@@ -26,6 +26,31 @@ export class OrderRepository {
   }): Promise<Order> {
     return this.prisma.order.create({
       data: params,
+    });
+  }
+
+  /**
+   * Create order audit log entry
+   */
+  async createAuditLog(params: {
+    orderId?: string;
+    brokerOrderId?: string;
+    strategyId: string;
+    eventType: 'SUBMITTED' | 'CANCELLED' | 'FILLED' | 'PARTIALLY_FILLED' | 'REJECTED' | 'RECONCILED' | 'ORPHANED' | 'MISSING';
+    oldStatus?: 'PENDING' | 'SUBMITTED' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED';
+    newStatus?: 'PENDING' | 'SUBMITTED' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED';
+    quantity?: number;
+    price?: number;
+    errorMessage?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    await this.prisma.orderAuditLog.create({
+      data: {
+        ...params,
+        quantity: params.quantity,
+        price: params.price,
+        metadata: (params.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+      },
     });
   }
 

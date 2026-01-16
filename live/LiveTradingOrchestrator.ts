@@ -56,6 +56,7 @@ export class LiveTradingOrchestrator {
     // Get repositories
     const strategyRepo = this.repositoryFactory.getStrategyRepo();
     const execHistoryRepo = this.repositoryFactory.getExecutionHistoryRepo();
+    const orderRepo = this.repositoryFactory.getOrderRepo();
 
     // Initialize operation queue service
     this.operationQueue = new OperationQueueService(this.repositoryFactory.getPrisma());
@@ -98,6 +99,7 @@ export class LiveTradingOrchestrator {
       this.portfolioFetcher,
       strategyRepo,
       execHistoryRepo,
+      orderRepo,
       this.operationQueue
     );
 

@@ -11,6 +11,7 @@ import { PortfolioDataFetcher } from "../broker/twsPortfolio";
 import { EvaluationRequest, EvaluationResponse } from "../evaluation/types";
 import { StrategyRepository } from "../database/repositories/StrategyRepository";
 import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHistoryRepository";
+import { OrderRepository } from "../database/repositories/OrderRepository";
 import { OperationQueueService } from "./queue/OperationQueueService";
 
 export class StrategyLifecycleManager {
@@ -19,6 +20,7 @@ export class StrategyLifecycleManager {
   private portfolioFetcher: PortfolioDataFetcher;
   private strategyRepo: StrategyRepository;
   private execHistoryRepo: ExecutionHistoryRepository;
+  private orderRepo: OrderRepository;
   private operationQueue: OperationQueueService;
   private orchestrator?: any; // Reference to orchestrator for locking
 
@@ -28,6 +30,7 @@ export class StrategyLifecycleManager {
     portfolio: PortfolioDataFetcher,
     strategyRepo: StrategyRepository,
     execHistoryRepo: ExecutionHistoryRepository,
+    orderRepo: OrderRepository,
     operationQueue: OperationQueueService
   ) {
     this.multiStrategyManager = manager;
@@ -35,6 +38,7 @@ export class StrategyLifecycleManager {
     this.portfolioFetcher = portfolio;
     this.strategyRepo = strategyRepo;
     this.execHistoryRepo = execHistoryRepo;
+    this.orderRepo = orderRepo;
     this.operationQueue = operationQueue;
   }
 
@@ -445,7 +449,36 @@ export class StrategyLifecycleManager {
       );
     }
 
-    await instance.closePositionMarket(positionQty);
+    const exitOrder = await instance.closePositionMarket(positionQty);
+
+    try {
+      const dbOrder = await this.orderRepo.create({
+        strategyId: instance.strategyId,
+        brokerOrderId: exitOrder.id,
+        planId: exitOrder.planId || `market-exit-${Date.now()}`,
+        symbol: exitOrder.symbol,
+        side: exitOrder.side === "buy" ? "BUY" : "SELL",
+        qty: exitOrder.qty,
+        type: "MARKET",
+      });
+      await this.orderRepo.updateStatus(dbOrder.id, "SUBMITTED");
+      await this.orderRepo.createAuditLog({
+        orderId: dbOrder.id,
+        brokerOrderId: exitOrder.id,
+        strategyId: instance.strategyId,
+        eventType: "SUBMITTED",
+        newStatus: "SUBMITTED",
+        quantity: exitOrder.qty,
+        metadata: {
+          source: "swap_market_exit",
+        },
+      });
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to record market exit in DB for ${instance.symbol}:`,
+        error
+      );
+    }
 
     if (!this.isMarketOpenNow()) {
       console.warn(
