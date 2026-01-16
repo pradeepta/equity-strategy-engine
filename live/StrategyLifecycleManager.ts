@@ -11,6 +11,7 @@ import { PortfolioDataFetcher } from '../broker/twsPortfolio';
 import { EvaluationRequest, EvaluationResponse } from '../evaluation/types';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
 import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
+import { OperationQueueService } from './queue/OperationQueueService';
 
 export class StrategyLifecycleManager {
   private multiStrategyManager: MultiStrategyManager;
@@ -18,6 +19,7 @@ export class StrategyLifecycleManager {
   private portfolioFetcher: PortfolioDataFetcher;
   private strategyRepo: StrategyRepository;
   private execHistoryRepo: ExecutionHistoryRepository;
+  private operationQueue: OperationQueueService;
   private orchestrator?: any;  // Reference to orchestrator for locking
 
   constructor(
@@ -25,13 +27,15 @@ export class StrategyLifecycleManager {
     evaluator: StrategyEvaluatorClient,
     portfolio: PortfolioDataFetcher,
     strategyRepo: StrategyRepository,
-    execHistoryRepo: ExecutionHistoryRepository
+    execHistoryRepo: ExecutionHistoryRepository,
+    operationQueue: OperationQueueService
   ) {
     this.multiStrategyManager = manager;
     this.evaluatorClient = evaluator;
     this.portfolioFetcher = portfolio;
     this.strategyRepo = strategyRepo;
     this.execHistoryRepo = execHistoryRepo;
+    this.operationQueue = operationQueue;
   }
 
   /**
@@ -115,10 +119,35 @@ export class StrategyLifecycleManager {
   ): Promise<void> {
     console.log(`🔄 Swapping strategy for ${instance.symbol}...`);
 
+    // Enqueue swap operation for idempotency and retry
+    const operationId = await this.operationQueue.enqueue({
+      operationType: 'SWAP_STRATEGY',
+      targetSymbol: instance.symbol,
+      strategyId: instance.strategyId,
+      priority: 1, // High priority for swaps
+      payload: {
+        oldStrategyId: instance.strategyId,
+        confidence: response.confidence,
+        reason: response.reason,
+        suggestedStrategy: response.suggestedStrategy,
+      },
+    });
+
+    // Check if already completed (idempotency)
+    if (await this.operationQueue.isCompleted(operationId)) {
+      const result = await this.operationQueue.getResult(operationId);
+      console.log(`✓ Strategy swap already completed (idempotent): ${result?.newStrategyId}`);
+      return;
+    }
+
     try {
-      // Lock the symbol to prevent concurrent operations
+      // Lock the symbol to prevent concurrent operations (distributed lock)
       if (this.orchestrator) {
-        this.orchestrator.lockSymbol(instance.symbol);
+        const lockAcquired = await this.orchestrator.lockSymbol(instance.symbol);
+        if (!lockAcquired) {
+          console.warn(`⚠️  Failed to acquire lock for ${instance.symbol}. Another process may be swapping this symbol.`);
+          throw new Error(`Failed to acquire lock for ${instance.symbol}`);
+        }
       }
 
       const oldStrategyId = instance.strategyId;
@@ -140,6 +169,8 @@ export class StrategyLifecycleManager {
           reason: `Swap aborted: ${errorMsg}`,
         });
 
+        // Mark operation as failed
+        await this.operationQueue.fail(operationId, errorMsg);
         throw new Error(errorMsg);
       }
 
@@ -190,13 +221,23 @@ export class StrategyLifecycleManager {
         await this.multiStrategyManager.swapStrategyById(instance.symbol, newStrategy.id);
 
         console.log(`✓ Strategy swap complete for ${instance.symbol}`);
+
+        // Mark operation as completed
+        await this.operationQueue.complete(operationId, {
+          newStrategyId: newStrategy.id,
+          oldStrategyId,
+          symbol: instance.symbol,
+        });
       }
     } catch (error) {
       console.error(`Failed to swap strategy for ${instance.symbol}:`, error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await this.operationQueue.fail(operationId, errorMsg);
+      throw error;
     } finally {
       // Always unlock the symbol, even if swap failed
       if (this.orchestrator) {
-        this.orchestrator.unlockSymbol(instance.symbol);
+        await this.orchestrator.unlockSymbol(instance.symbol);
       }
     }
   }
@@ -209,6 +250,25 @@ export class StrategyLifecycleManager {
     response: EvaluationResponse
   ): Promise<void> {
     console.log(`❌ Closing strategy for ${instance.symbol}...`);
+
+    // Enqueue close operation for idempotency and retry
+    const operationId = await this.operationQueue.enqueue({
+      operationType: 'CLOSE_STRATEGY',
+      targetSymbol: instance.symbol,
+      strategyId: instance.strategyId,
+      priority: 2, // High priority for closes
+      payload: {
+        strategyId: instance.strategyId,
+        confidence: response.confidence,
+        reason: response.reason,
+      },
+    });
+
+    // Check if already completed (idempotency)
+    if (await this.operationQueue.isCompleted(operationId)) {
+      console.log(`✓ Strategy close already completed (idempotent)`);
+      return;
+    }
 
     try {
       // Log evaluation to database
@@ -233,8 +293,18 @@ export class StrategyLifecycleManager {
       await this.multiStrategyManager.removeStrategy(instance.symbol);
 
       console.log(`✓ Strategy closed for ${instance.symbol}`);
+
+      // Mark operation as completed
+      await this.operationQueue.complete(operationId, {
+        strategyId: instance.strategyId,
+        symbol: instance.symbol,
+        closedAt: new Date().toISOString(),
+      });
     } catch (error) {
       console.error(`Failed to close strategy for ${instance.symbol}:`, error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await this.operationQueue.fail(operationId, errorMsg);
+      throw error;
     }
   }
 }

@@ -16,6 +16,7 @@ interface IBOrder {
   limitPrice?: number;
   stopPrice?: number;
   status: string;
+  rejectionReason?: string;
 }
 
 interface BracketOrderSet {
@@ -37,6 +38,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
   private pendingOrders: Map<number, IBOrder> = new Map();
   private bracketOrders: Map<number, BracketOrderSet> = new Map(); // Maps parent order ID to bracket set
   private orderIdReady: boolean = false; // Track if we've received nextValidId
+  private orderRejections: Map<number, { code: number; message: string }> = new Map(); // Track order rejections
+  private orderStatusCallbacks: Map<number, Array<(status: string) => void>> = new Map(); // Callbacks for status changes
 
   private host: string;
   private port: number;
@@ -74,8 +77,23 @@ export class TwsAdapter extends BaseBrokerAdapter {
       this.client.on('error', (err: Error, code: number, reqId: number) => {
         // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2104, 2106, 2107, 2108, 2158];
+
+        // Order rejection error codes
+        const orderRejectionCodes = [201, 202, 104, 110, 103, 105, 161, 162, 200, 203, 399];
+
         if (!this.connected && code === 502) {
           reject(new Error(`Cannot connect to TWS at ${this.host}:${this.port}. Make sure TWS/IB Gateway is running.`));
+        } else if (orderRejectionCodes.includes(code)) {
+          // Track order-specific rejection
+          console.error(`🚨 ORDER REJECTION [${code}]: ${err.message} (orderId: ${reqId})`);
+          this.orderRejections.set(reqId, { code, message: err.message });
+
+          // Update order status if we have it tracked
+          const order = this.pendingOrders.get(reqId);
+          if (order) {
+            order.status = 'Rejected';
+            order.rejectionReason = `[${code}] ${err.message}`;
+          }
         } else if (!infoMessages.includes(code)) {
           console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
         }
@@ -87,11 +105,32 @@ export class TwsAdapter extends BaseBrokerAdapter {
         console.log(`✅ TWS assigned next valid order ID: ${orderId}`);
       });
 
-      this.client.on('orderStatus', (orderId: number, status: string, filled: number, remaining: number, avgFillPrice: number) => {
-        console.log(`Order ${orderId} status: ${status} (filled: ${filled}, remaining: ${remaining}, avg: ${avgFillPrice})`);
+      this.client.on('orderStatus', (orderId: number, status: string, filled: number, remaining: number, avgFillPrice: number, permId: number, parentId: number, lastFillPrice: number, clientId: number, whyHeld: string) => {
+        const timestamp = new Date().toISOString();
+        const statusEmoji = status === 'Filled' ? '✅' : status === 'Cancelled' ? '❌' : status === 'Submitted' ? '📤' : '📊';
+        console.log(`[${timestamp}] ${statusEmoji} Order ${orderId} status: ${status} (filled: ${filled}, remaining: ${remaining}, avg: ${avgFillPrice}${whyHeld ? `, whyHeld: ${whyHeld}` : ''})`);
+
         const order = this.pendingOrders.get(orderId);
         if (order) {
           order.status = status;
+
+          // Capture rejection reason if status indicates rejection
+          if ((status === 'Cancelled' || status === 'Inactive') && whyHeld) {
+            order.rejectionReason = whyHeld;
+            console.error(`🚨 Order ${orderId} rejected/cancelled: ${whyHeld}`);
+          }
+
+          // Check if we have additional rejection info from error handler
+          const rejection = this.orderRejections.get(orderId);
+          if (rejection && !order.rejectionReason) {
+            order.rejectionReason = rejection.message;
+          }
+        }
+
+        // Trigger any status callbacks registered for this order
+        const callbacks = this.orderStatusCallbacks.get(orderId);
+        if (callbacks) {
+          callbacks.forEach(cb => cb(status));
         }
       });
 
@@ -200,7 +239,21 @@ export class TwsAdapter extends BaseBrokerAdapter {
       }
     }
 
-    console.log('='.repeat(60) + '\n');
+    console.log('='.repeat(60));
+
+    // Report any rejections after a delay to capture async rejection messages
+    setTimeout(() => {
+      const rejected = this.getRejectedOrders();
+      if (rejected.length > 0) {
+        console.log('\n⚠️  ORDER REJECTIONS DETECTED:');
+        console.log('='.repeat(60));
+        for (const rej of rejected) {
+          console.error(`   ❌ Order ${rej.orderId} (${rej.symbol}): ${rej.reason}`);
+        }
+        console.log('='.repeat(60) + '\n');
+      }
+    }, 2000);
+
     return submittedOrders;
   }
 
@@ -255,6 +308,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
       totalQuantity: bracket.entryOrder.qty,
       lmtPrice: plan.targetEntryPrice,
       transmit: false, // Don't transmit parent until children are attached
+      outsideRth: true, // Allow order to be active outside regular trading hours
+      tif: 'GTC', // Good Till Cancel - required for after-hours trading
     };
 
     // Take profit order
@@ -265,6 +320,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
       lmtPrice: bracket.takeProfit.limitPrice,
       parentId: parentOrderId,
       transmit: false,
+      outsideRth: true, // Allow order to be active outside regular trading hours
+      tif: 'GTC', // Good Till Cancel - required for after-hours trading
     };
 
     // Stop loss order
@@ -275,17 +332,19 @@ export class TwsAdapter extends BaseBrokerAdapter {
       auxPrice: bracket.stopLoss.stopPrice || plan.stopPrice, // FIXED: Use stopPrice field
       parentId: parentOrderId,
       transmit: true, // Transmit entire bracket when stop loss is placed
+      outsideRth: true, // Allow stop order to trigger outside regular trading hours
+      tif: 'GTC', // Good Till Cancel - required for after-hours trading
     };
 
     // Log detailed order information
     console.log(`\n🔵 PLACING BRACKET for ${plan.symbol}:`);
     console.log(`   📋 clientId=${this.clientId}, permId will be assigned by TWS`);
     console.log(`   📊 Parent Order ID: ${parentOrderId}`);
-    console.log(`      action=${parentOrder.action}, qty=${parentOrder.totalQuantity}, lmtPrice=$${plan.targetEntryPrice.toFixed(2)}, transmit=${parentOrder.transmit}`);
+    console.log(`      action=${parentOrder.action}, qty=${parentOrder.totalQuantity}, lmtPrice=$${plan.targetEntryPrice.toFixed(2)}, transmit=${parentOrder.transmit}, outsideRth=${parentOrder.outsideRth}, tif=${parentOrder.tif}`);
     console.log(`   📊 Take Profit Order ID: ${takeProfitOrderId}`);
-    console.log(`      action=${takeProfitOrder.action}, qty=${takeProfitOrder.totalQuantity}, lmtPrice=$${bracket.takeProfit.limitPrice?.toFixed(2)}, parentId=${takeProfitOrder.parentId}, transmit=${takeProfitOrder.transmit}`);
+    console.log(`      action=${takeProfitOrder.action}, qty=${takeProfitOrder.totalQuantity}, lmtPrice=$${bracket.takeProfit.limitPrice?.toFixed(2)}, parentId=${takeProfitOrder.parentId}, transmit=${takeProfitOrder.transmit}, outsideRth=${takeProfitOrder.outsideRth}, tif=${takeProfitOrder.tif}`);
     console.log(`   📊 Stop Loss Order ID: ${stopLossOrderId}`);
-    console.log(`      action=${stopLossOrder.action}, qty=${stopLossOrder.totalQuantity}, auxPrice=$${(bracket.stopLoss.stopPrice || plan.stopPrice).toFixed(2)}, parentId=${stopLossOrder.parentId}, transmit=${stopLossOrder.transmit}`);
+    console.log(`      action=${stopLossOrder.action}, qty=${stopLossOrder.totalQuantity}, auxPrice=$${(bracket.stopLoss.stopPrice || plan.stopPrice).toFixed(2)}, parentId=${stopLossOrder.parentId}, transmit=${stopLossOrder.transmit}, outsideRth=${stopLossOrder.outsideRth}, tif=${stopLossOrder.tif}`);
 
     // Place orders
     this.client.placeOrder(parentOrderId, contract, parentOrder);
@@ -352,6 +411,113 @@ export class TwsAdapter extends BaseBrokerAdapter {
   }
 
   /**
+   * Wait for an order to reach a specific status
+   * @param orderId Order ID to wait for
+   * @param targetStatus Status to wait for (e.g., 'Cancelled', 'Filled')
+   * @param timeoutMs Maximum time to wait in milliseconds
+   * @returns true if status reached, false if timeout
+   */
+  private async waitForOrderStatus(
+    orderId: number,
+    targetStatus: string,
+    timeoutMs: number = 5000
+  ): Promise<boolean> {
+    const order = this.pendingOrders.get(orderId);
+
+    // Check if already at target status
+    if (order && order.status === targetStatus) {
+      return true;
+    }
+
+    // Wait for status change
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        // Remove callback on timeout
+        const callbacks = this.orderStatusCallbacks.get(orderId);
+        if (callbacks) {
+          const index = callbacks.indexOf(statusCallback);
+          if (index > -1) callbacks.splice(index, 1);
+        }
+        resolve(false);
+      }, timeoutMs);
+
+      const statusCallback = (status: string) => {
+        if (status === targetStatus) {
+          clearTimeout(timeout);
+          // Remove this callback
+          const callbacks = this.orderStatusCallbacks.get(orderId);
+          if (callbacks) {
+            const index = callbacks.indexOf(statusCallback);
+            if (index > -1) callbacks.splice(index, 1);
+          }
+          resolve(true);
+        }
+      };
+
+      // Register callback
+      if (!this.orderStatusCallbacks.has(orderId)) {
+        this.orderStatusCallbacks.set(orderId, []);
+      }
+      this.orderStatusCallbacks.get(orderId)!.push(statusCallback);
+    });
+  }
+
+  /**
+   * Wait for a bracket order to be fully cancelled (all three legs)
+   * @param parentOrderId Parent order ID
+   * @param timeoutMs Maximum time to wait
+   * @returns true if all cancelled, false if timeout or partial failure
+   */
+  private async waitForBracketCancellation(
+    parentOrderId: number,
+    timeoutMs: number = 10000
+  ): Promise<boolean> {
+    const bracketSet = this.bracketOrders.get(parentOrderId);
+
+    if (!bracketSet) {
+      // Single order, not a bracket
+      return await this.waitForOrderStatus(parentOrderId, 'Cancelled', timeoutMs);
+    }
+
+    console.log(`⏳ Waiting for bracket cancellation confirmation (timeout: ${timeoutMs}ms)...`);
+    const startTime = Date.now();
+
+    // Wait for all three legs to be cancelled
+    const parentCancelled = await this.waitForOrderStatus(
+      bracketSet.parentOrderId,
+      'Cancelled',
+      timeoutMs
+    );
+
+    const remainingTime = timeoutMs - (Date.now() - startTime);
+    const tpCancelled = await this.waitForOrderStatus(
+      bracketSet.takeProfitOrderId,
+      'Cancelled',
+      Math.max(1000, remainingTime)
+    );
+
+    const remainingTime2 = timeoutMs - (Date.now() - startTime);
+    const slCancelled = await this.waitForOrderStatus(
+      bracketSet.stopLossOrderId,
+      'Cancelled',
+      Math.max(1000, remainingTime2)
+    );
+
+    const allCancelled = parentCancelled && tpCancelled && slCancelled;
+
+    if (allCancelled) {
+      console.log(`✅ Bracket fully cancelled: ${bracketSet.parentOrderId}, ${bracketSet.takeProfitOrderId}, ${bracketSet.stopLossOrderId}`);
+    } else {
+      console.error(`⚠️  Bracket cancellation incomplete after ${Date.now() - startTime}ms:`);
+      console.error(`   Parent ${bracketSet.parentOrderId}: ${parentCancelled ? '✓' : '✗'}`);
+      console.error(`   TakeProfit ${bracketSet.takeProfitOrderId}: ${tpCancelled ? '✓' : '✗'}`);
+      console.error(`   StopLoss ${bracketSet.stopLossOrderId}: ${slCancelled ? '✓' : '✗'}`);
+    }
+
+    return allCancelled;
+  }
+
+  /**
    * Cancel a bracket order (parent + take profit + stop loss)
    */
   private async cancelBracketOrder(parentOrderId: number): Promise<void> {
@@ -391,7 +557,9 @@ export class TwsAdapter extends BaseBrokerAdapter {
   }
 
   /**
-   * Cancel open entries
+   * Cancel open entries with TWO-PHASE verification
+   * Phase A: Send cancellation requests and WAIT for confirmation
+   * Phase B: Only return success after all orders are confirmed cancelled
    */
   async cancelOpenEntries(
     symbol: string,
@@ -399,7 +567,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     env: BrokerEnvironment
   ): Promise<CancellationResult> {
     console.log(`\n${'='.repeat(70)}`);
-    console.log(`TWS: CANCELLING ${orders.length} ORDER(S) FOR ${symbol}`);
+    console.log(`TWS: TWO-PHASE CANCELLATION FOR ${orders.length} ORDER(S) - ${symbol}`);
     console.log(`${'='.repeat(70)}`);
 
     const result: CancellationResult = {
@@ -411,55 +579,84 @@ export class TwsAdapter extends BaseBrokerAdapter {
       await this.connect();
     }
 
+    // Track order IDs that need cancellation verification
+    const ordersToVerify: Array<{ originalId: string; twsOrderId: number }> = [];
+
+    // PHASE A: Send cancellation requests
+    console.log('\n📤 PHASE A: Sending cancellation requests...');
     for (const order of orders) {
+      if (env.dryRun) {
+        console.log(`→ DRY RUN: Would cancel order ${order.id}`);
+        result.succeeded.push(order.id);
+        continue;
+      }
 
-      if (!env.dryRun) {
-        // Try direct lookup first (order.id is already TWS ID)
-        const orderIdNum = parseInt(order.id);
-        if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
-          try {
-            await this.cancelBracketOrder(orderIdNum);
-            console.log(`✓ Cancelled TWS bracket order ${orderIdNum}`);
-            result.succeeded.push(order.id);
-            continue;
-          } catch (e) {
-            const err = e as Error;
-            const reason = `Direct cancellation failed: ${err.message}`;
-            console.error(`✗ ${reason}`);
-            result.failed.push({ orderId: order.id, reason });
-            // FAIL FAST: Throw immediately on first failure
-            throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
-          }
-        }
-
-        // Try mapping lookup (order.id is original ID)
-        const ibOrderId = this.orderIdMap.get(order.id);
-        if (ibOrderId !== undefined) {
-          try {
-            await this.cancelBracketOrder(ibOrderId);
-            console.log(`✓ Cancelled bracket (mapped ${order.id} -> ${ibOrderId})`);
-            this.orderIdMap.delete(order.id);
-            result.succeeded.push(order.id);
-          } catch (e) {
-            const err = e as Error;
-            const reason = `Mapped cancellation failed: ${err.message}`;
-            console.error(`✗ ${reason}`);
-            result.failed.push({ orderId: order.id, reason });
-            // FAIL FAST: Throw immediately on first failure
-            throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
-          }
-        } else {
-          // Order not found - this is a failure condition
-          const reason = 'Order not found in TWS (not in pendingOrders or orderIdMap)';
-          console.error(`✗ Order ${order.id}: ${reason}`);
+      // Try direct lookup first (order.id is already TWS ID)
+      const orderIdNum = parseInt(order.id);
+      if (!isNaN(orderIdNum) && this.pendingOrders.has(orderIdNum)) {
+        try {
+          await this.cancelBracketOrder(orderIdNum);
+          console.log(`✓ Sent cancellation for TWS order ${orderIdNum}`);
+          ordersToVerify.push({ originalId: order.id, twsOrderId: orderIdNum });
+        } catch (e) {
+          const err = e as Error;
+          const reason = `Direct cancellation failed: ${err.message}`;
+          console.error(`✗ ${reason}`);
           result.failed.push({ orderId: order.id, reason });
-          // FAIL FAST: Throw immediately when order not found
+          // FAIL FAST: Throw immediately on first failure
+          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
+        }
+        continue;
+      }
+
+      // Try mapping lookup (order.id is original ID)
+      const ibOrderId = this.orderIdMap.get(order.id);
+      if (ibOrderId !== undefined) {
+        try {
+          await this.cancelBracketOrder(ibOrderId);
+          console.log(`✓ Sent cancellation for mapped order ${order.id} -> ${ibOrderId}`);
+          ordersToVerify.push({ originalId: order.id, twsOrderId: ibOrderId });
+        } catch (e) {
+          const err = e as Error;
+          const reason = `Mapped cancellation failed: ${err.message}`;
+          console.error(`✗ ${reason}`);
+          result.failed.push({ orderId: order.id, reason });
+          // FAIL FAST: Throw immediately on first failure
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       } else {
-        console.log('→ DRY RUN: Would cancel bracket order');
-        result.succeeded.push(order.id);
+        // Order not found - this is a failure condition
+        const reason = 'Order not found in TWS (not in pendingOrders or orderIdMap)';
+        console.error(`✗ Order ${order.id}: ${reason}`);
+        result.failed.push({ orderId: order.id, reason });
+        // FAIL FAST: Throw immediately when order not found
+        throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
       }
+    }
+
+    // PHASE B: Wait for cancellation confirmation
+    if (ordersToVerify.length > 0 && !env.dryRun) {
+      console.log(`\n⏳ PHASE B: Waiting for cancellation confirmation (${ordersToVerify.length} bracket(s))...`);
+      const verificationStartTime = Date.now();
+
+      for (const { originalId, twsOrderId } of ordersToVerify) {
+        const verified = await this.waitForBracketCancellation(twsOrderId, 10000);
+
+        if (verified) {
+          console.log(`✅ Verified cancellation: ${originalId} (TWS ${twsOrderId})`);
+          result.succeeded.push(originalId);
+          this.orderIdMap.delete(originalId);
+        } else {
+          const reason = 'Cancellation timeout - order may still be active';
+          console.error(`⚠️  ${originalId} (TWS ${twsOrderId}): ${reason}`);
+          result.failed.push({ orderId: originalId, reason });
+          // FAIL FAST: Don't proceed if cancellation wasn't confirmed
+          throw new Error(`Failed to verify cancellation of order ${originalId}: ${reason}`);
+        }
+      }
+
+      const verificationTime = Date.now() - verificationStartTime;
+      console.log(`\n✅ Phase B complete: All ${ordersToVerify.length} bracket(s) verified cancelled in ${verificationTime}ms`);
     }
 
     console.log(`\n${'='.repeat(70)}`);
@@ -532,6 +729,32 @@ export class TwsAdapter extends BaseBrokerAdapter {
     };
 
     return statusMap[twsStatus] || 'pending';
+  }
+
+  /**
+   * Get rejection details for an order
+   */
+  getOrderRejectionDetails(orderId: number): { code: number; message: string } | undefined {
+    return this.orderRejections.get(orderId);
+  }
+
+  /**
+   * Get all rejected orders with details
+   */
+  getRejectedOrders(): Array<{ orderId: number; symbol: string; reason: string }> {
+    const rejected: Array<{ orderId: number; symbol: string; reason: string }> = [];
+
+    for (const [orderId, order] of this.pendingOrders.entries()) {
+      if (order.status === 'Rejected' || order.status === 'Cancelled' || order.status === 'Inactive') {
+        rejected.push({
+          orderId,
+          symbol: order.symbol,
+          reason: order.rejectionReason || 'Unknown reason',
+        });
+      }
+    }
+
+    return rejected;
   }
 
   /**

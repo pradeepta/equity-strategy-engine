@@ -13,6 +13,10 @@ import { BaseBrokerAdapter } from "../broker/broker";
 import { BrokerEnvironment } from "../spec/types";
 import { RepositoryFactory } from "../database/RepositoryFactory";
 import { Strategy } from "@prisma/client";
+import { OperationQueueService } from "./queue/OperationQueueService";
+import { DistributedLockService } from "./locking/DistributedLockService";
+import { BrokerReconciliationService } from "./reconciliation/BrokerReconciliationService";
+import { OrderAlertService } from "./alerts/OrderAlertService";
 
 export interface OrchestratorConfig {
   brokerAdapter: BaseBrokerAdapter;
@@ -33,12 +37,17 @@ export class LiveTradingOrchestrator {
   private portfolioFetcher: PortfolioDataFetcher;
   private evaluatorClient: StrategyEvaluatorClient;
   private repositoryFactory: RepositoryFactory;
+  private operationQueue: OperationQueueService;
+  private lockService: DistributedLockService;
+  private reconciliationService: BrokerReconciliationService;
+  private alertService: OrderAlertService;
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
-  private swappingSymbols: Set<string> = new Set(); // Track symbols being swapped
   private currentSleepResolve?: () => void; // Resolve function to interrupt sleep
   private currentSleepTimeout?: NodeJS.Timeout; // Timeout reference to clear
+  private lastReconciliationTime: number = 0;
+  private reconciliationIntervalMs: number = 5 * 60 * 1000; // 5 minutes
 
   constructor(config: OrchestratorConfig, repositoryFactory?: RepositoryFactory) {
     this.config = config;
@@ -47,6 +56,25 @@ export class LiveTradingOrchestrator {
     // Get repositories
     const strategyRepo = this.repositoryFactory.getStrategyRepo();
     const execHistoryRepo = this.repositoryFactory.getExecutionHistoryRepo();
+
+    // Initialize operation queue service
+    this.operationQueue = new OperationQueueService(this.repositoryFactory.getPrisma());
+
+    // Initialize distributed lock service
+    this.lockService = new DistributedLockService(this.repositoryFactory.getPool());
+
+    // Initialize alert service
+    this.alertService = new OrderAlertService([
+      { type: 'console', enabled: true },
+      // Add webhook/email channels as needed:
+      // { type: 'webhook', enabled: true, config: { url: process.env.ALERT_WEBHOOK_URL } },
+    ]);
+
+    // Initialize reconciliation service
+    this.reconciliationService = new BrokerReconciliationService(
+      this.repositoryFactory.getOrderRepo(),
+      this.alertService
+    );
 
     // Initialize components
     this.multiStrategyManager = new MultiStrategyManager(
@@ -69,7 +97,8 @@ export class LiveTradingOrchestrator {
       this.evaluatorClient,
       this.portfolioFetcher,
       strategyRepo,
-      execHistoryRepo
+      execHistoryRepo,
+      this.operationQueue
     );
 
     // Set orchestrator reference for locking during swaps
@@ -101,6 +130,13 @@ export class LiveTradingOrchestrator {
       throw new Error("Database connection failed");
     }
     console.log("✓ Database connection verified");
+
+    // Release stuck locks from crashed processes
+    console.log("🔓 Releasing stuck operation locks...");
+    const releasedCount = await this.operationQueue.releaseStuckLocks();
+    if (releasedCount > 0) {
+      console.log(`   Released ${releasedCount} stuck operation(s)`);
+    }
 
     // Connect to TWS for portfolio data
     console.log("📡 Connecting to TWS for portfolio data...");
@@ -161,6 +197,9 @@ export class LiveTradingOrchestrator {
 
     // Load existing strategies from database
     await this.loadExistingStrategies();
+
+    // Run broker reconciliation on startup
+    await this.runStartupReconciliation();
 
     // Register database poller callback
     this.databasePoller.onNewStrategy(async (strategy) => {
@@ -302,6 +341,9 @@ export class LiveTradingOrchestrator {
           }
         }
 
+        // Run periodic reconciliation (if due)
+        await this.runPeriodicReconciliation();
+
         // Calculate sleep interval (based on shortest timeframe)
         const sleepInterval = this.calculateSleepInterval(activeStrategies);
         const sleepSeconds = Math.round(sleepInterval / 1000);
@@ -324,10 +366,11 @@ export class LiveTradingOrchestrator {
     console.log(`📥 New strategy detected: ${strategy.name} (${strategy.symbol})`);
 
     try {
-      // Check if this symbol is currently being swapped
-      if (this.swappingSymbols.has(strategy.symbol)) {
+      // Check if this symbol is currently being swapped (distributed lock check)
+      const lockKey = DistributedLockService.symbolLockKey(strategy.symbol);
+      if (await this.lockService.isLocked(lockKey)) {
         console.log(
-          `⏸️  Symbol ${strategy.symbol} is currently being swapped. Skipping auto-load (swap will handle it).`
+          `⏸️  Symbol ${strategy.symbol} is currently locked (swap in progress). Skipping auto-load.`
         );
         return;
       }
@@ -523,15 +566,97 @@ export class LiveTradingOrchestrator {
 
   /**
    * Lock a symbol during swap operation
+   * Now uses distributed PostgreSQL advisory locks
    */
-  lockSymbol(symbol: string): void {
-    this.swappingSymbols.add(symbol);
+  async lockSymbol(symbol: string): Promise<boolean> {
+    const lockKey = DistributedLockService.symbolLockKey(symbol);
+    return await this.lockService.acquireLock(lockKey, 30000);
   }
 
   /**
    * Unlock a symbol after swap operation
    */
-  unlockSymbol(symbol: string): void {
-    this.swappingSymbols.delete(symbol);
+  async unlockSymbol(symbol: string): Promise<void> {
+    const lockKey = DistributedLockService.symbolLockKey(symbol);
+    await this.lockService.releaseLock(lockKey);
+  }
+
+  /**
+   * Run broker reconciliation on startup
+   * Detects and auto-cancels orphaned orders at broker
+   */
+  private async runStartupReconciliation(): Promise<void> {
+    const activeStrategies = this.multiStrategyManager.getActiveStrategies();
+    if (activeStrategies.length === 0) {
+      console.log("ℹ️  No active strategies - skipping startup reconciliation");
+      return;
+    }
+
+    // Collect all symbols from active strategies
+    const symbols = [...new Set(activeStrategies.map(s => s.symbol))];
+
+    console.log(`🔍 Running startup reconciliation for ${symbols.length} symbol(s): ${symbols.join(", ")}`);
+
+    try {
+      const report = await this.reconciliationService.reconcileOnStartup(
+        this.config.brokerAdapter,
+        symbols,
+        this.config.brokerEnv
+      );
+
+      // Log summary
+      if (report.orphanedOrders.length === 0 && report.missingOrders.length === 0) {
+        console.log("✓ Reconciliation complete - no discrepancies found");
+      } else {
+        console.log(`⚠️  Reconciliation complete - found ${report.orphanedOrders.length} orphaned, ${report.missingOrders.length} missing`);
+      }
+
+      // Update last reconciliation time
+      this.lastReconciliationTime = Date.now();
+    } catch (error) {
+      console.error("❌ Startup reconciliation failed:", error);
+    }
+  }
+
+  /**
+   * Run periodic broker reconciliation
+   * Called from main loop every N minutes
+   */
+  private async runPeriodicReconciliation(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastReconciliation = now - this.lastReconciliationTime;
+
+    // Check if it's time for reconciliation
+    if (timeSinceLastReconciliation < this.reconciliationIntervalMs) {
+      return; // Not time yet
+    }
+
+    const activeStrategies = this.multiStrategyManager.getActiveStrategies();
+    if (activeStrategies.length === 0) {
+      return; // No active strategies
+    }
+
+    // Collect all symbols from active strategies
+    const symbols = [...new Set(activeStrategies.map(s => s.symbol))];
+
+    console.log(`\n🔍 Running periodic reconciliation for ${symbols.length} symbol(s)...`);
+
+    try {
+      const report = await this.reconciliationService.reconcilePeriodic(
+        this.config.brokerAdapter,
+        symbols,
+        this.config.brokerEnv
+      );
+
+      // Log if any discrepancies found
+      if (report.orphanedOrders.length > 0 || report.missingOrders.length > 0) {
+        console.warn(`⚠️  Reconciliation found discrepancies - orphaned: ${report.orphanedOrders.length}, missing: ${report.missingOrders.length}`);
+      }
+
+      // Update last reconciliation time
+      this.lastReconciliationTime = now;
+    } catch (error) {
+      console.error("❌ Periodic reconciliation failed:", error);
+    }
   }
 }

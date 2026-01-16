@@ -75,6 +75,17 @@ export class RepositoryFactory {
   }
 
   /**
+   * Get the PostgreSQL connection pool
+   * Required for services that need direct pool access (e.g., DistributedLockService)
+   */
+  getPool(): Pool {
+    if (!this.pool) {
+      throw new Error('Pool not available - RepositoryFactory was initialized with external PrismaClient');
+    }
+    return this.pool;
+  }
+
+  /**
    * Disconnect Prisma client and pool
    */
   async disconnect(): Promise<void> {

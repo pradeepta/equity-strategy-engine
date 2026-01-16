@@ -8,17 +8,19 @@
     "stocks-trading-mcp": "./dist/mcp-server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate && tsc",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
     "mcp": "node dist/mcp-server.js",
     "mcp:dev": "ts-node mcp-server.ts",
     "demo": "ts-node demo.ts",
-    "demo:build": "tsc && node dist/demo.js",
+    "demo:build": "npm run build && node dist/demo.js",
     "backtest": "ts-node backtest.ts",
-    "backtest:build": "tsc && node dist/backtest.js",
+    "backtest:build": "npm run build && node dist/backtest.js",
     "live": "ts-node live.ts",
-    "live:build": "tsc && node dist/live.js",
+    "live:build": "npm run build && node dist/live.js",
     "live:multi": "ts-node live-multi.ts",
-    "live:multi:build": "tsc && node dist/live-multi.js",
+    "live:multi:build": "npm run build && node dist/live-multi.js",
     "strategy:add": "ts-node cli/add-strategy.ts",
     "strategy:list": "ts-node cli/list-strategies.ts",
     "strategy:close": "ts-node cli/close-strategy.ts",
@@ -28,7 +30,8 @@
     "test:tws": "ts-node test-tws.ts",
     "movers": "ts-node fetch-movers.ts",
     "clean": "rm -rf dist",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "prisma generate"
   },
   "keywords": [
     "trading",

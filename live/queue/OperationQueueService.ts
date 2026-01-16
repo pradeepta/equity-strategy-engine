@@ -3,8 +3,8 @@
  * Provides queuing, retry logic, and idempotency for strategy operations
  */
 
-import { PrismaClient, OperationType, OperationStatus } from '@prisma/client';
-import { randomUUID } from 'crypto';
+import { PrismaClient, OperationType, OperationStatus } from "@prisma/client";
+import { randomUUID } from "crypto";
 
 export interface OperationRequest {
   operationType: OperationType;
@@ -58,19 +58,24 @@ export class OperationQueueService {
     });
 
     if (existing) {
-      console.log(`Operation ${operationId} already exists with status: ${existing.status}`);
+      console.log(
+        `Operation ${operationId} already exists with status: ${existing.status}`
+      );
 
       // If already completed, return the operation ID (caller can fetch result)
-      if (existing.status === 'COMPLETED') {
+      if (existing.status === "COMPLETED") {
         return existing.operationId;
       }
 
       // If failed but has retries left, mark as pending again
-      if (existing.status === 'FAILED' && existing.retryCount < existing.maxRetries) {
+      if (
+        existing.status === "FAILED" &&
+        existing.retryCount < existing.maxRetries
+      ) {
         await this.prisma.operationQueue.update({
           where: { id: existing.id },
           data: {
-            status: 'PENDING',
+            status: "PENDING",
             lockedBy: null,
             lockedUntil: null,
           },
@@ -90,7 +95,7 @@ export class OperationQueueService {
         operationType: request.operationType,
         targetSymbol: request.targetSymbol,
         strategyId: request.strategyId,
-        status: 'PENDING',
+        status: "PENDING",
         priority: request.priority || 0,
         maxRetries: request.maxRetries || 3,
         retryCount: 0,
@@ -98,7 +103,9 @@ export class OperationQueueService {
       },
     });
 
-    console.log(`Enqueued operation ${operationId} (type: ${request.operationType})`);
+    console.log(
+      `Enqueued operation ${operationId} (type: ${request.operationType})`
+    );
     return operation.operationId;
   }
 
@@ -115,17 +122,14 @@ export class OperationQueueService {
     const operation = await this.prisma.operationQueue.findFirst({
       where: {
         OR: [
-          { status: 'PENDING' },
+          { status: "PENDING" },
           {
-            status: 'IN_PROGRESS',
+            status: "IN_PROGRESS",
             lockedUntil: { lt: now }, // Lock expired
           },
         ],
       },
-      orderBy: [
-        { priority: 'desc' },
-        { createdAt: 'asc' },
-      ],
+      orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
     });
 
     if (!operation) {
@@ -139,15 +143,15 @@ export class OperationQueueService {
           id: operation.id,
           // Only update if still in expected state (prevents race conditions)
           OR: [
-            { status: 'PENDING' },
+            { status: "PENDING" },
             {
-              status: 'IN_PROGRESS',
+              status: "IN_PROGRESS",
               lockedUntil: { lt: now },
             },
           ],
         },
         data: {
-          status: 'IN_PROGRESS',
+          status: "IN_PROGRESS",
           lockedBy: this.processId,
           lockedUntil: lockExpiry,
           startedAt: operation.startedAt || now,
@@ -168,7 +172,9 @@ export class OperationQueueService {
         return null;
       }
 
-      console.log(`Dequeued operation ${lockedOperation.operationId} (type: ${lockedOperation.operationType})`);
+      console.log(
+        `Dequeued operation ${lockedOperation.operationId} (type: ${lockedOperation.operationType})`
+      );
 
       return {
         id: lockedOperation.id,
@@ -188,7 +194,7 @@ export class OperationQueueService {
         completedAt: lockedOperation.completedAt,
       };
     } catch (error) {
-      console.error('Failed to acquire lock on operation:', error);
+      console.error("Failed to acquire lock on operation:", error);
       return null;
     }
   }
@@ -196,11 +202,14 @@ export class OperationQueueService {
   /**
    * Mark operation as completed with result
    */
-  async complete(operationId: string, result: Record<string, unknown>): Promise<void> {
+  async complete(
+    operationId: string,
+    result: Record<string, unknown>
+  ): Promise<void> {
     await this.prisma.operationQueue.update({
       where: { operationId },
       data: {
-        status: 'COMPLETED',
+        status: "COMPLETED",
         result: result as any,
         completedAt: new Date(),
         lockedBy: null,
@@ -230,7 +239,7 @@ export class OperationQueueService {
     await this.prisma.operationQueue.update({
       where: { operationId },
       data: {
-        status: shouldRetry ? 'PENDING' : 'FAILED',
+        status: shouldRetry ? "PENDING" : "FAILED",
         retryCount: newRetryCount,
         errorMessage: error,
         lockedBy: null,
@@ -240,9 +249,13 @@ export class OperationQueueService {
     });
 
     if (shouldRetry) {
-      console.log(`Failed operation ${operationId}, will retry (attempt ${newRetryCount}/${operation.maxRetries})`);
+      console.log(
+        `Failed operation ${operationId}, will retry (attempt ${newRetryCount}/${operation.maxRetries})`
+      );
     } else {
-      console.error(`Operation ${operationId} failed permanently after ${newRetryCount} attempts: ${error}`);
+      console.error(
+        `Operation ${operationId} failed permanently after ${newRetryCount} attempts: ${error}`
+      );
     }
   }
 
@@ -255,19 +268,21 @@ export class OperationQueueService {
       select: { status: true },
     });
 
-    return operation?.status === 'COMPLETED';
+    return operation?.status === "COMPLETED";
   }
 
   /**
    * Get operation result (for idempotent replay)
    */
-  async getResult(operationId: string): Promise<Record<string, unknown> | null> {
+  async getResult(
+    operationId: string
+  ): Promise<Record<string, unknown> | null> {
     const operation = await this.prisma.operationQueue.findUnique({
       where: { operationId },
       select: { result: true, status: true },
     });
 
-    if (!operation || operation.status !== 'COMPLETED') {
+    if (!operation || operation.status !== "COMPLETED") {
       return null;
     }
 
@@ -293,7 +308,7 @@ export class OperationQueueService {
     await this.prisma.operationQueue.update({
       where: { operationId },
       data: {
-        status: 'CANCELLED',
+        status: "CANCELLED",
         completedAt: new Date(),
         lockedBy: null,
         lockedUntil: null,
@@ -308,7 +323,7 @@ export class OperationQueueService {
    */
   async getQueueStats(): Promise<Record<string, number>> {
     const stats = await this.prisma.operationQueue.groupBy({
-      by: ['status'],
+      by: ["status"],
       _count: true,
     });
 
@@ -340,7 +355,7 @@ export class OperationQueueService {
     const result = await this.prisma.operationQueue.deleteMany({
       where: {
         status: {
-          in: ['COMPLETED', 'FAILED', 'CANCELLED'],
+          in: ["COMPLETED", "FAILED", "CANCELLED"],
         },
         completedAt: {
           lt: cutoffDate,
@@ -348,7 +363,9 @@ export class OperationQueueService {
       },
     });
 
-    console.log(`Cleaned up ${result.count} old operations (older than ${retentionDays} days)`);
+    console.log(
+      `Cleaned up ${result.count} old operations (older than ${retentionDays} days)`
+    );
     return result.count;
   }
 
@@ -361,11 +378,11 @@ export class OperationQueueService {
 
     const result = await this.prisma.operationQueue.updateMany({
       where: {
-        status: 'IN_PROGRESS',
+        status: "IN_PROGRESS",
         lockedUntil: { lt: now },
       },
       data: {
-        status: 'PENDING',
+        status: "PENDING",
         lockedBy: null,
         lockedUntil: null,
       },
