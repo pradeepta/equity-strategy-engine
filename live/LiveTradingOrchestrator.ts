@@ -57,6 +57,24 @@ export class LiveTradingOrchestrator {
     const strategyRepo = this.repositoryFactory.getStrategyRepo();
     const execHistoryRepo = this.repositoryFactory.getExecutionHistoryRepo();
     const orderRepo = this.repositoryFactory.getOrderRepo();
+    const systemLogRepo = this.repositoryFactory.getSystemLogRepo();
+
+    // Provide audit logger for runtime components
+    if (!this.config.brokerEnv.auditEvent) {
+      this.config.brokerEnv.auditEvent = (entry) => {
+        const level = entry.level?.toUpperCase() || "INFO";
+        systemLogRepo
+          .create({
+            level: level as "DEBUG" | "INFO" | "WARN" | "ERROR",
+            component: entry.component,
+            message: entry.message,
+            metadata: entry.metadata,
+          })
+          .catch((error) => {
+            console.warn("Failed to write system log:", error);
+          });
+      };
+    }
 
     // Initialize operation queue service
     this.operationQueue = new OperationQueueService(this.repositoryFactory.getPrisma());
@@ -74,7 +92,8 @@ export class LiveTradingOrchestrator {
     // Initialize reconciliation service
     this.reconciliationService = new BrokerReconciliationService(
       this.repositoryFactory.getOrderRepo(),
-      this.alertService
+      this.alertService,
+      this.repositoryFactory.getSystemLogRepo()
     );
 
     // Initialize components

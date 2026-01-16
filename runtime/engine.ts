@@ -234,6 +234,15 @@ export class StrategyEngine {
             if (plan) {
               if (this.brokerEnv.allowLiveOrders === false) {
                 this.log('warn', 'Live order submission blocked by kill switch');
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by kill switch',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                  },
+                });
                 return;
               }
 
@@ -245,6 +254,17 @@ export class StrategyEngine {
                 this.log('warn', 'Live order submission blocked by daily loss limit', {
                   currentDailyPnL: this.brokerEnv.currentDailyPnL,
                   dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by daily loss limit',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    currentDailyPnL: this.brokerEnv.currentDailyPnL,
+                    dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                  },
                 });
                 return;
               }
@@ -259,6 +279,18 @@ export class StrategyEngine {
                   expectedNewOrders,
                   maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
                 });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by maxOrdersPerSymbol',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    currentOpenOrders: this.state.openOrders.length,
+                    expectedNewOrders,
+                    maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
+                  },
+                });
                 return;
               }
 
@@ -270,6 +302,17 @@ export class StrategyEngine {
                   orderQty: plan.qty,
                   maxOrderQty: this.brokerEnv.maxOrderQty,
                 });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by maxOrderQty',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    orderQty: plan.qty,
+                    maxOrderQty: this.brokerEnv.maxOrderQty,
+                  },
+                });
                 return;
               }
 
@@ -279,6 +322,17 @@ export class StrategyEngine {
                   this.log('warn', 'Live order submission blocked by maxNotionalPerSymbol', {
                     notional,
                     maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'warn',
+                    message: 'Live order submission blocked by maxNotionalPerSymbol',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      notional,
+                      maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                    },
                   });
                   return;
                 }
@@ -335,6 +389,14 @@ export class StrategyEngine {
           }
           if (this.brokerEnv.allowCancelEntries !== true) {
             this.log('warn', 'Order cancellation blocked (cancel_entries disabled)');
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'warn',
+              message: 'Order cancellation blocked (cancel_entries disabled)',
+              metadata: {
+                symbol: this.ir.symbol,
+              },
+            });
             return;
           }
           if (this.state.openOrders.length > 0) {

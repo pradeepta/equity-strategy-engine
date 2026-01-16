@@ -6,6 +6,7 @@
 import { BaseBrokerAdapter } from '../../broker/broker';
 import { Order, BrokerEnvironment } from '../../spec/types';
 import { OrderRepository } from '../../database/repositories/OrderRepository';
+import { SystemLogRepository } from '../../database/repositories/SystemLogRepository';
 import { OrderAlertService } from '../alerts/OrderAlertService';
 
 export interface BrokerOrder {
@@ -15,6 +16,12 @@ export interface BrokerOrder {
   side: 'buy' | 'sell';
   status: string;
 }
+
+type DbOrder = ReturnType<OrderRepository['findOpenBySymbol']> extends Promise<
+  Array<infer T>
+>
+  ? T
+  : never;
 
 export interface ReconciliationReport {
   timestamp: Date;
@@ -34,7 +41,8 @@ export interface ReconciliationReport {
 export class BrokerReconciliationService {
   constructor(
     private orderRepo: OrderRepository,
-    private alertService: OrderAlertService
+    private alertService: OrderAlertService,
+    private systemLogRepo?: SystemLogRepository
   ) {}
 
   /**
@@ -118,7 +126,7 @@ export class BrokerReconciliationService {
   /**
    * Find orders in database that aren't at broker (missing)
    */
-  private findMissingOrders(brokerOrders: Order[], dbOrders: Order[]): Order[] {
+  private findMissingOrders(brokerOrders: Order[], dbOrders: DbOrder[]): DbOrder[] {
     const brokerOrderIds = new Set(brokerOrders.map(o => o.id));
 
     return dbOrders.filter(dbo => !brokerOrderIds.has(dbo.id));
@@ -141,6 +149,15 @@ export class BrokerReconciliationService {
       orphanedOrders.map(o => o.id),
       'detected'
     );
+    await this.systemLogRepo?.create({
+      level: 'WARN',
+      component: 'BrokerReconciliationService',
+      message: `Orphaned orders detected for ${symbol}`,
+      metadata: {
+        symbol,
+        orderIds: orphanedOrders.map(o => o.id),
+      },
+    });
 
     // Auto-cancel orphaned orders (per user preference)
     console.log(`🔨 Auto-canceling ${orphanedOrders.length} orphaned orders for ${symbol}...`);
@@ -175,6 +192,15 @@ export class BrokerReconciliationService {
           cancelResult.succeeded,
           'cancelled'
         );
+        await this.systemLogRepo?.create({
+          level: 'INFO',
+          component: 'BrokerReconciliationService',
+          message: `Cancelled orphaned orders for ${symbol}`,
+          metadata: {
+            symbol,
+            orderIds: cancelResult.succeeded,
+          },
+        });
       }
 
       if (cancelResult.failed.length > 0) {
@@ -187,6 +213,15 @@ export class BrokerReconciliationService {
     } catch (error) {
       console.error(`Failed to cancel orphaned orders for ${symbol}:`, error);
       report.actionsToken.push(`Failed to cancel orphaned orders for ${symbol}: ${error}`);
+      await this.systemLogRepo?.create({
+        level: 'ERROR',
+        component: 'BrokerReconciliationService',
+        message: `Failed to cancel orphaned orders for ${symbol}`,
+        metadata: {
+          symbol,
+          error: String(error),
+        },
+      });
     }
   }
 
@@ -194,19 +229,38 @@ export class BrokerReconciliationService {
    * Handle missing orders: Mark them as cancelled in database
    */
   private async handleMissingOrders(
-    missingOrders: Order[],
+    missingOrders: DbOrder[],
     report: ReconciliationReport
   ): Promise<void> {
     for (const order of missingOrders) {
       try {
         // Mark as cancelled in database (order no longer exists at broker)
         await this.orderRepo.updateStatus(order.id, 'CANCELLED');
+        await this.orderRepo.createAuditLog({
+          orderId: order.id,
+          brokerOrderId: order.brokerOrderId ?? undefined,
+          strategyId: order.strategyId,
+          eventType: 'MISSING',
+          newStatus: 'CANCELLED',
+          metadata: {
+            symbol: order.symbol,
+          },
+        });
 
         console.log(`✓ Marked order ${order.id} as cancelled in database (missing from broker)`);
         report.actionsToken.push(`Marked order ${order.id} as cancelled (missing from broker)`);
       } catch (error) {
         console.error(`Failed to update order ${order.id}:`, error);
         report.actionsToken.push(`Failed to update order ${order.id}: ${error}`);
+        await this.systemLogRepo?.create({
+          level: 'ERROR',
+          component: 'BrokerReconciliationService',
+          message: `Failed to update missing order ${order.id}`,
+          metadata: {
+            orderId: order.id,
+            error: String(error),
+          },
+        });
       }
     }
   }
@@ -249,6 +303,15 @@ export class BrokerReconciliationService {
             count: orphaned.length,
             orderIds: orphaned.map(o => o.id),
           });
+          await this.systemLogRepo?.create({
+            level: 'WARN',
+            component: 'BrokerReconciliationService',
+            message: `Periodic orphaned orders detected for ${symbol}`,
+            metadata: {
+              symbol,
+              orderIds: orphaned.map(o => o.id),
+            },
+          });
         }
 
         if (missing.length > 0) {
@@ -257,6 +320,15 @@ export class BrokerReconciliationService {
             type: 'missing_orders',
             count: missing.length,
             orderIds: missing.map(o => o.id),
+          });
+          await this.systemLogRepo?.create({
+            level: 'WARN',
+            component: 'BrokerReconciliationService',
+            message: `Periodic missing orders detected for ${symbol}`,
+            metadata: {
+              symbol,
+              orderIds: missing.map(o => o.id),
+            },
           });
         }
       } catch (error) {

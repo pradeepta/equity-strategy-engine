@@ -3,7 +3,14 @@
  * Handles all database operations for orders and fills
  */
 
-import { PrismaClient, Order, OrderStatus, OrderSide, OrderType, Prisma } from '@prisma/client';
+import {
+  PrismaClient,
+  Order,
+  OrderStatus,
+  OrderSide,
+  OrderType,
+  Prisma,
+} from "@prisma/client";
 
 export class OrderRepository {
   constructor(private prisma: PrismaClient) {}
@@ -36,9 +43,29 @@ export class OrderRepository {
     orderId?: string;
     brokerOrderId?: string;
     strategyId: string;
-    eventType: 'SUBMITTED' | 'CANCELLED' | 'FILLED' | 'PARTIALLY_FILLED' | 'REJECTED' | 'RECONCILED' | 'ORPHANED' | 'MISSING';
-    oldStatus?: 'PENDING' | 'SUBMITTED' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED';
-    newStatus?: 'PENDING' | 'SUBMITTED' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED';
+    eventType:
+      | "SUBMITTED"
+      | "CANCELLED"
+      | "FILLED"
+      | "PARTIALLY_FILLED"
+      | "REJECTED"
+      | "RECONCILED"
+      | "ORPHANED"
+      | "MISSING";
+    oldStatus?:
+      | "PENDING"
+      | "SUBMITTED"
+      | "FILLED"
+      | "PARTIALLY_FILLED"
+      | "CANCELLED"
+      | "REJECTED";
+    newStatus?:
+      | "PENDING"
+      | "SUBMITTED"
+      | "FILLED"
+      | "PARTIALLY_FILLED"
+      | "CANCELLED"
+      | "REJECTED";
     quantity?: number;
     price?: number;
     errorMessage?: string;
@@ -49,7 +76,9 @@ export class OrderRepository {
         ...params,
         quantity: params.quantity,
         price: params.price,
-        metadata: (params.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+        metadata: (params.metadata ?? undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
       },
     });
   }
@@ -60,11 +89,11 @@ export class OrderRepository {
   async updateStatus(orderId: string, status: OrderStatus): Promise<Order> {
     const updates: any = { status };
 
-    if (status === 'SUBMITTED') {
+    if (status === "SUBMITTED") {
       updates.submittedAt = new Date();
-    } else if (status === 'FILLED') {
+    } else if (status === "FILLED") {
       updates.filledAt = new Date();
-    } else if (status === 'CANCELLED') {
+    } else if (status === "CANCELLED") {
       updates.cancelledAt = new Date();
     }
 
@@ -77,7 +106,12 @@ export class OrderRepository {
   /**
    * Record fill
    */
-  async recordFill(orderId: string, qty: number, price: number, commission?: number): Promise<Order> {
+  async recordFill(
+    orderId: string,
+    qty: number,
+    price: number,
+    commission?: number
+  ): Promise<Order> {
     return this.prisma.$transaction(async (tx) => {
       // Create fill record
       await tx.fill.create({
@@ -91,7 +125,9 @@ export class OrderRepository {
       });
 
       // Update order
-      const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+      });
       const newFilledQty = order.filledQty + qty;
       const isFullyFilled = newFilledQty >= order.qty;
 
@@ -99,7 +135,7 @@ export class OrderRepository {
         where: { id: orderId },
         data: {
           filledQty: newFilledQty,
-          status: isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
+          status: isFullyFilled ? "FILLED" : "PARTIALLY_FILLED",
           avgFillPrice: price, // Simplified; should calculate weighted average
           filledAt: isFullyFilled ? new Date() : undefined,
         },
@@ -110,10 +146,13 @@ export class OrderRepository {
   /**
    * Get orders by strategy
    */
-  async getByStrategy(strategyId: string, limit: number = 100): Promise<Order[]> {
+  async getByStrategy(
+    strategyId: string,
+    limit: number = 100
+  ): Promise<Order[]> {
     return this.prisma.order.findMany({
       where: { strategyId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take: limit,
       include: {
         fills: true,
@@ -129,9 +168,9 @@ export class OrderRepository {
     return this.prisma.order.findMany({
       where: {
         strategyId,
-        status: { in: ['PENDING', 'SUBMITTED', 'PARTIALLY_FILLED'] },
+        status: { in: ["PENDING", "SUBMITTED", "PARTIALLY_FILLED"] },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
     });
   }
 
@@ -161,7 +200,10 @@ export class OrderRepository {
   /**
    * Update broker order ID (after submission to broker)
    */
-  async updateBrokerOrderId(orderId: string, brokerOrderId: string): Promise<Order> {
+  async updateBrokerOrderId(
+    orderId: string,
+    brokerOrderId: string
+  ): Promise<Order> {
     return this.prisma.order.update({
       where: { id: orderId },
       data: { brokerOrderId },
@@ -175,7 +217,7 @@ export class OrderRepository {
     return this.prisma.order.update({
       where: { id: orderId },
       data: {
-        status: 'REJECTED',
+        status: "REJECTED",
         errorMessage,
       },
     });
@@ -187,7 +229,7 @@ export class OrderRepository {
   async getFills(orderId: string) {
     return this.prisma.fill.findMany({
       where: { orderId },
-      orderBy: { filledAt: 'asc' },
+      orderBy: { filledAt: "asc" },
     });
   }
 
@@ -196,18 +238,15 @@ export class OrderRepository {
    */
   async getStrategyOrderStats(strategyId: string) {
     const orders = await this.prisma.order.groupBy({
-      by: ['status'],
+      by: ["status"],
       where: { strategyId },
       _count: true,
     });
 
-    return orders.reduce(
-      (acc, item) => {
-        acc[item.status] = item._count;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
+    return orders.reduce((acc, item) => {
+      acc[item.status] = item._count;
+      return acc;
+    }, {} as Record<string, number>);
   }
 
   /**
@@ -217,10 +256,10 @@ export class OrderRepository {
     const result = await this.prisma.order.updateMany({
       where: {
         strategyId,
-        status: { in: ['PENDING', 'SUBMITTED'] },
+        status: { in: ["PENDING", "SUBMITTED"] },
       },
       data: {
-        status: 'CANCELLED',
+        status: "CANCELLED",
         cancelledAt: new Date(),
       },
     });
@@ -231,37 +270,55 @@ export class OrderRepository {
   /**
    * Find open orders by symbol (for reconciliation)
    */
-  async findOpenBySymbol(symbol: string): Promise<Array<{
-    id: string;
-    planId: string;
-    symbol: string;
-    side: 'buy' | 'sell';
-    qty: number;
-    type: 'limit' | 'market';
-    status: 'pending' | 'submitted' | 'filled' | 'partially_filled' | 'cancelled' | 'rejected';
-    limitPrice?: number;
-    stopPrice?: number;
-    filledQty?: number;
-  }>> {
+  async findOpenBySymbol(symbol: string): Promise<
+    Array<{
+      id: string;
+      planId: string;
+      symbol: string;
+      side: "buy" | "sell";
+      qty: number;
+      type: "limit" | "market";
+      status:
+        | "pending"
+        | "submitted"
+        | "filled"
+        | "partially_filled"
+        | "cancelled"
+        | "rejected";
+      limitPrice?: number;
+      stopPrice?: number;
+      filledQty?: number;
+      strategyId: string;
+      brokerOrderId?: string | null;
+    }>
+  > {
     const orders = await this.prisma.order.findMany({
       where: {
         symbol,
-        status: { in: ['PENDING', 'SUBMITTED', 'PARTIALLY_FILLED'] },
+        status: { in: ["PENDING", "SUBMITTED", "PARTIALLY_FILLED"] },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
-    return orders.map(order => ({
+    return orders.map((order) => ({
       id: order.id,
       planId: order.planId,
       symbol: order.symbol,
-      side: order.side.toLowerCase() as 'buy' | 'sell',
+      side: order.side.toLowerCase() as "buy" | "sell",
       qty: order.qty,
-      type: order.type.toLowerCase() as 'limit' | 'market',
-      status: order.status.toLowerCase() as 'pending' | 'submitted' | 'filled' | 'partially_filled' | 'cancelled' | 'rejected',
+      type: order.type.toLowerCase() as "limit" | "market",
+      status: order.status.toLowerCase() as
+        | "pending"
+        | "submitted"
+        | "filled"
+        | "partially_filled"
+        | "cancelled"
+        | "rejected",
       limitPrice: order.limitPrice ?? undefined,
       stopPrice: order.stopPrice ?? undefined,
       filledQty: order.filledQty ?? undefined,
+      strategyId: order.strategyId,
+      brokerOrderId: order.brokerOrderId ?? undefined,
     }));
   }
 }

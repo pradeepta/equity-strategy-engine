@@ -102,11 +102,26 @@ export class StrategyLifecycleManager {
       console.log(`   Confidence: ${(response.confidence * 100).toFixed(0)}%`);
       console.log(`   Reason: ${response.reason}`);
 
+      const evaluation = await this.execHistoryRepo.logEvaluation({
+        strategyId: instance.strategyId,
+        portfolioValue: portfolio.totalValue,
+        unrealizedPnL: portfolio.unrealizedPnL,
+        realizedPnL: portfolio.realizedPnL,
+        currentBar: state.currentBar,
+        recentBars: recentBars,
+        recommendation: this.mapRecommendation(response.recommendation),
+        confidence: response.confidence,
+        reason: response.reason,
+        suggestedYaml: response.suggestedStrategy?.yamlContent,
+        suggestedName: response.suggestedStrategy?.name,
+        suggestedReasoning: response.suggestedStrategy?.reasoning,
+      });
+
       // Handle recommendation
       if (response.recommendation === "swap") {
-        await this.handleSwapRecommendation(instance, response);
+        await this.handleSwapRecommendation(instance, response, evaluation.id);
       } else if (response.recommendation === "close") {
-        await this.handleCloseRecommendation(instance, response);
+        await this.handleCloseRecommendation(instance, response, evaluation.id);
       }
 
       // Reset evaluation counter
@@ -121,7 +136,8 @@ export class StrategyLifecycleManager {
    */
   private async handleSwapRecommendation(
     instance: StrategyInstance,
-    response: EvaluationResponse
+    response: EvaluationResponse,
+    evaluationId: string
   ): Promise<void> {
     console.log(`🔄 Swapping strategy for ${instance.symbol}...`);
 
@@ -194,12 +210,19 @@ export class StrategyLifecycleManager {
         const errorMsg = `Cannot swap strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
         console.error(`❌ ${errorMsg}`);
 
-        // Log the failed swap attempt
-        await this.execHistoryRepo.logEvaluation({
+        await this.execHistoryRepo.markActionTaken(
+          evaluationId,
+          `Swap aborted: ${errorMsg}`
+        );
+        await this.execHistoryRepo.logEvent({
           strategyId: oldStrategyId,
-          recommendation: "SWAP",
-          confidence: response.confidence,
-          reason: `Swap aborted: ${errorMsg}`,
+          eventType: "ERROR",
+          swapReason: errorMsg,
+          metadata: {
+            symbol: instance.symbol,
+            operationId,
+            failedOrderIds: failedIds,
+          },
         });
 
         // Mark operation as failed
@@ -233,26 +256,22 @@ export class StrategyLifecycleManager {
       if (!response.suggestedStrategy) {
         const errorMsg = `Swap recommended for ${instance.symbol} but no suggested strategy was provided`;
         console.error(`❌ ${errorMsg}`);
-        await this.execHistoryRepo.logEvaluation({
+        await this.execHistoryRepo.markActionTaken(
+          evaluationId,
+          `Swap aborted: ${errorMsg}`
+        );
+        await this.execHistoryRepo.logEvent({
           strategyId: oldStrategyId,
-          recommendation: "SWAP",
-          confidence: response.confidence,
-          reason: `Swap aborted: ${errorMsg}`,
+          eventType: "ERROR",
+          swapReason: errorMsg,
+          metadata: {
+            symbol: instance.symbol,
+            operationId,
+          },
         });
         await failOperation(errorMsg);
         return;
       }
-
-      // Log evaluation to database
-      const evaluation = await this.execHistoryRepo.logEvaluation({
-        strategyId: oldStrategyId,
-        recommendation: "SWAP",
-        confidence: response.confidence,
-        reason: response.reason,
-        suggestedYaml: response.suggestedStrategy.yamlContent,
-        suggestedName: response.suggestedStrategy.name,
-        suggestedReasoning: response.suggestedStrategy.reasoning,
-      });
 
       // Create new strategy in database (DRAFT until swap succeeds)
       const newStrategy = await this.strategyRepo.createWithVersion({
@@ -291,10 +310,25 @@ export class StrategyLifecycleManager {
 
       // Close old strategy in database after successful swap
       await this.strategyRepo.close(oldStrategyId, response.reason);
+      await this.execHistoryRepo.logDeactivation(oldStrategyId, response.reason);
+
+      // Audit swap execution
+      await this.execHistoryRepo.logEvent({
+        strategyId: oldStrategyId,
+        eventType: "SWAP",
+        swapReason: response.reason,
+        oldVersionId: oldStrategyId,
+        newVersionId: newStrategy.id,
+        metadata: {
+          symbol: instance.symbol,
+          oldStrategyId,
+          newStrategyId: newStrategy.id,
+        },
+      });
 
       // Mark evaluation action as taken
       await this.execHistoryRepo.markActionTaken(
-        evaluation.id,
+        evaluationId,
         "Swapped successfully"
       );
 
@@ -310,6 +344,15 @@ export class StrategyLifecycleManager {
       console.error(`Failed to swap strategy for ${instance.symbol}:`, error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       await failOperation(errorMsg);
+      await this.execHistoryRepo.logEvent({
+        strategyId: instance.strategyId,
+        eventType: "ERROR",
+        swapReason: errorMsg,
+        metadata: {
+          symbol: instance.symbol,
+          operationId,
+        },
+      });
       throw error;
     } finally {
       // Always unlock the symbol, even if swap failed
@@ -324,7 +367,8 @@ export class StrategyLifecycleManager {
    */
   private async handleCloseRecommendation(
     instance: StrategyInstance,
-    response: EvaluationResponse
+    response: EvaluationResponse,
+    evaluationId: string
   ): Promise<void> {
     console.log(`❌ Closing strategy for ${instance.symbol}...`);
 
@@ -358,11 +402,19 @@ export class StrategyLifecycleManager {
         const reasons = cancelResult.failed.map((f) => f.reason).join("; ");
         const errorMsg = `Cannot close strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
         console.error(`❌ ${errorMsg}`);
-        await this.execHistoryRepo.logEvaluation({
+        await this.execHistoryRepo.markActionTaken(
+          evaluationId,
+          `Close aborted: ${errorMsg}`
+        );
+        await this.execHistoryRepo.logEvent({
           strategyId: instance.strategyId,
-          recommendation: "CLOSE",
-          confidence: response.confidence,
-          reason: `Close aborted: ${errorMsg}`,
+          eventType: "ERROR",
+          swapReason: errorMsg,
+          metadata: {
+            symbol: instance.symbol,
+            operationId,
+            failedOrderIds: failedIds,
+          },
         });
         await this.operationQueue.fail(operationId, errorMsg);
         return;
@@ -375,14 +427,6 @@ export class StrategyLifecycleManager {
         );
         await this.closePositionAndWait(instance, positionQty);
       }
-
-      // Log evaluation to database after successful cancellation
-      await this.execHistoryRepo.logEvaluation({
-        strategyId: instance.strategyId,
-        recommendation: "CLOSE",
-        confidence: response.confidence,
-        reason: response.reason,
-      });
 
       // Close strategy in database
       await this.strategyRepo.close(instance.strategyId, response.reason);
@@ -399,6 +443,11 @@ export class StrategyLifecycleManager {
 
       console.log(`✓ Strategy closed for ${instance.symbol}`);
 
+      await this.execHistoryRepo.markActionTaken(
+        evaluationId,
+        "Closed successfully"
+      );
+
       // Mark operation as completed
       await this.operationQueue.complete(operationId, {
         strategyId: instance.strategyId,
@@ -409,6 +458,15 @@ export class StrategyLifecycleManager {
       console.error(`Failed to close strategy for ${instance.symbol}:`, error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       await this.operationQueue.fail(operationId, errorMsg);
+      await this.execHistoryRepo.logEvent({
+        strategyId: instance.strategyId,
+        eventType: "ERROR",
+        swapReason: errorMsg,
+        metadata: {
+          symbol: instance.symbol,
+          operationId,
+        },
+      });
       throw error;
     }
   }
@@ -507,6 +565,19 @@ export class StrategyLifecycleManager {
 
   private async sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private mapRecommendation(
+    recommendation: EvaluationResponse["recommendation"]
+  ): "KEEP" | "SWAP" | "CLOSE" {
+    switch (recommendation) {
+      case "swap":
+        return "SWAP";
+      case "close":
+        return "CLOSE";
+      default:
+        return "KEEP";
+    }
   }
 
   private isMarketOpenNow(): boolean {

@@ -85,11 +85,30 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
           console.log("← MCP Response:");
           console.log(JSON.stringify(response.result, null, 2));
           submittedOrders.push(bracket.entryOrder);
+          env.auditEvent?.({
+            component: "AlpacaMcpAdapter",
+            level: "info",
+            message: "Bracket submitted",
+            metadata: {
+              symbol: plan.symbol,
+              planId: plan.id,
+            },
+          });
         }
       }
     } catch (e) {
       const err = e as Error;
       console.error(`✗ Failed to submit bracket: ${err.message}`);
+      env.auditEvent?.({
+        component: "AlpacaMcpAdapter",
+        level: "error",
+        message: "Bracket submission failed",
+        metadata: {
+          symbol: plan.symbol,
+          planId: plan.id,
+          error: err.message,
+        },
+      });
 
       if (submittedOrders.length > 0) {
         console.warn("⚠️  Rolling back submitted orders due to failure...");
@@ -154,6 +173,16 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
     console.log("← MCP Response:");
     console.log(JSON.stringify(response.result, null, 2));
     order.status = "submitted";
+    env.auditEvent?.({
+      component: "AlpacaMcpAdapter",
+      level: "info",
+      message: "Market order submitted",
+      metadata: {
+        symbol,
+        qty,
+        side,
+      },
+    });
     console.log("=".repeat(60));
     return order;
   }
@@ -196,17 +225,46 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
             const reason = `MCP Error: ${response.error}`;
             console.error(`✗ ${reason}`);
             result.failed.push({ orderId: order.id, reason });
+            env.auditEvent?.({
+              component: "AlpacaMcpAdapter",
+              level: "error",
+              message: "Order cancellation failed",
+              metadata: {
+                symbol,
+                orderId: order.id,
+                reason,
+              },
+            });
             // FAIL FAST: Throw immediately on MCP error
             throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
           } else {
             console.log("← Cancelled via MCP");
             result.succeeded.push(order.id);
+            env.auditEvent?.({
+              component: "AlpacaMcpAdapter",
+              level: "info",
+              message: "Order cancelled",
+              metadata: {
+                symbol,
+                orderId: order.id,
+              },
+            });
           }
         } catch (e) {
           const err = e as Error;
           const reason = `MCP call failed: ${err.message}`;
           console.error(`✗ ${reason}`);
           result.failed.push({ orderId: order.id, reason });
+          env.auditEvent?.({
+            component: "AlpacaMcpAdapter",
+            level: "error",
+            message: "Order cancellation failed",
+            metadata: {
+              symbol,
+              orderId: order.id,
+              reason,
+            },
+          });
           // FAIL FAST: Throw immediately on exception
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }

@@ -48,10 +48,15 @@ export class PortfolioDataFetcher {
         // Filter out informational messages (codes 2100, 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2100, 2104, 2106, 2107, 2108, 2158];
         const isInfoMessage = infoMessages.includes(code);
+        const infoText = err?.message?.toLowerCase?.() || '';
+        const isInfoText =
+          infoText.includes('market data farm connection is ok') ||
+          infoText.includes('hmds data farm connection is ok') ||
+          infoText.includes('sec-def data farm connection is ok');
 
         if (!this.connected && code === 502) {
           reject(new Error(`TWS portfolio connection failed: ${err.message}`));
-        } else if (!isInfoMessage) {
+        } else if (!isInfoMessage && !isInfoText) {
           // Only log real errors, not info messages
           console.error(`TWS Portfolio Error [${code}]: ${err.message} (reqId: ${reqId})`);
         }

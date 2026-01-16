@@ -94,11 +94,30 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
 
           // Map response to Order objects
           submittedOrders.push(bracket.entryOrder);
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'info',
+            message: 'Bracket submitted',
+            metadata: {
+              symbol: plan.symbol,
+              planId: plan.id,
+            },
+          });
         }
       }
     } catch (e) {
       const err = e as Error;
       console.error(`✗ Failed to submit bracket: ${err.message}`);
+      env.auditEvent?.({
+        component: 'AlpacaRestAdapter',
+        level: 'error',
+        message: 'Bracket submission failed',
+        metadata: {
+          symbol: plan.symbol,
+          planId: plan.id,
+          error: err.message,
+        },
+      });
 
       if (submittedOrders.length > 0) {
         console.warn('⚠️  Rolling back submitted orders due to failure...');
@@ -157,6 +176,16 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
 
     await this.submitBracketToAlpaca(alpacaOrderRequest, env);
     order.status = 'submitted';
+    env.auditEvent?.({
+      component: 'AlpacaRestAdapter',
+      level: 'info',
+      message: 'Market order submitted',
+      metadata: {
+        symbol,
+        qty,
+        side,
+      },
+    });
     console.log('='.repeat(60));
     return order;
   }
@@ -184,11 +213,30 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
           await this.cancelOrderAtAlpaca(order.id, env);
           console.log('✓ Cancelled');
           result.succeeded.push(order.id);
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'info',
+            message: 'Order cancelled',
+            metadata: {
+              symbol,
+              orderId: order.id,
+            },
+          });
         } catch (e) {
           const err = e as Error;
           const reason = `Alpaca API error: ${err.message}`;
           console.error(`✗ Failed to cancel order ${order.id}: ${reason}`);
           result.failed.push({ orderId: order.id, reason });
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'error',
+            message: 'Order cancellation failed',
+            metadata: {
+              symbol,
+              orderId: order.id,
+              reason,
+            },
+          });
           // FAIL FAST: Throw immediately on first failure
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }

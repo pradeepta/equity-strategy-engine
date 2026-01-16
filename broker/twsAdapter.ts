@@ -40,6 +40,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
   private orderIdReady: boolean = false; // Track if we've received nextValidId
   private orderRejections: Map<number, { code: number; message: string }> = new Map(); // Track order rejections
   private orderStatusCallbacks: Map<number, Array<(status: string) => void>> = new Map(); // Callbacks for status changes
+  private auditEvent?: BrokerEnvironment['auditEvent'];
 
   private host: string;
   private port: number;
@@ -77,6 +78,11 @@ export class TwsAdapter extends BaseBrokerAdapter {
       this.client.on('error', (err: Error, code: number, reqId: number) => {
         // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2104, 2106, 2107, 2108, 2158];
+        const infoText = err?.message?.toLowerCase?.() || '';
+        const isInfoText =
+          infoText.includes('market data farm connection is ok') ||
+          infoText.includes('hmds data farm connection is ok') ||
+          infoText.includes('sec-def data farm connection is ok');
 
         // Order rejection error codes
         const orderRejectionCodes = [201, 202, 104, 110, 103, 105, 161, 162, 200, 203, 399];
@@ -87,6 +93,16 @@ export class TwsAdapter extends BaseBrokerAdapter {
           // Track order-specific rejection
           console.error(`🚨 ORDER REJECTION [${code}]: ${err.message} (orderId: ${reqId})`);
           this.orderRejections.set(reqId, { code, message: err.message });
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'Order rejected',
+            metadata: {
+              orderId: reqId?.toString?.() || String(reqId),
+              code,
+              message: err.message,
+            },
+          });
 
           // Update order status if we have it tracked
           const order = this.pendingOrders.get(reqId);
@@ -94,7 +110,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
             order.status = 'Rejected';
             order.rejectionReason = `[${code}] ${err.message}`;
           }
-        } else if (!infoMessages.includes(code)) {
+        } else if (!infoMessages.includes(code) && !isInfoText) {
           console.error(`TWS Error [${code}]: ${err.message} (reqId: ${reqId})`);
         }
       });
@@ -132,6 +148,20 @@ export class TwsAdapter extends BaseBrokerAdapter {
         if (callbacks) {
           callbacks.forEach(cb => cb(status));
         }
+
+        this.auditEvent?.({
+          component: 'TwsAdapter',
+          level: status === 'Cancelled' || status === 'Inactive' ? 'warn' : 'info',
+          message: 'Order status update',
+          metadata: {
+            orderId: orderId.toString(),
+            status,
+            filled,
+            remaining,
+            avgFillPrice,
+            whyHeld: whyHeld || undefined,
+          },
+        });
       });
 
       this.client.on('openOrder', (orderId: number, contract: any, order: any, orderState: any) => {
@@ -191,6 +221,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     console.log('TWS ADAPTER: ORDER PLAN SUBMISSION');
     console.log('='.repeat(60));
 
+    this.auditEvent = env.auditEvent;
     this.enforceOrderConstraints(plan, env);
 
     // Print the bracket structure
@@ -234,6 +265,17 @@ export class TwsAdapter extends BaseBrokerAdapter {
           bracket.entryOrder.id = parentOrder.orderId.toString();
           bracket.entryOrder.status = 'submitted';
           submittedOrders.push(bracket.entryOrder);
+
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'info',
+            message: 'Bracket submitted',
+            metadata: {
+              symbol: plan.symbol,
+              parentOrderId: parentOrder.orderId,
+              planId: plan.id,
+            },
+          });
         }
       }
     } catch (e) {
@@ -280,6 +322,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     console.log('='.repeat(60));
     console.log(`Symbol: ${symbol}, Side: ${side}, Qty: ${qty}`);
 
+    this.auditEvent = env.auditEvent;
     const order: Order = {
       id: this.generateOrderId('market'),
       planId: `market-exit-${Date.now()}`,
@@ -336,6 +379,18 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
     order.id = orderId.toString();
     order.status = 'submitted';
+
+    this.auditEvent?.({
+      component: 'TwsAdapter',
+      level: 'info',
+      message: 'Market order submitted',
+      metadata: {
+        symbol,
+        orderId: orderId.toString(),
+        qty,
+        side,
+      },
+    });
 
     console.log('='.repeat(60));
     return order;
@@ -654,6 +709,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
     console.log(`TWS: TWO-PHASE CANCELLATION FOR ${orders.length} ORDER(S) - ${symbol}`);
     console.log(`${'='.repeat(70)}`);
 
+    this.auditEvent = env.auditEvent;
     const result: CancellationResult = {
       succeeded: [],
       failed: [],
@@ -730,6 +786,16 @@ export class TwsAdapter extends BaseBrokerAdapter {
           console.log(`✅ Verified cancellation: ${originalId} (TWS ${twsOrderId})`);
           result.succeeded.push(originalId);
           this.orderIdMap.delete(originalId);
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'info',
+            message: 'Order cancelled',
+            metadata: {
+              symbol,
+              orderId: originalId,
+              twsOrderId,
+            },
+          });
         } else {
           const reason = 'Cancellation timeout - order may still be active';
           console.error(`⚠️  ${originalId} (TWS ${twsOrderId}): ${reason}`);

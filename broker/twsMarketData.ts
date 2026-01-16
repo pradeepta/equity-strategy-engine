@@ -60,7 +60,12 @@ export class TwsMarketDataClient {
       client.on("error", (err: Error, code: number, reqId: number) => {
         // Filter out informational messages (codes 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2104, 2106, 2107, 2108, 2158];
-        if (!infoMessages.includes(code)) {
+        const infoText = err?.message?.toLowerCase?.() || "";
+        const isInfoText =
+          infoText.includes("market data farm connection is ok") ||
+          infoText.includes("hmds data farm connection is ok") ||
+          infoText.includes("sec-def data farm connection is ok");
+        if (!infoMessages.includes(code) && !isInfoText) {
           console.error(
             `TWS Error [${code}]: ${err.message} (reqId: ${reqId})`
           );

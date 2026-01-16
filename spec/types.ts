@@ -251,4 +251,10 @@ export interface BrokerEnvironment {
   maxNotionalPerSymbol?: number;
   dailyLossLimit?: number;
   currentDailyPnL?: number;
+  auditEvent?: (entry: {
+    component: string;
+    level?: 'info' | 'warn' | 'error';
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) => void;
 }

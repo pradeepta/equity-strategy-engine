@@ -9,12 +9,14 @@ import { Pool } from 'pg';
 import { StrategyRepository } from './repositories/StrategyRepository';
 import { OrderRepository } from './repositories/OrderRepository';
 import { ExecutionHistoryRepository } from './repositories/ExecutionHistoryRepository';
+import { SystemLogRepository } from './repositories/SystemLogRepository';
 
 export class RepositoryFactory {
   private prisma: PrismaClient;
   private strategyRepo?: StrategyRepository;
   private orderRepo?: OrderRepository;
   private execHistoryRepo?: ExecutionHistoryRepository;
+  private systemLogRepo?: SystemLogRepository;
   private pool?: Pool;
 
   constructor(prisma?: PrismaClient) {
@@ -65,6 +67,16 @@ export class RepositoryFactory {
       this.execHistoryRepo = new ExecutionHistoryRepository(this.prisma);
     }
     return this.execHistoryRepo;
+  }
+
+  /**
+   * Get System Log Repository instance (singleton per factory)
+   */
+  getSystemLogRepo(): SystemLogRepository {
+    if (!this.systemLogRepo) {
+      this.systemLogRepo = new SystemLogRepository(this.prisma);
+    }
+    return this.systemLogRepo;
   }
 
   /**
@@ -130,4 +142,8 @@ export function getOrderRepo(): OrderRepository {
 
 export function getExecutionHistoryRepo(): ExecutionHistoryRepository {
   return getRepositoryFactory().getExecutionHistoryRepo();
+}
+
+export function getSystemLogRepo(): SystemLogRepository {
+  return getRepositoryFactory().getSystemLogRepo();
 }
