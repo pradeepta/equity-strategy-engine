@@ -141,10 +141,23 @@ export class MultiStrategyManager {
       const newInstance = this.instances.get(symbol);
       if (newInstance) {
         newInstance.markBarsFetched();
-        for (const bar of bars) {
-          await newInstance.processBar(bar);
+        if (bars.length === 1) {
+          await newInstance.processBar(bars[0]);
+          console.log(`✓ Processed 1 bar for newly swapped ${symbol} strategy`);
+        } else {
+          const warmupBars = bars.slice(0, -1);
+          const liveBar = bars[bars.length - 1];
+
+          for (const bar of warmupBars) {
+            await newInstance.processBar(bar, { replay: true });
+          }
+
+          // Process the most recent bar live so the strategy can act immediately
+          await newInstance.processBar(liveBar);
+          console.log(
+            `✓ Warmed up ${warmupBars.length} bar(s) and processed latest bar for ${symbol}`
+          );
         }
-        console.log(`✓ Processed ${bars.length} bar(s) for newly swapped ${symbol} strategy`);
       }
     }
 
@@ -182,8 +195,9 @@ export class MultiStrategyManager {
 
         const timeframe = instance.getTimeframe();
         const bars = await client.getHistoricalBars(symbol, 2, timeframe);
+        const newBars = instance.filterNewBars(bars);
 
-        results.set(symbol, bars);
+        results.set(symbol, newBars);
       } catch (error) {
         console.error(`Failed to fetch bars for ${symbol}:`, error);
       }
@@ -218,8 +232,9 @@ export class MultiStrategyManager {
 
         const timeframe = instance.getTimeframe();
         const bars = await client.getHistoricalBars(symbol, 2, timeframe);
+        const newBars = instance.filterNewBars(bars);
 
-        results.set(symbol, bars);
+        results.set(symbol, newBars);
       } catch (error) {
         console.error(`Failed to fetch bars for ${symbol}:`, error);
       }

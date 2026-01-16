@@ -27,6 +27,7 @@ export class StrategyEngine {
   private state: StrategyRuntimeState;
   private timers: TimerManager;
   private barHistory: Bar[] = [];
+  private replayMode: boolean = false;
 
   constructor(
     private ir: CompiledIR,
@@ -50,20 +51,29 @@ export class StrategyEngine {
   /**
    * Process a bar close event
    */
-  async processBar(bar: Bar): Promise<void> {
-    this.state.barCount++;
-    this.state.currentBar = bar;
-    this.barHistory.push(bar);
+  async processBar(
+    bar: Bar,
+    options?: { replay?: boolean }
+  ): Promise<void> {
+    this.replayMode = options?.replay ?? false;
 
-    // Compute features for this bar
-    await this.computeFeatures(bar);
+    try {
+      this.state.barCount++;
+      this.state.currentBar = bar;
+      this.barHistory.push(bar);
 
-    // Tick timers
-    this.timers.tick();
-    this._updateStateTimers();
+      // Compute features for this bar
+      await this.computeFeatures(bar);
 
-    // Evaluate transitions from current state
-    await this.evaluateTransitions();
+      // Tick timers
+      this.timers.tick();
+      this._updateStateTimers();
+
+      // Evaluate transitions from current state
+      await this.evaluateTransitions();
+    } finally {
+      this.replayMode = false;
+    }
   }
 
   /**
@@ -212,6 +222,13 @@ export class StrategyEngine {
           break;
 
         case 'submit_order_plan':
+          if (this.replayMode) {
+            this.log(
+              'info',
+              `Replay mode active - skipping order plan submission${action.planId ? ` (${action.planId})` : ''}`
+            );
+            return;
+          }
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
@@ -260,6 +277,10 @@ export class StrategyEngine {
           break;
 
         case 'cancel_entries':
+          if (this.replayMode) {
+            this.log('info', 'Replay mode active - skipping order cancellation');
+            return;
+          }
           if (this.state.openOrders.length > 0) {
             const cancelResult = await this.brokerAdapter.cancelOpenEntries(
               this.ir.symbol,

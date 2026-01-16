@@ -329,9 +329,22 @@ export class LiveTradingOrchestrator {
             // Mark bars as fetched
             instance.markBarsFetched();
 
-            // Process each bar
-            for (const bar of bars) {
-              await instance.processBar(bar);
+            // Process bars: warm up on historical bars, act only on latest
+            if (bars.length === 0) {
+              continue;
+            }
+
+            if (bars.length === 1) {
+              await instance.processBar(bars[0]);
+            } else {
+              const warmupBars = bars.slice(0, -1);
+              const liveBar = bars[bars.length - 1];
+
+              for (const bar of warmupBars) {
+                await instance.processBar(bar, { replay: true });
+              }
+
+              await instance.processBar(liveBar);
             }
 
             // Check if evaluation is due (every bar for now)

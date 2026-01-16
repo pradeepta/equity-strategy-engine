@@ -25,6 +25,7 @@ export class StrategyInstance {
   private yamlContent: string;
   private initialized: boolean = false;
   private lastBarFetchTime: number = 0;  // Track last time we fetched bars
+  private lastProcessedBarTimestamp: number | null = null;
 
   constructor(
     strategyId: string,
@@ -70,13 +71,19 @@ export class StrategyInstance {
   /**
    * Process a bar through the strategy engine
    */
-  async processBar(bar: Bar): Promise<void> {
+  async processBar(
+    bar: Bar,
+    options?: { replay?: boolean }
+  ): Promise<void> {
     if (!this.initialized) {
       throw new Error('Strategy not initialized. Call initialize() first.');
     }
 
-    await this.engine.processBar(bar);
-    this.barsSinceLastEval++;
+    await this.engine.processBar(bar, options);
+    this.lastProcessedBarTimestamp = bar.timestamp;
+    if (!options?.replay) {
+      this.barsSinceLastEval++;
+    }
   }
 
   /**
@@ -180,6 +187,17 @@ export class StrategyInstance {
    */
   getTimeframe(): string {
     return this.ir.timeframe;
+  }
+
+  /**
+   * Filter bars to only those newer than the last processed bar.
+   */
+  filterNewBars(bars: Bar[]): Bar[] {
+    if (this.lastProcessedBarTimestamp === null) {
+      return bars;
+    }
+
+    return bars.filter((bar) => bar.timestamp > this.lastProcessedBarTimestamp!);
   }
 
   /**
