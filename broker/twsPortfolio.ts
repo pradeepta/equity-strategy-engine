@@ -77,10 +77,10 @@ export class PortfolioDataFetcher {
   /**
    * Get portfolio snapshot with caching
    */
-  async getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
+  async getPortfolioSnapshot(forceRefresh: boolean = false): Promise<PortfolioSnapshot> {
     // Return cached data if fresh
     const now = Date.now();
-    if (this.cache && (now - this.lastFetchTime) < this.cacheTTL) {
+    if (!forceRefresh && this.cache && (now - this.lastFetchTime) < this.cacheTTL) {
       return this.cache;
     }
 

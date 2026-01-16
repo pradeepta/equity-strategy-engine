@@ -223,6 +223,12 @@ export interface CancellationResult {
 
 export interface BrokerAdapter {
   submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]>;
+  submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: OrderSide,
+    env: BrokerEnvironment
+  ): Promise<Order>;
   cancelOpenEntries(
     symbol: string,
     orders: Order[],
@@ -238,4 +244,11 @@ export interface BrokerEnvironment {
   accountId?: string;
   dryRun?: boolean;
   mcpClient?: unknown; // For MCP adapter
+  allowLiveOrders?: boolean;
+  allowCancelEntries?: boolean;
+  maxOrdersPerSymbol?: number;
+  maxOrderQty?: number;
+  maxNotionalPerSymbol?: number;
+  dailyLossLimit?: number;
+  currentDailyPnL?: number;
 }

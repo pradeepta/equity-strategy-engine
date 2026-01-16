@@ -24,6 +24,20 @@ async function main() {
   const brokerEnv: BrokerEnvironment = {
     accountId: process.env.TWS_ACCOUNT_ID || 'paper',
     dryRun: !(process.env.LIVE === 'true' || process.env.LIVE === '1'),
+    allowLiveOrders: process.env.ALLOW_LIVE_ORDERS !== 'false',
+    allowCancelEntries: process.env.ALLOW_CANCEL_ENTRIES === 'true',
+    maxOrdersPerSymbol: process.env.MAX_ORDERS_PER_SYMBOL
+      ? parseInt(process.env.MAX_ORDERS_PER_SYMBOL)
+      : undefined,
+    maxOrderQty: process.env.MAX_ORDER_QTY
+      ? parseInt(process.env.MAX_ORDER_QTY)
+      : undefined,
+    maxNotionalPerSymbol: process.env.MAX_NOTIONAL_PER_SYMBOL
+      ? parseFloat(process.env.MAX_NOTIONAL_PER_SYMBOL)
+      : undefined,
+    dailyLossLimit: process.env.DAILY_LOSS_LIMIT
+      ? parseFloat(process.env.DAILY_LOSS_LIMIT)
+      : undefined,
   };
 
   // User ID for database queries (from env or default)

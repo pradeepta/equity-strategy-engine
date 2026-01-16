@@ -3,8 +3,13 @@
  * Demonstrates how to call MCP tools for order execution
  * (Stub: shows the interface structure but doesn't actually call MCP)
  */
-import { OrderPlan, Order, BrokerEnvironment, CancellationResult } from '../spec/types';
-import { BaseBrokerAdapter } from './broker';
+import {
+  OrderPlan,
+  Order,
+  BrokerEnvironment,
+  CancellationResult,
+} from "../spec/types";
+import { BaseBrokerAdapter } from "./broker";
 
 /**
  * Mock MCP Client interface (would be real in production)
@@ -28,22 +33,28 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
   /**
    * Submit order plan via MCP tool call
    */
-  async submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]> {
-    console.log('\n' + '='.repeat(60));
-    console.log('ALPACA MCP ADAPTER: ORDER PLAN SUBMISSION');
-    console.log('='.repeat(60));
+  async submitOrderPlan(
+    plan: OrderPlan,
+    env: BrokerEnvironment
+  ): Promise<Order[]> {
+    console.log("\n" + "=".repeat(60));
+    console.log("ALPACA MCP ADAPTER: ORDER PLAN SUBMISSION");
+    console.log("=".repeat(60));
+
+    this.enforceOrderConstraints(plan, env);
 
     console.log(this.formatBracketPayload(plan));
-    console.log('');
+    console.log("");
 
     const expanded = this.expandSplitBracket(plan);
     const submittedOrders: Order[] = [];
 
-    for (let i = 0; i < expanded.length; i++) {
-      const bracket = expanded[i];
-      console.log(`\nSubmitting bracket ${i + 1}/${expanded.length} via MCP:`);
+    try {
+      for (let i = 0; i < expanded.length; i++) {
+        const bracket = expanded[i];
+        console.log(`\nSubmitting bracket ${i + 1}/${expanded.length} via MCP:`);
 
-      const toolName = 'alpaca_submit_bracket_order';
+      const toolName = "alpaca_submit_bracket_order";
       const args = {
         symbol: plan.symbol,
         qty: bracket.entryOrder.qty,
@@ -51,37 +62,100 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
         entry_price: plan.targetEntryPrice,
         take_profit_price: bracket.takeProfit.limitPrice,
         stop_loss_price: bracket.stopLoss.limitPrice,
-        time_in_force: 'day',
+        time_in_force: "day",
       };
 
       console.log(`\nMCP Tool Call: ${toolName}`);
-      console.log('Arguments:');
+      console.log("Arguments:");
       console.log(JSON.stringify(args, null, 2));
 
-      if (env.dryRun) {
-        console.log('→ DRY RUN: MCP tool would be called (not actually called)');
-        submittedOrders.push(bracket.entryOrder);
-      } else {
-        try {
-          console.log('→ Calling MCP tool...');
+        if (env.dryRun) {
+          console.log(
+            "→ DRY RUN: MCP tool would be called (not actually called)"
+          );
+          submittedOrders.push(bracket.entryOrder);
+        } else {
+          console.log("→ Calling MCP tool...");
           const response = await this.mcpClient.callTool(toolName, args);
 
           if (response.error) {
-            console.error(`✗ MCP Error: ${response.error}`);
-          } else {
-            console.log('← MCP Response:');
-            console.log(JSON.stringify(response.result, null, 2));
-            submittedOrders.push(bracket.entryOrder);
+            throw new Error(response.error);
           }
-        } catch (e) {
-          const err = e as Error;
-          console.error(`✗ Failed to call MCP tool: ${err.message}`);
+
+          console.log("← MCP Response:");
+          console.log(JSON.stringify(response.result, null, 2));
+          submittedOrders.push(bracket.entryOrder);
         }
       }
+    } catch (e) {
+      const err = e as Error;
+      console.error(`✗ Failed to submit bracket: ${err.message}`);
+
+      if (submittedOrders.length > 0) {
+        console.warn("⚠️  Rolling back submitted orders due to failure...");
+        await this.cancelOpenEntries(plan.symbol, submittedOrders, env);
+      }
+
+      throw err;
     }
 
-    console.log('='.repeat(60) + '\n');
+    console.log("=".repeat(60) + "\n");
     return submittedOrders;
+  }
+
+  /**
+   * Submit a market order to close a position via MCP
+   */
+  async submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: "buy" | "sell",
+    env: BrokerEnvironment
+  ): Promise<Order> {
+    console.log("\n" + "=".repeat(60));
+    console.log("ALPACA MCP ADAPTER: MARKET ORDER");
+    console.log("=".repeat(60));
+    console.log(`Symbol: ${symbol}, Side: ${side}, Qty: ${qty}`);
+
+    const order: Order = {
+      id: this.generateOrderId("market"),
+      planId: `market-exit-${Date.now()}`,
+      symbol,
+      side,
+      qty,
+      type: "market",
+      status: env.dryRun ? "submitted" : "pending",
+    };
+
+    const toolName = "alpaca_submit_market_order";
+    const args = {
+      symbol,
+      qty,
+      side,
+      time_in_force: "day",
+    };
+
+    console.log(`\nMCP Tool Call: ${toolName}`);
+    console.log("Arguments:");
+    console.log(JSON.stringify(args, null, 2));
+
+    if (env.dryRun) {
+      console.log("→ DRY RUN: MCP tool would be called (not actually called)");
+      console.log("=".repeat(60));
+      return order;
+    }
+
+    console.log("→ Calling MCP tool...");
+    const response = await this.mcpClient.callTool(toolName, args);
+    if (response.error) {
+      throw new Error(response.error);
+    }
+
+    console.log("← MCP Response:");
+    console.log(JSON.stringify(response.result, null, 2));
+    order.status = "submitted";
+    console.log("=".repeat(60));
+    return order;
   }
 
   /**
@@ -100,22 +174,22 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
     };
 
     for (const order of orders) {
-      const toolName = 'alpaca_cancel_order';
+      const toolName = "alpaca_cancel_order";
       const args = {
         order_id: order.id,
         symbol,
       };
 
       console.log(`\nMCP Tool Call: ${toolName}`);
-      console.log('Arguments:');
+      console.log("Arguments:");
       console.log(JSON.stringify(args, null, 2));
 
       if (env.dryRun) {
-        console.log('→ DRY RUN: Would call MCP tool');
+        console.log("→ DRY RUN: Would call MCP tool");
         result.succeeded.push(order.id);
       } else {
         try {
-          console.log('→ Calling MCP tool...');
+          console.log("→ Calling MCP tool...");
           const response = await this.mcpClient.callTool(toolName, args);
 
           if (response.error) {
@@ -125,7 +199,7 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
             // FAIL FAST: Throw immediately on MCP error
             throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
           } else {
-            console.log('← Cancelled via MCP');
+            console.log("← Cancelled via MCP");
             result.succeeded.push(order.id);
           }
         } catch (e) {
@@ -139,29 +213,34 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
       }
     }
 
-    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    console.log(
+      `Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`
+    );
     return result;
   }
 
   /**
    * Get open orders via MCP
    */
-  async getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]> {
-    const toolName = 'alpaca_get_open_orders';
+  async getOpenOrders(
+    symbol: string,
+    env: BrokerEnvironment
+  ): Promise<Order[]> {
+    const toolName = "alpaca_get_open_orders";
     const args = { symbol };
 
     console.log(`\nALPACA MCP: Fetching open orders for ${symbol}`);
     console.log(`MCP Tool Call: ${toolName}`);
-    console.log('Arguments:');
+    console.log("Arguments:");
     console.log(JSON.stringify(args, null, 2));
 
     if (env.dryRun) {
-      console.log('→ DRY RUN: Would call MCP tool');
+      console.log("→ DRY RUN: Would call MCP tool");
       return [];
     }
 
     try {
-      console.log('→ Calling MCP tool...');
+      console.log("→ Calling MCP tool...");
       const response = await this.mcpClient.callTool(toolName, args);
 
       if (response.error) {
@@ -169,7 +248,7 @@ export class AlpacaMcpAdapter extends BaseBrokerAdapter {
         return [];
       }
 
-      console.log('← MCP Response:');
+      console.log("← MCP Response:");
       console.log(JSON.stringify(response.result, null, 2));
 
       // Map MCP response to Order objects

@@ -8,7 +8,7 @@ import { StrategyCompiler } from '../compiler/compile';
 import { createStandardRegistry } from '../features/registry';
 import { StrategyEngine } from '../runtime/engine';
 import { BaseBrokerAdapter } from '../broker/broker';
-import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult } from '../spec/types';
+import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult, Order } from '../spec/types';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -133,6 +133,26 @@ export class StrategyInstance {
     }
 
     return result;
+  }
+
+  /**
+   * Submit a market order to close an open position
+   */
+  async closePositionMarket(quantity: number): Promise<Order> {
+    const side = quantity > 0 ? 'sell' : 'buy';
+    const qty = Math.abs(quantity);
+
+    if (qty === 0) {
+      throw new Error('Cannot close position with zero quantity');
+    }
+
+    console.log(`Submitting market exit for ${this.symbol}: ${side} ${qty}`);
+    return this.brokerAdapter.submitMarketOrder(
+      this.symbol,
+      qty,
+      side,
+      this.brokerEnv
+    );
   }
 
   /**

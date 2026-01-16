@@ -348,6 +348,24 @@ async function handleBacktestStrategy(args: any) {
         filledPrice: plan.targetEntryPrice,
       }];
     },
+    async submitMarketOrder(
+      symbol: string,
+      qty: number,
+      side: 'buy' | 'sell',
+      _env: any
+    ) {
+      return {
+        id: `order_${Date.now()}`,
+        planId: `market-exit-${Date.now()}`,
+        symbol,
+        side,
+        qty,
+        type: 'market' as const,
+        status: 'filled' as const,
+        filledQty: qty,
+        filledPrice: 0,
+      };
+    },
     async cancelOpenEntries(_symbol: string, _orders: any[], _env: any) {
       return {
         succeeded: [],

@@ -8,12 +8,42 @@ import { OrderPlan, Order, BrokerAdapter, BrokerEnvironment, CancellationResult 
  */
 export abstract class BaseBrokerAdapter implements BrokerAdapter {
   abstract submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]>;
+  abstract submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: 'buy' | 'sell',
+    env: BrokerEnvironment
+  ): Promise<Order>;
   abstract cancelOpenEntries(
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
   ): Promise<CancellationResult>;
   abstract getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]>;
+
+  /**
+   * Enforce broker-level safety checks for new order plans.
+   */
+  protected enforceOrderConstraints(plan: OrderPlan, env: BrokerEnvironment): void {
+    if (env.allowLiveOrders === false) {
+      throw new Error('Live order submission is disabled by kill switch');
+    }
+
+    if (env.maxOrderQty !== undefined && plan.qty > env.maxOrderQty) {
+      throw new Error(
+        `Order qty ${plan.qty} exceeds maxOrderQty ${env.maxOrderQty}`
+      );
+    }
+
+    if (env.maxNotionalPerSymbol !== undefined) {
+      const notional = plan.qty * plan.targetEntryPrice;
+      if (notional > env.maxNotionalPerSymbol) {
+        throw new Error(
+          `Order notional ${notional.toFixed(2)} exceeds maxNotionalPerSymbol ${env.maxNotionalPerSymbol}`
+        );
+      }
+    }
+  }
 
   /**
    * Helper: Generate unique order IDs

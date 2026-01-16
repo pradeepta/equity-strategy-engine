@@ -232,6 +232,58 @@ export class StrategyEngine {
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
+              if (this.brokerEnv.allowLiveOrders === false) {
+                this.log('warn', 'Live order submission blocked by kill switch');
+                return;
+              }
+
+              if (
+                this.brokerEnv.dailyLossLimit !== undefined &&
+                this.brokerEnv.currentDailyPnL !== undefined &&
+                this.brokerEnv.currentDailyPnL <= -this.brokerEnv.dailyLossLimit
+              ) {
+                this.log('warn', 'Live order submission blocked by daily loss limit', {
+                  currentDailyPnL: this.brokerEnv.currentDailyPnL,
+                  dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                });
+                return;
+              }
+
+              const expectedNewOrders = plan.brackets.length > 0 ? plan.brackets.length : 1;
+              if (
+                this.brokerEnv.maxOrdersPerSymbol !== undefined &&
+                (this.state.openOrders.length + expectedNewOrders) > this.brokerEnv.maxOrdersPerSymbol
+              ) {
+                this.log('warn', 'Live order submission blocked by maxOrdersPerSymbol', {
+                  currentOpenOrders: this.state.openOrders.length,
+                  expectedNewOrders,
+                  maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
+                });
+                return;
+              }
+
+              if (
+                this.brokerEnv.maxOrderQty !== undefined &&
+                plan.qty > this.brokerEnv.maxOrderQty
+              ) {
+                this.log('warn', 'Live order submission blocked by maxOrderQty', {
+                  orderQty: plan.qty,
+                  maxOrderQty: this.brokerEnv.maxOrderQty,
+                });
+                return;
+              }
+
+              if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
+                const notional = plan.qty * plan.targetEntryPrice;
+                if (notional > this.brokerEnv.maxNotionalPerSymbol) {
+                  this.log('warn', 'Live order submission blocked by maxNotionalPerSymbol', {
+                    notional,
+                    maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                  });
+                  return;
+                }
+              }
+
               // CRITICAL: Always cancel any existing pending entry orders before placing new ones
               // This prevents duplicate orders when strategy retriggers
               if (this.state.openOrders.length > 0) {
@@ -279,6 +331,10 @@ export class StrategyEngine {
         case 'cancel_entries':
           if (this.replayMode) {
             this.log('info', 'Replay mode active - skipping order cancellation');
+            return;
+          }
+          if (this.brokerEnv.allowCancelEntries !== true) {
+            this.log('warn', 'Order cancellation blocked (cancel_entries disabled)');
             return;
           }
           if (this.state.openOrders.length > 0) {

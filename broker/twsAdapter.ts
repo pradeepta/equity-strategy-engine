@@ -191,6 +191,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
     console.log('TWS ADAPTER: ORDER PLAN SUBMISSION');
     console.log('='.repeat(60));
 
+    this.enforceOrderConstraints(plan, env);
+
     // Print the bracket structure
     console.log(this.formatBracketPayload(plan));
     console.log('');
@@ -203,20 +205,20 @@ export class TwsAdapter extends BaseBrokerAdapter {
     const expanded = this.expandSplitBracket(plan);
     const submittedOrders: Order[] = [];
 
-    for (let i = 0; i < expanded.length; i++) {
-      const bracket = expanded[i];
-      console.log(`\nSubmitting bracket ${i + 1}/${expanded.length}:`);
+    try {
+      for (let i = 0; i < expanded.length; i++) {
+        const bracket = expanded[i];
+        console.log(`\nSubmitting bracket ${i + 1}/${expanded.length}:`);
 
-      if (env.dryRun) {
-        // Stub: pretend submission succeeds
-        console.log('→ DRY RUN: Bracket order would be submitted (not actually sent)');
-        console.log(`  Entry: ${bracket.entryOrder.qty} @ ${bracket.entryOrder.limitPrice}`);
-        console.log(`  Take Profit: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`);
-        console.log(`  Stop Loss: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
-        submittedOrders.push(bracket.entryOrder);
-      } else {
-        // Real submission to TWS
-        try {
+        if (env.dryRun) {
+          // Stub: pretend submission succeeds
+          console.log('→ DRY RUN: Bracket order would be submitted (not actually sent)');
+          console.log(`  Entry: ${bracket.entryOrder.qty} @ ${bracket.entryOrder.limitPrice}`);
+          console.log(`  Take Profit: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`);
+          console.log(`  Stop Loss: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
+          submittedOrders.push(bracket.entryOrder);
+        } else {
+          // Real submission to TWS
           // Save original order ID before submitting
           const originalOrderId = bracket.entryOrder.id;
 
@@ -232,11 +234,18 @@ export class TwsAdapter extends BaseBrokerAdapter {
           bracket.entryOrder.id = parentOrder.orderId.toString();
           bracket.entryOrder.status = 'submitted';
           submittedOrders.push(bracket.entryOrder);
-        } catch (e) {
-          const err = e as Error;
-          console.error(`✗ Failed to submit bracket: ${err.message}`);
         }
       }
+    } catch (e) {
+      const err = e as Error;
+      console.error(`✗ Failed to submit bracket: ${err.message}`);
+
+      if (submittedOrders.length > 0) {
+        console.warn('⚠️  Rolling back submitted orders due to failure...');
+        await this.cancelOpenEntries(plan.symbol, submittedOrders, env);
+      }
+
+      throw err;
     }
 
     console.log('='.repeat(60));
@@ -255,6 +264,81 @@ export class TwsAdapter extends BaseBrokerAdapter {
     }, 2000);
 
     return submittedOrders;
+  }
+
+  /**
+   * Submit a market order to close a position
+   */
+  async submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: 'buy' | 'sell',
+    env: BrokerEnvironment
+  ): Promise<Order> {
+    console.log('\n' + '='.repeat(60));
+    console.log('TWS ADAPTER: MARKET ORDER');
+    console.log('='.repeat(60));
+    console.log(`Symbol: ${symbol}, Side: ${side}, Qty: ${qty}`);
+
+    const order: Order = {
+      id: this.generateOrderId('market'),
+      planId: `market-exit-${Date.now()}`,
+      symbol,
+      side,
+      qty,
+      type: 'market',
+      status: env.dryRun ? 'submitted' : 'pending',
+    };
+
+    if (env.dryRun) {
+      console.log('→ DRY RUN: Market order would be submitted (not actually sent)');
+      console.log('='.repeat(60));
+      return order;
+    }
+
+    if (!this.connected) {
+      await this.connect();
+    }
+
+    await this.waitForOrderId();
+
+    const contract = {
+      symbol,
+      secType: 'STK',
+      exchange: 'SMART',
+      currency: 'USD',
+    };
+
+    const orderId = this.nextOrderId++;
+    const ibOrder = {
+      action: side === 'buy' ? 'BUY' : 'SELL',
+      orderType: 'MKT',
+      totalQuantity: qty,
+      transmit: true,
+      outsideRth: true,
+      tif: 'GTC',
+    };
+
+    console.log(`\n🔵 PLACING MARKET ORDER for ${symbol}:`);
+    console.log(`   📊 Order ID: ${orderId}`);
+    console.log(`      action=${ibOrder.action}, qty=${ibOrder.totalQuantity}, orderType=${ibOrder.orderType}, tif=${ibOrder.tif}`);
+
+    this.client.placeOrder(orderId, contract, ibOrder);
+
+    this.pendingOrders.set(orderId, {
+      orderId,
+      symbol,
+      qty,
+      side: ibOrder.action as 'BUY' | 'SELL',
+      orderType: 'MKT',
+      status: 'Submitted',
+    });
+
+    order.id = orderId.toString();
+    order.status = 'submitted';
+
+    console.log('='.repeat(60));
+    return order;
   }
 
   /**

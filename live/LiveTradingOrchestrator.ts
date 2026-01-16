@@ -191,6 +191,14 @@ export class LiveTradingOrchestrator {
         });
       }
       console.log("");
+      console.log("🛡️  Risk Controls:");
+      console.log(`   allowLiveOrders: ${this.config.brokerEnv.allowLiveOrders !== false}`);
+      console.log(`   allowCancelEntries: ${this.config.brokerEnv.allowCancelEntries === true}`);
+      console.log(`   maxOrdersPerSymbol: ${this.config.brokerEnv.maxOrdersPerSymbol ?? 'unset'}`);
+      console.log(`   maxOrderQty: ${this.config.brokerEnv.maxOrderQty ?? 'unset'}`);
+      console.log(`   maxNotionalPerSymbol: ${this.config.brokerEnv.maxNotionalPerSymbol ?? 'unset'}`);
+      console.log(`   dailyLossLimit: ${this.config.brokerEnv.dailyLossLimit ?? 'unset'}`);
+      console.log("");
     } catch (error) {
       console.warn("⚠️  Could not fetch portfolio data:", error);
     }
@@ -290,6 +298,15 @@ export class LiveTradingOrchestrator {
           );
           await this.sleep(30000); // Wait 30 seconds
           continue;
+        }
+
+        // Update risk snapshot for broker environment
+        try {
+          const portfolio = await this.portfolioFetcher.getPortfolioSnapshot();
+          this.config.brokerEnv.currentDailyPnL =
+            portfolio.realizedPnL + portfolio.unrealizedPnL;
+        } catch (error) {
+          console.warn('⚠️  Failed to refresh portfolio snapshot for risk caps:', error);
         }
 
         // Check which strategies need bar updates based on their timeframe

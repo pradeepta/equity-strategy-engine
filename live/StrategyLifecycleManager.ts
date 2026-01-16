@@ -195,6 +195,12 @@ export class StrategyLifecycleManager {
 
       console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${instance.symbol}`);
 
+      const positionQty = await this.getPositionQuantity(instance.symbol);
+      if (positionQty !== 0) {
+        console.warn(`⚠️ Active position detected for ${instance.symbol} during swap: ${positionQty}`);
+        await this.closePositionAndWait(instance, positionQty);
+      }
+
       // Check for active position
       if (state.currentState === 'MANAGING' || state.openOrders.length > 0) {
         console.warn(`⚠️ Strategy ${instance.symbol} has active position during swap.`);
@@ -330,6 +336,12 @@ export class StrategyLifecycleManager {
         return;
       }
 
+      const positionQty = await this.getPositionQuantity(instance.symbol);
+      if (positionQty !== 0) {
+        console.warn(`⚠️ Active position detected for ${instance.symbol} during close: ${positionQty}`);
+        await this.closePositionAndWait(instance, positionQty);
+      }
+
       // Log evaluation to database after successful cancellation
       await this.execHistoryRepo.logEvaluation({
         strategyId: instance.strategyId,
@@ -375,5 +387,50 @@ export class StrategyLifecycleManager {
       hash |= 0;
     }
     return Math.abs(hash);
+  }
+
+  private async getPositionQuantity(symbol: string): Promise<number> {
+    const portfolio = await this.portfolioFetcher.getPortfolioSnapshot(true);
+    const position = portfolio.positions.find(p => p.symbol === symbol);
+    return position ? position.quantity : 0;
+  }
+
+  private async closePositionAndWait(
+    instance: StrategyInstance,
+    positionQty: number
+  ): Promise<void> {
+    if (this.orchestrator?.config?.brokerEnv?.dryRun) {
+      console.warn(
+        `⚠️  Dry-run mode active - skipping market exit for ${instance.symbol} (position ${positionQty})`
+      );
+      return;
+    }
+
+    if (this.orchestrator?.config?.brokerEnv?.allowLiveOrders === false) {
+      throw new Error(
+        `Live orders disabled - cannot close position for ${instance.symbol}`
+      );
+    }
+
+    await instance.closePositionMarket(positionQty);
+
+    const timeoutMs = 15000;
+    const pollIntervalMs = 500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeoutMs) {
+      const qty = await this.getPositionQuantity(instance.symbol);
+      if (qty === 0) {
+        console.log(`✓ Position flattened for ${instance.symbol}`);
+        return;
+      }
+      await this.sleep(pollIntervalMs);
+    }
+
+    throw new Error(`Timeout waiting for position to close for ${instance.symbol}`);
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
