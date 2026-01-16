@@ -45,6 +45,9 @@ export class StrategyCompiler {
     // Collect declared features
     const declaredFeatures = new Set(dsl.features.map((f) => f.name));
 
+    // Validate that all declared features exist in registry
+    this.validateFeatureRegistry(declaredFeatures);
+
     // Parse all expressions and type-check
     this.validateExpressions(dsl, declaredFeatures);
 
@@ -76,6 +79,39 @@ export class StrategyCompiler {
     };
 
     return ir;
+  }
+
+  /**
+   * Validate that all declared features exist in the registry
+   */
+  private validateFeatureRegistry(declaredFeatures: Set<string>): void {
+    const builtins = new Set(['open', 'high', 'low', 'close', 'volume', 'price']);
+    const undefinedFeatures: string[] = [];
+
+    for (const featureName of declaredFeatures) {
+      // Skip builtins
+      if (builtins.has(featureName)) {
+        continue;
+      }
+
+      // Check if feature exists in registry
+      const feature = this.featureRegistry.getFeature(featureName);
+      if (!feature) {
+        undefinedFeatures.push(featureName);
+      }
+    }
+
+    if (undefinedFeatures.length > 0) {
+      const availableFeatures = Array.from(this.featureRegistry.getAllFeatures().keys())
+        .filter(name => !builtins.has(name))
+        .sort();
+
+      throw new Error(
+        `Undefined feature(s) in strategy: ${undefinedFeatures.join(', ')}. ` +
+        `These features are not registered in the feature registry. ` +
+        `Available features: ${availableFeatures.join(', ')}`
+      );
+    }
   }
 
   /**

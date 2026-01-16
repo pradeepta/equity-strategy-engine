@@ -206,13 +206,34 @@ export interface RuntimeLog {
 // ============================================================================
 // Broker Adapter
 // ============================================================================
+
+/**
+ * Result of order cancellation operation
+ * Tracks which orders were successfully cancelled and which failed
+ */
+export interface CancellationResult {
+  /** Order IDs that were successfully cancelled */
+  succeeded: string[];
+  /** Orders that failed to cancel with error reasons */
+  failed: Array<{
+    orderId: string;
+    reason: string;
+  }>;
+}
+
 export interface BrokerAdapter {
   submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]>;
+  submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: OrderSide,
+    env: BrokerEnvironment
+  ): Promise<Order>;
   cancelOpenEntries(
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void>;
+  ): Promise<CancellationResult>;
   getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]>;
 }
 
@@ -223,4 +244,17 @@ export interface BrokerEnvironment {
   accountId?: string;
   dryRun?: boolean;
   mcpClient?: unknown; // For MCP adapter
+  allowLiveOrders?: boolean;
+  allowCancelEntries?: boolean;
+  maxOrdersPerSymbol?: number;
+  maxOrderQty?: number;
+  maxNotionalPerSymbol?: number;
+  dailyLossLimit?: number;
+  currentDailyPnL?: number;
+  auditEvent?: (entry: {
+    component: string;
+    level?: 'info' | 'warn' | 'error';
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) => void;
 }

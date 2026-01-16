@@ -77,3 +77,7 @@ Thumbs.db
 # Backtest results (optional - uncomment if you don't want to commit these)
 # backtest-results/
 # results/
+
+strategies/
+
+/generated/prisma

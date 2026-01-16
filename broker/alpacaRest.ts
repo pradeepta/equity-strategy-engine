@@ -3,7 +3,7 @@
  * Converts order plans into Alpaca API calls
  */
 import * as https from 'https';
-import { OrderPlan, Order, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerEnvironment, CancellationResult } from '../spec/types';
 import { BaseBrokerAdapter } from './broker';
 
 interface AlpacaOrderRequest {
@@ -60,6 +60,8 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
     console.log('ALPACA REST ADAPTER: ORDER PLAN SUBMISSION');
     console.log('='.repeat(60));
 
+    this.enforceOrderConstraints(plan, env);
+
     // Print the bracket structure
     console.log(this.formatBracketPayload(plan));
     console.log('');
@@ -67,40 +69,125 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
     const expanded = this.expandSplitBracket(plan);
     const submittedOrders: Order[] = [];
 
-    for (let i = 0; i < expanded.length; i++) {
-      const bracket = expanded[i];
-      console.log(`\nSubmitting bracket ${i + 1}/${expanded.length}:`);
+    try {
+      for (let i = 0; i < expanded.length; i++) {
+        const bracket = expanded[i];
+        console.log(`\nSubmitting bracket ${i + 1}/${expanded.length}:`);
 
-      // In production: use the actual Alpaca REST client
-      // For demo: show the API payload shape
-      const alpacaOrderRequest = this.buildAlpacaBracketRequest(bracket, plan);
+        // In production: use the actual Alpaca REST client
+        // For demo: show the API payload shape
+        const alpacaOrderRequest = this.buildAlpacaBracketRequest(bracket, plan);
 
-      console.log('POST /v2/orders');
-      console.log('Payload:');
-      console.log(JSON.stringify(alpacaOrderRequest, null, 2));
+        console.log('POST /v2/orders');
+        console.log('Payload:');
+        console.log(JSON.stringify(alpacaOrderRequest, null, 2));
 
-      if (env.dryRun) {
-        // Stub: pretend submission succeeds
-        console.log('→ DRY RUN: Order would be submitted (not actually sent)');
-        submittedOrders.push(bracket.entryOrder);
-      } else {
-        // Real submission (would call actual Alpaca API)
-        try {
+        if (env.dryRun) {
+          // Stub: pretend submission succeeds
+          console.log('→ DRY RUN: Order would be submitted (not actually sent)');
+          submittedOrders.push(bracket.entryOrder);
+        } else {
+          // Real submission (would call actual Alpaca API)
           const response = await this.submitBracketToAlpaca(alpacaOrderRequest, env);
           console.log('← Response: 200 OK');
           console.log(JSON.stringify(response, null, 2));
 
           // Map response to Order objects
           submittedOrders.push(bracket.entryOrder);
-        } catch (e) {
-          const err = e as Error;
-          console.error(`✗ Failed to submit bracket: ${err.message}`);
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'info',
+            message: 'Bracket submitted',
+            metadata: {
+              symbol: plan.symbol,
+              planId: plan.id,
+            },
+          });
         }
       }
+    } catch (e) {
+      const err = e as Error;
+      console.error(`✗ Failed to submit bracket: ${err.message}`);
+      env.auditEvent?.({
+        component: 'AlpacaRestAdapter',
+        level: 'error',
+        message: 'Bracket submission failed',
+        metadata: {
+          symbol: plan.symbol,
+          planId: plan.id,
+          error: err.message,
+        },
+      });
+
+      if (submittedOrders.length > 0) {
+        console.warn('⚠️  Rolling back submitted orders due to failure...');
+        await this.cancelOpenEntries(plan.symbol, submittedOrders, env);
+      }
+
+      throw err;
     }
 
     console.log('='.repeat(60) + '\n');
     return submittedOrders;
+  }
+
+  /**
+   * Submit a market order to close a position
+   */
+  async submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: 'buy' | 'sell',
+    env: BrokerEnvironment
+  ): Promise<Order> {
+    console.log('\n' + '='.repeat(60));
+    console.log('ALPACA REST ADAPTER: MARKET ORDER');
+    console.log('='.repeat(60));
+    console.log(`Symbol: ${symbol}, Side: ${side}, Qty: ${qty}`);
+
+    const order: Order = {
+      id: this.generateOrderId('market'),
+      planId: `market-exit-${Date.now()}`,
+      symbol,
+      side,
+      qty,
+      type: 'market',
+      status: env.dryRun ? 'submitted' : 'pending',
+    };
+
+    if (env.dryRun) {
+      console.log('→ DRY RUN: Market order would be submitted (not actually sent)');
+      console.log('='.repeat(60));
+      return order;
+    }
+
+    const alpacaOrderRequest: AlpacaOrderRequest = {
+      symbol,
+      qty,
+      side,
+      type: 'market',
+      time_in_force: 'day',
+      order_class: 'simple',
+    };
+
+    console.log('POST /v2/orders');
+    console.log('Payload:');
+    console.log(JSON.stringify(alpacaOrderRequest, null, 2));
+
+    await this.submitBracketToAlpaca(alpacaOrderRequest, env);
+    order.status = 'submitted';
+    env.auditEvent?.({
+      component: 'AlpacaRestAdapter',
+      level: 'info',
+      message: 'Market order submitted',
+      metadata: {
+        symbol,
+        qty,
+        side,
+      },
+    });
+    console.log('='.repeat(60));
+    return order;
   }
 
   /**
@@ -110,8 +197,13 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void> {
+  ): Promise<CancellationResult> {
     console.log(`\nALPACA: Cancelling ${orders.length} orders for ${symbol}`);
+
+    const result: CancellationResult = {
+      succeeded: [],
+      failed: [],
+    };
 
     for (const order of orders) {
       console.log(`DELETE /v2/orders/${order.id}`);
@@ -120,14 +212,42 @@ export class AlpacaRestAdapter extends BaseBrokerAdapter {
         try {
           await this.cancelOrderAtAlpaca(order.id, env);
           console.log('✓ Cancelled');
+          result.succeeded.push(order.id);
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'info',
+            message: 'Order cancelled',
+            metadata: {
+              symbol,
+              orderId: order.id,
+            },
+          });
         } catch (e) {
           const err = e as Error;
-          console.error(`✗ Failed to cancel order ${order.id}: ${err.message}`);
+          const reason = `Alpaca API error: ${err.message}`;
+          console.error(`✗ Failed to cancel order ${order.id}: ${reason}`);
+          result.failed.push({ orderId: order.id, reason });
+          env.auditEvent?.({
+            component: 'AlpacaRestAdapter',
+            level: 'error',
+            message: 'Order cancellation failed',
+            metadata: {
+              symbol,
+              orderId: order.id,
+              reason,
+            },
+          });
+          // FAIL FAST: Throw immediately on first failure
+          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
       } else {
         console.log('→ DRY RUN: Would cancel');
+        result.succeeded.push(order.id);
       }
     }
+
+    console.log(`Cancellation result: ${result.succeeded.length} succeeded, ${result.failed.length} failed`);
+    return result;
   }
 
   /**

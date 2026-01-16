@@ -27,6 +27,7 @@ export class StrategyEngine {
   private state: StrategyRuntimeState;
   private timers: TimerManager;
   private barHistory: Bar[] = [];
+  private replayMode: boolean = false;
 
   constructor(
     private ir: CompiledIR,
@@ -50,20 +51,29 @@ export class StrategyEngine {
   /**
    * Process a bar close event
    */
-  async processBar(bar: Bar): Promise<void> {
-    this.state.barCount++;
-    this.state.currentBar = bar;
-    this.barHistory.push(bar);
+  async processBar(
+    bar: Bar,
+    options?: { replay?: boolean }
+  ): Promise<void> {
+    this.replayMode = options?.replay ?? false;
 
-    // Compute features for this bar
-    await this.computeFeatures(bar);
+    try {
+      this.state.barCount++;
+      this.state.currentBar = bar;
+      this.barHistory.push(bar);
 
-    // Tick timers
-    this.timers.tick();
-    this._updateStateTimers();
+      // Compute features for this bar
+      await this.computeFeatures(bar);
 
-    // Evaluate transitions from current state
-    await this.evaluateTransitions();
+      // Tick timers
+      this.timers.tick();
+      this._updateStateTimers();
+
+      // Evaluate transitions from current state
+      await this.evaluateTransitions();
+    } finally {
+      this.replayMode = false;
+    }
   }
 
   /**
@@ -212,9 +222,154 @@ export class StrategyEngine {
           break;
 
         case 'submit_order_plan':
+          if (this.replayMode) {
+            this.log(
+              'info',
+              `Replay mode active - skipping order plan submission${action.planId ? ` (${action.planId})` : ''}`
+            );
+            return;
+          }
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
+              if (this.brokerEnv.allowLiveOrders === false) {
+                this.log('warn', 'Live order submission blocked by kill switch');
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by kill switch',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                  },
+                });
+                return;
+              }
+
+              if (
+                this.brokerEnv.dailyLossLimit !== undefined &&
+                this.brokerEnv.currentDailyPnL !== undefined &&
+                this.brokerEnv.currentDailyPnL <= -this.brokerEnv.dailyLossLimit
+              ) {
+                this.log('warn', 'Live order submission blocked by daily loss limit', {
+                  currentDailyPnL: this.brokerEnv.currentDailyPnL,
+                  dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by daily loss limit',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    currentDailyPnL: this.brokerEnv.currentDailyPnL,
+                    dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                  },
+                });
+                return;
+              }
+
+              const expectedNewOrders = plan.brackets.length > 0 ? plan.brackets.length : 1;
+              if (
+                this.brokerEnv.maxOrdersPerSymbol !== undefined &&
+                (this.state.openOrders.length + expectedNewOrders) > this.brokerEnv.maxOrdersPerSymbol
+              ) {
+                this.log('warn', 'Live order submission blocked by maxOrdersPerSymbol', {
+                  currentOpenOrders: this.state.openOrders.length,
+                  expectedNewOrders,
+                  maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
+                });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by maxOrdersPerSymbol',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    currentOpenOrders: this.state.openOrders.length,
+                    expectedNewOrders,
+                    maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
+                  },
+                });
+                return;
+              }
+
+              if (
+                this.brokerEnv.maxOrderQty !== undefined &&
+                plan.qty > this.brokerEnv.maxOrderQty
+              ) {
+                this.log('warn', 'Live order submission blocked by maxOrderQty', {
+                  orderQty: plan.qty,
+                  maxOrderQty: this.brokerEnv.maxOrderQty,
+                });
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: 'warn',
+                  message: 'Live order submission blocked by maxOrderQty',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    orderQty: plan.qty,
+                    maxOrderQty: this.brokerEnv.maxOrderQty,
+                  },
+                });
+                return;
+              }
+
+              if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
+                const notional = plan.qty * plan.targetEntryPrice;
+                if (notional > this.brokerEnv.maxNotionalPerSymbol) {
+                  this.log('warn', 'Live order submission blocked by maxNotionalPerSymbol', {
+                    notional,
+                    maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'warn',
+                    message: 'Live order submission blocked by maxNotionalPerSymbol',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      notional,
+                      maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                    },
+                  });
+                  return;
+                }
+              }
+
+              // CRITICAL: Always cancel any existing pending entry orders before placing new ones
+              // This prevents duplicate orders when strategy retriggers
+              if (this.state.openOrders.length > 0) {
+                this.log('info', `Cancelling ${this.state.openOrders.length} existing order(s) before placing new order plan`);
+
+                const cancelResult = await this.brokerAdapter.cancelOpenEntries(
+                  this.ir.symbol,
+                  this.state.openOrders,
+                  this.brokerEnv
+                );
+
+                // CRITICAL: Verify cancellation succeeded before proceeding
+                if (cancelResult.failed.length > 0) {
+                  const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+                  const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+                  this.log('error', `Failed to cancel orders: ${failedIds}. Reasons: ${reasons}`);
+
+                  // DO NOT proceed with new order submission
+                  throw new Error(
+                    `Cannot place new orders - cancellation failed for: ${failedIds}`
+                  );
+                }
+
+                // Only clear state if cancellation succeeded
+                this.state.openOrders = this.state.openOrders.filter(
+                  o => !cancelResult.succeeded.includes(o.id)
+                );
+
+                this.log('info', `Successfully cancelled ${cancelResult.succeeded.length} orders`);
+              }
+
+              // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
                 plan,
                 this.brokerEnv
@@ -228,13 +383,44 @@ export class StrategyEngine {
           break;
 
         case 'cancel_entries':
-          await this.brokerAdapter.cancelOpenEntries(
-            this.ir.symbol,
-            this.state.openOrders,
-            this.brokerEnv
-          );
-          this.state.openOrders = [];
-          this.log('info', 'Cancelled all entries');
+          if (this.replayMode) {
+            this.log('info', 'Replay mode active - skipping order cancellation');
+            return;
+          }
+          if (this.brokerEnv.allowCancelEntries !== true) {
+            this.log('warn', 'Order cancellation blocked (cancel_entries disabled)');
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'warn',
+              message: 'Order cancellation blocked (cancel_entries disabled)',
+              metadata: {
+                symbol: this.ir.symbol,
+              },
+            });
+            return;
+          }
+          if (this.state.openOrders.length > 0) {
+            const cancelResult = await this.brokerAdapter.cancelOpenEntries(
+              this.ir.symbol,
+              this.state.openOrders,
+              this.brokerEnv
+            );
+
+            // Verify cancellation succeeded
+            if (cancelResult.failed.length > 0) {
+              const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+              const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+              this.log('error', `Failed to cancel orders: ${failedIds}. Reasons: ${reasons}`);
+              throw new Error(`Order cancellation failed for: ${failedIds}`);
+            }
+
+            // Only clear successfully cancelled orders
+            this.state.openOrders = this.state.openOrders.filter(
+              o => !cancelResult.succeeded.includes(o.id)
+            );
+
+            this.log('info', `Cancelled ${cancelResult.succeeded.length} entries`);
+          }
           break;
 
         case 'log':

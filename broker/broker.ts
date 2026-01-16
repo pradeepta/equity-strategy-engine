@@ -1,19 +1,49 @@
 /**
  * Broker interface (abstract)
  */
-import { OrderPlan, Order, BrokerAdapter, BrokerEnvironment } from '../spec/types';
+import { OrderPlan, Order, BrokerAdapter, BrokerEnvironment, CancellationResult } from '../spec/types';
 
 /**
  * Base broker adapter - defines the contract all adapters must implement
  */
 export abstract class BaseBrokerAdapter implements BrokerAdapter {
   abstract submitOrderPlan(plan: OrderPlan, env: BrokerEnvironment): Promise<Order[]>;
+  abstract submitMarketOrder(
+    symbol: string,
+    qty: number,
+    side: 'buy' | 'sell',
+    env: BrokerEnvironment
+  ): Promise<Order>;
   abstract cancelOpenEntries(
     symbol: string,
     orders: Order[],
     env: BrokerEnvironment
-  ): Promise<void>;
+  ): Promise<CancellationResult>;
   abstract getOpenOrders(symbol: string, env: BrokerEnvironment): Promise<Order[]>;
+
+  /**
+   * Enforce broker-level safety checks for new order plans.
+   */
+  protected enforceOrderConstraints(plan: OrderPlan, env: BrokerEnvironment): void {
+    if (env.allowLiveOrders === false) {
+      throw new Error('Live order submission is disabled by kill switch');
+    }
+
+    if (env.maxOrderQty !== undefined && plan.qty > env.maxOrderQty) {
+      throw new Error(
+        `Order qty ${plan.qty} exceeds maxOrderQty ${env.maxOrderQty}`
+      );
+    }
+
+    if (env.maxNotionalPerSymbol !== undefined) {
+      const notional = plan.qty * plan.targetEntryPrice;
+      if (notional > env.maxNotionalPerSymbol) {
+        throw new Error(
+          `Order notional ${notional.toFixed(2)} exceeds maxNotionalPerSymbol ${env.maxNotionalPerSymbol}`
+        );
+      }
+    }
+  }
 
   /**
    * Helper: Generate unique order IDs
@@ -68,7 +98,7 @@ export abstract class BaseBrokerAdapter implements BrokerAdapter {
         side: plan.side === 'buy' ? 'sell' : 'buy',
         qty: partialQty,
         type: 'limit',
-        limitPrice: plan.stopPrice,
+        stopPrice: plan.stopPrice,  // FIXED: Use stopPrice, not limitPrice
         status: 'pending',
       };
 
@@ -96,7 +126,7 @@ export abstract class BaseBrokerAdapter implements BrokerAdapter {
       lines.push(
         `    ├─ TP: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`
       );
-      lines.push(`    └─ SL: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
+      lines.push(`    └─ SL: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.stopPrice || bracket.stopLoss.limitPrice}`);
     }
 
     return lines.join('\n');
