@@ -102,24 +102,31 @@ export class MultiStrategyManager {
   /**
    * Swap strategy for a symbol by ID (remove old, load new)
    */
-  async swapStrategyById(symbol: string, newStrategyId: string): Promise<void> {
+  async swapStrategyById(
+    symbol: string,
+    newStrategyId: string,
+    options?: { skipOrderCancel?: boolean }
+  ): Promise<void> {
     console.log(`Swapping strategy for ${symbol}...`);
 
     // Cancel orders on old strategy
     const oldInstance = this.instances.get(symbol);
     if (oldInstance) {
-      // CRITICAL: Verify cancellation succeeded before proceeding with swap
-      const cancelResult = await oldInstance.cancelAllOrders();
+      if (!options?.skipOrderCancel) {
+        // CRITICAL: Verify cancellation succeeded before proceeding with swap
+        const cancelResult = await oldInstance.cancelAllOrders();
 
-      if (cancelResult.failed.length > 0) {
-        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
-        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
-        const errorMsg = `Cannot swap strategy for ${symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
+        if (cancelResult.failed.length > 0) {
+          const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+          const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+          const errorMsg = `Cannot swap strategy for ${symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
+          console.error(errorMsg);
+          throw new Error(errorMsg);
+        }
+
+        console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${symbol}`);
       }
 
-      console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${symbol}`);
       await this.removeStrategy(symbol);
     }
 

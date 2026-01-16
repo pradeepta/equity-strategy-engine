@@ -567,10 +567,11 @@ export class LiveTradingOrchestrator {
   /**
    * Lock a symbol during swap operation
    * Now uses distributed PostgreSQL advisory locks
+   * Reduced timeout from 30s to 5s to fail fast on contention
    */
   async lockSymbol(symbol: string): Promise<boolean> {
     const lockKey = DistributedLockService.symbolLockKey(symbol);
-    return await this.lockService.acquireLock(lockKey, 30000);
+    return await this.lockService.acquireLock(lockKey, 5000); // 5 seconds instead of 30
   }
 
   /**
@@ -579,6 +580,14 @@ export class LiveTradingOrchestrator {
   async unlockSymbol(symbol: string): Promise<void> {
     const lockKey = DistributedLockService.symbolLockKey(symbol);
     await this.lockService.releaseLock(lockKey);
+  }
+
+  /**
+   * Check if a symbol is currently locked (non-blocking)
+   */
+  async isSymbolLocked(symbol: string): Promise<boolean> {
+    const lockKey = DistributedLockService.symbolLockKey(symbol);
+    return await this.lockService.isLocked(lockKey);
   }
 
   /**

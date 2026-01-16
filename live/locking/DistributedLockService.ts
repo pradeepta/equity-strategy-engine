@@ -3,7 +3,7 @@
  * Uses PostgreSQL advisory locks for distributed locking across multiple processes
  */
 
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 
 /**
  * Service for distributed locking using PostgreSQL advisory locks
@@ -15,6 +15,8 @@ import { Pool } from 'pg';
  * - Fair (FIFO queue for lock waiters)
  */
 export class DistributedLockService {
+  private heldLocks: Map<string, PoolClient> = new Map();
+
   constructor(private pool: Pool) {}
 
   /**
@@ -25,8 +27,14 @@ export class DistributedLockService {
    * @param timeoutMs - Max time to wait for lock (0 = try immediately and return)
    */
   async acquireLock(key: string, timeoutMs: number = 30000): Promise<boolean> {
+    if (this.heldLocks.has(key)) {
+      console.warn(`Lock already held in this process for: ${key}`);
+      return false;
+    }
+
     const lockId = this.hashKey(key);
     const client = await this.pool.connect();
+    let shouldRelease = true;
 
     try {
       if (timeoutMs === 0) {
@@ -35,13 +43,12 @@ export class DistributedLockService {
         const acquired = result.rows[0].acquired;
 
         if (!acquired) {
-          client.release();
           return false;
         }
 
         // Store client for later release (don't release connection yet)
-        (client as any).__lockKey = key;
-        (client as any).__lockId = lockId;
+        this.heldLocks.set(key, client);
+        shouldRelease = false;
         return true;
       }
 
@@ -53,8 +60,8 @@ export class DistributedLockService {
         await client.query('SELECT pg_advisory_lock($1)', [lockId]);
 
         // Lock acquired successfully
-        (client as any).__lockKey = key;
-        (client as any).__lockId = lockId;
+        this.heldLocks.set(key, client);
+        shouldRelease = false;
 
         console.log(`✓ Acquired lock: ${key} (lockId: ${lockId})`);
         return true;
@@ -63,7 +70,6 @@ export class DistributedLockService {
         if (error.code === '57014') {
           // Query timeout
           console.warn(`Lock acquisition timeout for: ${key}`);
-          client.release();
           return false;
         }
         throw error;
@@ -72,8 +78,11 @@ export class DistributedLockService {
         await client.query('SET statement_timeout = 0');
       }
     } catch (error) {
-      client.release();
       throw error;
+    } finally {
+      if (shouldRelease) {
+        client.release();
+      }
     }
   }
 
@@ -81,16 +90,18 @@ export class DistributedLockService {
    * Release a lock for the given key
    */
   async releaseLock(key: string): Promise<void> {
-    const lockId = this.hashKey(key);
-
-    // Find the client that holds this lock
-    // Note: In production, you'd want to track lock-holding clients
-    const client = await this.pool.connect();
+    const client = this.heldLocks.get(key);
+    if (!client) {
+      console.warn(`No held lock found for: ${key}`);
+      return;
+    }
 
     try {
+      const lockId = this.hashKey(key);
       await client.query('SELECT pg_advisory_unlock($1)', [lockId]);
       console.log(`✓ Released lock: ${key} (lockId: ${lockId})`);
     } finally {
+      this.heldLocks.delete(key);
       client.release();
     }
   }
@@ -180,13 +191,16 @@ export class DistributedLockService {
    * Useful for cleanup/error recovery
    */
   async releaseAllLocks(): Promise<void> {
-    const client = await this.pool.connect();
-
-    try {
-      await client.query('SELECT pg_advisory_unlock_all()');
-      console.log('✓ Released all advisory locks for current session');
-    } finally {
-      client.release();
+    const entries = Array.from(this.heldLocks.entries());
+    for (const [key, client] of entries) {
+      try {
+        const lockId = this.hashKey(key);
+        await client.query('SELECT pg_advisory_unlock($1)', [lockId]);
+        console.log(`✓ Released lock: ${key} (lockId: ${lockId})`);
+      } finally {
+        this.heldLocks.delete(key);
+        client.release();
+      }
     }
   }
 

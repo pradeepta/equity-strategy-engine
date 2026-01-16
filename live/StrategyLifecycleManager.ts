@@ -119,6 +119,11 @@ export class StrategyLifecycleManager {
   ): Promise<void> {
     console.log(`🔄 Swapping strategy for ${instance.symbol}...`);
 
+    const state = instance.getState();
+    const suggestedHash = response.suggestedStrategy
+      ? this.hashString(response.suggestedStrategy.yamlContent)
+      : 'none';
+
     // Enqueue swap operation for idempotency and retry
     const operationId = await this.operationQueue.enqueue({
       operationType: 'SWAP_STRATEGY',
@@ -131,22 +136,36 @@ export class StrategyLifecycleManager {
         reason: response.reason,
         suggestedStrategy: response.suggestedStrategy,
       },
+      operationId: `swap:${instance.symbol}:${instance.strategyId}:${suggestedHash}`,
     });
 
-    // Check if already completed (idempotency)
+    // CRITICAL: Check idempotency BEFORE attempting lock acquisition
+    // This prevents unnecessary lock contention when operation already completed
     if (await this.operationQueue.isCompleted(operationId)) {
       const result = await this.operationQueue.getResult(operationId);
       console.log(`✓ Strategy swap already completed (idempotent): ${result?.newStrategyId}`);
       return;
     }
 
+    let operationFailed = false;
+    const failOperation = async (message: string): Promise<void> => {
+      if (operationFailed) {
+        return;
+      }
+      operationFailed = true;
+      await this.operationQueue.fail(operationId, message);
+    };
+
     try {
       // Lock the symbol to prevent concurrent operations (distributed lock)
+      // Using 5-second timeout instead of 30 seconds to fail fast on contention
       if (this.orchestrator) {
         const lockAcquired = await this.orchestrator.lockSymbol(instance.symbol);
         if (!lockAcquired) {
-          console.warn(`⚠️  Failed to acquire lock for ${instance.symbol}. Another process may be swapping this symbol.`);
-          throw new Error(`Failed to acquire lock for ${instance.symbol}`);
+          console.warn(`⚠️  Failed to acquire lock for ${instance.symbol}. Another swap is in progress.`);
+          // Don't throw - mark as failed and let retry queue handle it
+          await failOperation(`Lock acquisition failed - another swap in progress`);
+          return; // Exit gracefully instead of throwing
         }
       }
 
@@ -170,69 +189,89 @@ export class StrategyLifecycleManager {
         });
 
         // Mark operation as failed
-        await this.operationQueue.fail(operationId, errorMsg);
-        throw new Error(errorMsg);
+        await failOperation(errorMsg);
+        return;
       }
 
       console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${instance.symbol}`);
 
       // Check for active position
-      const state = instance.getState();
       if (state.currentState === 'MANAGING' || state.openOrders.length > 0) {
         console.warn(`⚠️ Strategy ${instance.symbol} has active position during swap.`);
         console.warn(`📍 Position for ${instance.symbol} may be unmanaged. Monitor manually.`);
       }
 
       // Deploy new strategy if suggested
-      if (response.suggestedStrategy) {
-        // Log evaluation to database
-        const evaluation = await this.execHistoryRepo.logEvaluation({
+      if (!response.suggestedStrategy) {
+        const errorMsg = `Swap recommended for ${instance.symbol} but no suggested strategy was provided`;
+        console.error(`❌ ${errorMsg}`);
+        await this.execHistoryRepo.logEvaluation({
           strategyId: oldStrategyId,
           recommendation: 'SWAP',
           confidence: response.confidence,
-          reason: response.reason,
-          suggestedYaml: response.suggestedStrategy.yamlContent,
-          suggestedName: response.suggestedStrategy.name,
-          suggestedReasoning: response.suggestedStrategy.reasoning,
+          reason: `Swap aborted: ${errorMsg}`,
         });
-
-        // Close old strategy in database
-        await this.strategyRepo.close(oldStrategyId, response.reason);
-
-        // Create new strategy in database
-        const newStrategy = await this.strategyRepo.createWithVersion({
-          userId: instance.userId,
-          symbol: instance.symbol,
-          name: response.suggestedStrategy.name,
-          timeframe: instance.getTimeframe(),
-          yamlContent: response.suggestedStrategy.yamlContent,
-          changeReason: 'Auto-swap by evaluator',
-        });
-
-        console.log(`✅ Created new strategy in database: ${newStrategy.id}`);
-
-        // Activate new strategy
-        await this.strategyRepo.activate(newStrategy.id);
-
-        // Mark evaluation action as taken
-        await this.execHistoryRepo.markActionTaken(evaluation.id, 'Swapped successfully');
-
-        // Swap in MultiStrategyManager (removes old, loads new from database)
-        await this.multiStrategyManager.swapStrategyById(instance.symbol, newStrategy.id);
-
-        console.log(`✓ Strategy swap complete for ${instance.symbol}`);
-
-        // Mark operation as completed
-        await this.operationQueue.complete(operationId, {
-          newStrategyId: newStrategy.id,
-          oldStrategyId,
-          symbol: instance.symbol,
-        });
+        await failOperation(errorMsg);
+        return;
       }
+
+      // Log evaluation to database
+      const evaluation = await this.execHistoryRepo.logEvaluation({
+        strategyId: oldStrategyId,
+        recommendation: 'SWAP',
+        confidence: response.confidence,
+        reason: response.reason,
+        suggestedYaml: response.suggestedStrategy.yamlContent,
+        suggestedName: response.suggestedStrategy.name,
+        suggestedReasoning: response.suggestedStrategy.reasoning,
+      });
+
+      // Create new strategy in database (DRAFT until swap succeeds)
+      const newStrategy = await this.strategyRepo.createWithVersion({
+        userId: instance.userId,
+        symbol: instance.symbol,
+        name: response.suggestedStrategy.name,
+        timeframe: instance.getTimeframe(),
+        yamlContent: response.suggestedStrategy.yamlContent,
+        changeReason: 'Auto-swap by evaluator',
+      });
+
+      console.log(`✅ Created new strategy in database: ${newStrategy.id}`);
+
+      try {
+        // Swap in MultiStrategyManager (removes old, loads new from database)
+        await this.multiStrategyManager.swapStrategyById(instance.symbol, newStrategy.id, {
+          skipOrderCancel: true,
+        });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to swap runtime strategy for ${instance.symbol}:`, error);
+        await this.strategyRepo.markFailed(newStrategy.id, errorMsg);
+        await failOperation(errorMsg);
+        return;
+      }
+
+      // Activate new strategy only after runtime swap succeeds
+      await this.strategyRepo.activate(newStrategy.id);
+
+      // Close old strategy in database after successful swap
+      await this.strategyRepo.close(oldStrategyId, response.reason);
+
+      // Mark evaluation action as taken
+      await this.execHistoryRepo.markActionTaken(evaluation.id, 'Swapped successfully');
+
+      console.log(`✓ Strategy swap complete for ${instance.symbol}`);
+
+      // Mark operation as completed
+      await this.operationQueue.complete(operationId, {
+        newStrategyId: newStrategy.id,
+        oldStrategyId,
+        symbol: instance.symbol,
+      });
     } catch (error) {
       console.error(`Failed to swap strategy for ${instance.symbol}:`, error);
       const errorMsg = error instanceof Error ? error.message : String(error);
-      await this.operationQueue.fail(operationId, errorMsg);
+      await failOperation(errorMsg);
       throw error;
     } finally {
       // Always unlock the symbol, even if swap failed
@@ -251,6 +290,8 @@ export class StrategyLifecycleManager {
   ): Promise<void> {
     console.log(`❌ Closing strategy for ${instance.symbol}...`);
 
+    const state = instance.getState();
+
     // Enqueue close operation for idempotency and retry
     const operationId = await this.operationQueue.enqueue({
       operationType: 'CLOSE_STRATEGY',
@@ -262,6 +303,7 @@ export class StrategyLifecycleManager {
         confidence: response.confidence,
         reason: response.reason,
       },
+      operationId: `close:${instance.symbol}:${instance.strategyId}`,
     });
 
     // Check if already completed (idempotency)
@@ -271,16 +313,30 @@ export class StrategyLifecycleManager {
     }
 
     try {
-      // Log evaluation to database
+      // Cancel all open orders
+      const cancelResult = await instance.cancelAllOrders();
+      if (cancelResult.failed.length > 0) {
+        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const errorMsg = `Cannot close strategy for ${instance.symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
+        console.error(`❌ ${errorMsg}`);
+        await this.execHistoryRepo.logEvaluation({
+          strategyId: instance.strategyId,
+          recommendation: 'CLOSE',
+          confidence: response.confidence,
+          reason: `Close aborted: ${errorMsg}`,
+        });
+        await this.operationQueue.fail(operationId, errorMsg);
+        return;
+      }
+
+      // Log evaluation to database after successful cancellation
       await this.execHistoryRepo.logEvaluation({
         strategyId: instance.strategyId,
         recommendation: 'CLOSE',
         confidence: response.confidence,
         reason: response.reason,
       });
-
-      // Cancel all open orders
-      await instance.cancelAllOrders();
 
       // Close strategy in database
       await this.strategyRepo.close(instance.strategyId, response.reason);
@@ -306,5 +362,18 @@ export class StrategyLifecycleManager {
       await this.operationQueue.fail(operationId, errorMsg);
       throw error;
     }
+  }
+
+  /**
+   * Simple deterministic hash for idempotency keys
+   */
+  private hashString(value: string): number {
+    let hash = 0;
+    for (let i = 0; i < value.length; i++) {
+      const char = value.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash |= 0;
+    }
+    return Math.abs(hash);
   }
 }
