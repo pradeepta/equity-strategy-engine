@@ -13,6 +13,7 @@ import { StrategyRepository } from "../database/repositories/StrategyRepository"
 import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHistoryRepository";
 import { OrderRepository } from "../database/repositories/OrderRepository";
 import { OperationQueueService } from "./queue/OperationQueueService";
+import * as YAML from "yaml";
 
 export class StrategyLifecycleManager {
   private multiStrategyManager: MultiStrategyManager;
@@ -71,6 +72,8 @@ export class StrategyLifecycleManager {
         console.warn("No current bar available for evaluation");
         return;
       }
+
+      this.logEvaluationDebug(instance, state);
 
       // Build evaluation request
       const request: EvaluationRequest = {
@@ -610,6 +613,102 @@ export class StrategyLifecycleManager {
 
   private async sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private logEvaluationDebug(
+    instance: StrategyInstance,
+    state: { currentBar: any; features: Map<string, any> }
+  ): void {
+    try {
+      const yamlContent = instance.getYamlContent();
+      const parsed = YAML.parse(yamlContent) as any;
+      const rules = parsed?.rules || {};
+      const orderPlan = Array.isArray(parsed?.orderPlans)
+        ? parsed.orderPlans[0]
+        : undefined;
+      const bar = state.currentBar;
+
+      if (!bar) {
+        return;
+      }
+
+      const baseValues: Record<string, number> = {
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+        price: bar.close,
+      };
+
+      for (const [key, value] of state.features.entries()) {
+        if (typeof value === "number") {
+          baseValues[key] = value;
+        }
+      }
+
+      const logRule = (label: string, expr: string | undefined) => {
+        if (!expr || typeof expr !== "string") {
+          return;
+        }
+        const identifiers = this.extractIdentifiers(expr);
+        const values: Record<string, number> = {};
+        for (const key of identifiers) {
+          if (key in baseValues) {
+            values[key] = baseValues[key];
+          }
+        }
+        console.log(
+          `🧪 EVAL DEBUG [${
+            instance.symbol
+          }] ${label}: ${expr} | current: ${JSON.stringify(values)}`
+        );
+      };
+
+      console.log(
+        `🧪 EVAL DEBUG [${instance.symbol}] bar: close=${bar.close} high=${bar.high} low=${bar.low} volume=${bar.volume}`
+      );
+
+      logRule("arm", rules.arm);
+      logRule("trigger", rules.trigger);
+
+      if (rules.invalidate) {
+        const invalidate = rules.invalidate;
+        if (Array.isArray(invalidate)) {
+          invalidate.forEach((expr: string, idx: number) =>
+            logRule(`invalidate[${idx}]`, expr)
+          );
+        } else if (invalidate.when_any && Array.isArray(invalidate.when_any)) {
+          invalidate.when_any.forEach((expr: string, idx: number) =>
+            logRule(`invalidate.any[${idx}]`, expr)
+          );
+        } else if (invalidate.when_all && Array.isArray(invalidate.when_all)) {
+          invalidate.when_all.forEach((expr: string, idx: number) =>
+            logRule(`invalidate.all[${idx}]`, expr)
+          );
+        }
+      }
+
+      if (orderPlan?.entryZone && Array.isArray(orderPlan.entryZone)) {
+        console.log(
+          `🧪 EVAL DEBUG [${instance.symbol}] entryZone: [${orderPlan.entryZone[0]}, ${orderPlan.entryZone[1]}] | close=${bar.close}`
+        );
+      }
+      if (orderPlan?.stopPrice) {
+        console.log(
+          `🧪 EVAL DEBUG [${instance.symbol}] stopPrice: ${orderPlan.stopPrice} | close=${bar.close}`
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `⚠️ EVAL DEBUG failed for ${instance.symbol}: ${String(error)}`
+      );
+    }
+  }
+
+  private extractIdentifiers(expression: string): string[] {
+    const matches = expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    return Array.from(new Set(matches));
   }
 
   private mapRecommendation(
