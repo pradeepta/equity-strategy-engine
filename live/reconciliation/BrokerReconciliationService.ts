@@ -15,6 +15,7 @@ export interface BrokerOrder {
   qty: number;
   side: 'buy' | 'sell';
   status: string;
+  type: 'limit' | 'market';
 }
 
 type DbOrder = ReturnType<OrderRepository['findOpenBySymbol']> extends Promise<
@@ -120,6 +121,7 @@ export class BrokerReconciliationService {
         qty: bo.qty,
         side: bo.side,
         status: bo.status,
+        type: bo.type,
       }));
   }
 
@@ -159,18 +161,43 @@ export class BrokerReconciliationService {
       },
     });
 
+    const cancellable = orphanedOrders.filter((order) => order.type !== 'market');
+    const skipped = orphanedOrders.filter((order) => order.type === 'market');
+
+    if (skipped.length > 0) {
+      console.warn(
+        `⚠️ Skipping auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
+      );
+      report.actionsToken.push(
+        `Skipped auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
+      );
+      await this.systemLogRepo?.create({
+        level: 'WARN',
+        component: 'BrokerReconciliationService',
+        message: `Skipped auto-cancel for orphaned MARKET orders for ${symbol}`,
+        metadata: {
+          symbol,
+          orderIds: skipped.map(o => o.id),
+        },
+      });
+    }
+
+    if (cancellable.length === 0) {
+      return;
+    }
+
     // Auto-cancel orphaned orders (per user preference)
-    console.log(`🔨 Auto-canceling ${orphanedOrders.length} orphaned orders for ${symbol}...`);
+    console.log(`🔨 Auto-canceling ${cancellable.length} orphaned orders for ${symbol}...`);
 
     try {
       // Convert BrokerOrder to Order format for cancellation
-      const ordersToCancel: Order[] = orphanedOrders.map(bo => ({
+      const ordersToCancel: Order[] = cancellable.map(bo => ({
         id: bo.id,
         planId: 'unknown',
         symbol: bo.symbol,
         side: bo.side,
         qty: bo.qty,
-        type: 'limit',
+        type: bo.type,
         status: 'pending',
       }));
 

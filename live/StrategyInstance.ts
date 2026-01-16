@@ -136,6 +136,13 @@ export class StrategyInstance {
   }
 
   /**
+   * Fetch open orders from broker
+   */
+  async getOpenOrders(): Promise<Order[]> {
+    return this.brokerAdapter.getOpenOrders(this.symbol, this.brokerEnv);
+  }
+
+  /**
    * Submit a market order to close an open position
    */
   async closePositionMarket(quantity: number): Promise<Order> {

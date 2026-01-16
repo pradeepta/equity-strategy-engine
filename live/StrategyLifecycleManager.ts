@@ -23,6 +23,7 @@ export class StrategyLifecycleManager {
   private orderRepo: OrderRepository;
   private operationQueue: OperationQueueService;
   private orchestrator?: any; // Reference to orchestrator for locking
+  private exitOrdersInFlight: Set<string> = new Set();
 
   constructor(
     manager: MultiStrategyManager,
@@ -497,14 +498,43 @@ export class StrategyLifecycleManager {
     instance: StrategyInstance,
     positionQty: number
   ): Promise<void> {
+    if (positionQty === 0) {
+      this.exitOrdersInFlight.delete(instance.symbol);
+      return;
+    }
+
+    if (this.exitOrdersInFlight.has(instance.symbol)) {
+      console.warn(
+        `⚠️ Market-exit already in flight for ${instance.symbol}; skipping duplicate exit`
+      );
+      return;
+    }
+
     const existingExit = await this.orderRepo.findOpenMarketExit(
-      instance.strategyId,
       instance.symbol
     );
     if (existingExit) {
       console.warn(
         `⚠️ Existing market-exit order already open for ${instance.symbol} (${existingExit.id}); skipping duplicate exit`
       );
+      this.exitOrdersInFlight.add(instance.symbol);
+      return;
+    }
+
+    const brokerOpenOrders = await instance.getOpenOrders();
+    const exitSide = positionQty > 0 ? "sell" : "buy";
+    const hasBrokerExit = brokerOpenOrders.some(
+      (order) =>
+        order.symbol === instance.symbol &&
+        order.type === "market" &&
+        order.side === exitSide &&
+        (order.status === "pending" || order.status === "submitted")
+    );
+    if (hasBrokerExit) {
+      console.warn(
+        `⚠️ Broker already has open market-exit order for ${instance.symbol}; skipping duplicate exit`
+      );
+      this.exitOrdersInFlight.add(instance.symbol);
       return;
     }
 
@@ -522,6 +552,7 @@ export class StrategyLifecycleManager {
     }
 
     const exitOrder = await instance.closePositionMarket(positionQty);
+    this.exitOrdersInFlight.add(instance.symbol);
 
     try {
       const dbOrder = await this.orderRepo.create({

@@ -252,13 +252,9 @@ export class OrderRepository {
   /**
    * Find open market-exit order for a strategy+symbol
    */
-  async findOpenMarketExit(
-    strategyId: string,
-    symbol: string
-  ): Promise<Order | null> {
+  async findOpenMarketExit(symbol: string): Promise<Order | null> {
     return this.prisma.order.findFirst({
       where: {
-        strategyId,
         symbol,
         planId: { startsWith: "market-exit-" },
         status: { in: ["PENDING", "SUBMITTED", "PARTIALLY_FILLED"] },

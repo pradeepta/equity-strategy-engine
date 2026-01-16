@@ -166,6 +166,16 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
       this.client.on('openOrder', (orderId: number, contract: any, order: any, orderState: any) => {
         console.log(`Open order ${orderId}: ${contract.symbol} ${order.action} ${order.totalQuantity} @ ${order.lmtPrice || 'MKT'}`);
+        this.pendingOrders.set(orderId, {
+          orderId,
+          symbol: contract.symbol,
+          qty: order.totalQuantity,
+          side: order.action as 'BUY' | 'SELL',
+          orderType: order.orderType,
+          limitPrice: order.lmtPrice,
+          stopPrice: order.auxPrice,
+          status: orderState?.status || 'Submitted',
+        });
       });
 
       this.client.on('disconnected', () => {
@@ -831,27 +841,61 @@ export class TwsAdapter extends BaseBrokerAdapter {
     }
 
     try {
-      // Request all open orders
+      const collected: Order[] = [];
+      let completed = false;
+
+      const onOpenOrder = (orderId: number, contract: any, order: any, orderState: any) => {
+        if (contract?.symbol !== symbol) {
+          return;
+        }
+        const status = orderState?.status || order?.status || 'Submitted';
+        collected.push({
+          id: orderId.toString(),
+          planId: `tws-${orderId}`,
+          symbol: contract.symbol,
+          qty: order.totalQuantity,
+          side: order.action === 'BUY' ? 'buy' : 'sell',
+          type: order.orderType === 'LMT' ? 'limit' : 'market',
+          limitPrice: order.lmtPrice,
+          stopPrice: order.auxPrice,
+          status: this.mapTWSStatus(status),
+        });
+      };
+
+      const onOpenOrderEnd = () => {
+        completed = true;
+      };
+
+      this.client.on('openOrder', onOpenOrder);
+      this.client.once('openOrderEnd', onOpenOrderEnd);
+
+      // Request all open orders and wait briefly for callbacks
       this.client.reqAllOpenOrders();
+      const start = Date.now();
+      while (!completed && Date.now() - start < 1500) {
+        await this.sleep(50);
+      }
 
-      // Wait for orders to be received
-      await this.sleep(1000);
+      this.client.off('openOrder', onOpenOrder);
+      this.client.off('openOrderEnd', onOpenOrderEnd);
 
-      // Filter orders for this symbol
-      const orders: Order[] = [];
-      for (const [orderId, ibOrder] of this.pendingOrders.entries()) {
-        if (ibOrder.symbol === symbol && ibOrder.status !== 'Filled' && ibOrder.status !== 'Cancelled') {
-          orders.push({
-            id: orderId.toString(),
-            planId: `tws-${orderId}`,
-            symbol: ibOrder.symbol,
-            qty: ibOrder.qty,
-            side: ibOrder.side === 'BUY' ? 'buy' : 'sell',
-            type: ibOrder.orderType === 'LMT' ? 'limit' : 'market',
-            limitPrice: ibOrder.limitPrice,
-            stopPrice: ibOrder.stopPrice,
-            status: this.mapTWSStatus(ibOrder.status),
-          });
+      // Fallback to pendingOrders if broker didn't emit open orders
+      const orders: Order[] = collected.length > 0 ? collected : [];
+      if (orders.length === 0) {
+        for (const [orderId, ibOrder] of this.pendingOrders.entries()) {
+          if (ibOrder.symbol === symbol && ibOrder.status !== 'Filled' && ibOrder.status !== 'Cancelled') {
+            orders.push({
+              id: orderId.toString(),
+              planId: `tws-${orderId}`,
+              symbol: ibOrder.symbol,
+              qty: ibOrder.qty,
+              side: ibOrder.side === 'BUY' ? 'buy' : 'sell',
+              type: ibOrder.orderType === 'LMT' ? 'limit' : 'market',
+              limitPrice: ibOrder.limitPrice,
+              stopPrice: ibOrder.stopPrice,
+              status: this.mapTWSStatus(ibOrder.status),
+            });
+          }
         }
       }
 
