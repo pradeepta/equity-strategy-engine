@@ -58,26 +58,34 @@ export class PrismaTransport extends Transport {
       ...metadata
     } = info;
 
-    // Create log entry in database (non-blocking)
+    // Create log entry in database (BLOCKING - wait for DB write)
+    const mergedMetadata = {
+      ...metadata,
+      strategyId,
+      orderId,
+      stackTrace,
+      errorCode,
+    };
+    const hasMetadata = Object.keys(mergedMetadata).length > 0;
     this.prisma.systemLog
       .create({
         data: {
           level: prismaLevel,
           component: component || this.component,
           message: message || '',
-          strategyId: strategyId || null,
-          orderId: orderId || null,
-          stackTrace: stackTrace || null,
-          errorCode: errorCode || null,
-          metadata: Object.keys(metadata).length > 0 ? metadata : null,
+          metadata: hasMetadata ? mergedMetadata : undefined,
         },
+      })
+      .then(() => {
+        // Call callback only after successful DB write
+        callback();
       })
       .catch((err) => {
         // Log errors to console to avoid losing logs if DB fails
         console.error('[PrismaTransport] Failed to write log to database:', err);
+        // Still call callback to avoid blocking Winston
+        callback();
       });
-
-    callback();
   }
 
   async close() {

@@ -4,12 +4,27 @@
  */
 
 import * as dotenv from 'dotenv';
+import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 import { LiveTradingOrchestrator } from './live/LiveTradingOrchestrator';
 import { TwsAdapter } from './broker/twsAdapter';
 import { BrokerEnvironment } from './spec/types';
+import { LoggerFactory } from './logging/logger';
 
 // Load environment variables
 dotenv.config();
+
+// ============================================================================
+// Initialize Logger
+// ============================================================================
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter, log: ['error', 'warn'] });
+
+// Set up logger factory
+LoggerFactory.setPrisma(prisma);
+const logger = LoggerFactory.getLogger('live-multi-server');
 
 async function main() {
   // TWS connection settings
@@ -17,8 +32,14 @@ async function main() {
   const twsPort = parseInt(process.env.TWS_PORT || '7497');
   const twsClientId = 0; // Main trading client
 
+  logger.info('Starting multi-strategy live trading server', {
+    twsHost,
+    twsPort,
+    twsClientId
+  });
+
   // Create broker adapter
-  const adapter = new TwsAdapter(twsHost, twsPort, twsClientId);
+  const brokerAdapter = new TwsAdapter(twsHost, twsPort, twsClientId);
 
   // Broker environment
   const brokerEnv: BrokerEnvironment = {
@@ -40,12 +61,19 @@ async function main() {
       : undefined,
   };
 
+  logger.info('Broker environment configured', {
+    accountId: brokerEnv.accountId,
+    dryRun: brokerEnv.dryRun,
+    allowLiveOrders: brokerEnv.allowLiveOrders,
+    allowCancelEntries: brokerEnv.allowCancelEntries
+  });
+
   // User ID for database queries (from env or default)
   const userId = process.env.USER_ID || 'default-user';
 
   // Orchestrator configuration
   const config = {
-    brokerAdapter: adapter,
+    brokerAdapter: brokerAdapter,
     brokerEnv: brokerEnv,
     userId: userId,
     evalEndpoint: process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8080/evaluate',
@@ -57,36 +85,54 @@ async function main() {
     twsPort,
   };
 
+  logger.info('Orchestrator configuration', {
+    userId: config.userId,
+    evalEnabled: config.evalEnabled,
+    allowCrossSymbolSwap: config.allowCrossSymbolSwap,
+    maxConcurrentStrategies: config.maxConcurrentStrategies,
+    watchIntervalMs: config.watchInterval
+  });
+
   // Create orchestrator
   const orchestrator = new LiveTradingOrchestrator(config);
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
-    console.log('');
-    console.log('Received SIGINT signal. Shutting down gracefully...');
+    logger.info('Received SIGINT signal. Shutting down gracefully...');
     await orchestrator.stop();
+    LoggerFactory.closeAll();
+    await prisma.$disconnect();
+    await pool.end();
     process.exit(0);
   });
 
   process.on('SIGTERM', async () => {
-    console.log('');
-    console.log('Received SIGTERM signal. Shutting down gracefully...');
+    logger.info('Received SIGTERM signal. Shutting down gracefully...');
     await orchestrator.stop();
+    LoggerFactory.closeAll();
+    await prisma.$disconnect();
+    await pool.end();
     process.exit(0);
   });
 
   // Initialize and start
   try {
+    logger.info('Initializing orchestrator...');
     await orchestrator.initialize();
+    logger.info('Starting orchestrator...');
     await orchestrator.start();
   } catch (error) {
-    console.error('Fatal error:', error);
+    logger.error('Fatal error during initialization', error as Error);
+    LoggerFactory.closeAll();
+    await prisma.$disconnect();
+    await pool.end();
     process.exit(1);
   }
 }
 
 // Run
 main().catch(error => {
-  console.error('Unhandled error:', error);
+  logger.error('Unhandled error in main', error as Error);
+  LoggerFactory.closeAll();
   process.exit(1);
 });

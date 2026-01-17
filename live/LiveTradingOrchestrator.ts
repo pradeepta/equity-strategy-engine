@@ -17,6 +17,11 @@ import { OperationQueueService } from "./queue/OperationQueueService";
 import { DistributedLockService } from "./locking/DistributedLockService";
 import { BrokerReconciliationService } from "./reconciliation/BrokerReconciliationService";
 import { OrderAlertService } from "./alerts/OrderAlertService";
+import { LoggerFactory } from "../logging/logger";
+import { Logger } from "../logging/logger";
+
+// Logger will be initialized in constructor after LoggerFactory is set up
+let logger: Logger;
 
 export interface OrchestratorConfig {
   brokerAdapter: BaseBrokerAdapter;
@@ -54,6 +59,9 @@ export class LiveTradingOrchestrator {
     config: OrchestratorConfig,
     repositoryFactory?: RepositoryFactory
   ) {
+    // Initialize logger first - LoggerFactory.setPrisma() must be called before this
+    logger = LoggerFactory.getLogger('orchestrator');
+
     this.config = config;
     this.repositoryFactory = repositoryFactory || new RepositoryFactory();
 
@@ -75,7 +83,7 @@ export class LiveTradingOrchestrator {
             metadata: entry.metadata,
           })
           .catch((error) => {
-            console.warn("Failed to write system log:", error);
+            logger.warn("Failed to write system log to database", error as Error);
           });
       };
     }
@@ -144,110 +152,68 @@ export class LiveTradingOrchestrator {
    * Initialize orchestrator
    */
   async initialize(): Promise<void> {
-    console.log("");
-    console.log("╔══════════════════════════════════════════════════════════╗");
-    console.log("║                                                          ║");
-    console.log("║          MULTI-STRATEGY LIVE TRADING SYSTEM              ║");
-    console.log("║            (Database-Backed)                             ║");
-    console.log("║                                                          ║");
-    console.log("╚══════════════════════════════════════════════════════════╝");
-    console.log("");
+    logger.info("Initializing Multi-Strategy Live Trading System");
 
     // Check database connection
     const dbHealthy = await this.repositoryFactory.healthCheck();
     if (!dbHealthy) {
+      logger.error("Database connection failed");
       throw new Error("Database connection failed");
     }
-    console.log("✓ Database connection verified");
+    logger.info("Database connection verified");
 
     // Release stuck locks from crashed processes
-    console.log("🔓 Releasing stuck operation locks...");
+    logger.info("Releasing stuck operation locks");
     const releasedCount = await this.operationQueue.releaseStuckLocks();
     if (releasedCount > 0) {
-      console.log(`   Released ${releasedCount} stuck operation(s)`);
+      logger.info(`Released stuck operation locks`, { releasedCount });
     }
 
     // Connect to TWS for portfolio data
-    console.log("📡 Connecting to TWS for portfolio data...");
+    logger.info("Connecting to TWS for portfolio data", {
+      host: this.config.twsHost,
+      port: this.config.twsPort
+    });
     await this.portfolioFetcher.connect();
 
     // Fetch and display portfolio value
     try {
       const portfolio = await this.portfolioFetcher.getPortfolioSnapshot();
-      console.log("");
-      console.log("💰 Portfolio Summary:");
-      console.log(`   Account ID: ${portfolio.accountId}`);
-      console.log(
-        `   Total Value: $${portfolio.totalValue.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
-      console.log(
-        `   Cash: $${portfolio.cash.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
-      console.log(
-        `   Buying Power: $${portfolio.buyingPower.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
-      console.log(
-        `   Unrealized P&L: $${portfolio.unrealizedPnL.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
-      console.log(
-        `   Realized P&L: $${portfolio.realizedPnL.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
+      logger.info("Portfolio snapshot retrieved", {
+        accountId: portfolio.accountId,
+        totalValue: portfolio.totalValue,
+        cash: portfolio.cash,
+        buyingPower: portfolio.buyingPower,
+        unrealizedPnL: portfolio.unrealizedPnL,
+        realizedPnL: portfolio.realizedPnL,
+        openPositions: portfolio.positions.length
+      });
+
       if (portfolio.positions.length > 0) {
-        console.log(`   Open Positions: ${portfolio.positions.length}`);
         portfolio.positions.forEach((pos) => {
-          console.log(
-            `      ${pos.symbol}: ${
-              pos.quantity
-            } shares @ $${pos.currentPrice.toFixed(
-              2
-            )} (P&L: $${pos.unrealizedPnL.toFixed(2)})`
-          );
+          logger.debug("Open position", {
+            symbol: pos.symbol,
+            quantity: pos.quantity,
+            currentPrice: pos.currentPrice,
+            unrealizedPnL: pos.unrealizedPnL
+          });
         });
       }
-      console.log("");
-      console.log("🛡️  Risk Controls:");
-      console.log(
-        `   allowLiveOrders: ${this.config.brokerEnv.allowLiveOrders !== false}`
-      );
-      console.log(
-        `   allowCancelEntries: ${
-          this.config.brokerEnv.allowCancelEntries === true
-        }`
-      );
-      console.log(
-        `   maxOrdersPerSymbol: ${
-          this.config.brokerEnv.maxOrdersPerSymbol ?? "unset"
-        }`
-      );
-      console.log(
-        `   maxOrderQty: ${this.config.brokerEnv.maxOrderQty ?? "unset"}`
-      );
-      console.log(
-        `   maxNotionalPerSymbol: ${
-          this.config.brokerEnv.maxNotionalPerSymbol ?? "unset"
-        }`
-      );
-      console.log(
-        `   dailyLossLimit: ${this.config.brokerEnv.dailyLossLimit ?? "unset"}`
-      );
-      console.log("");
+      logger.info("");
+      logger.info("🛡️  Risk Controls:");
+      logger.info("Risk controls configured", {
+        allowLiveOrders: this.config.brokerEnv.allowLiveOrders !== false,
+        allowCancelEntries: this.config.brokerEnv.allowCancelEntries === true
+      });
+      logger.info("Risk limits configured", {
+        maxOrdersPerSymbol: this.config.brokerEnv.maxOrdersPerSymbol ?? "unset",
+        maxOrderQty: this.config.brokerEnv.maxOrderQty ?? "unset",
+        maxNotionalPerSymbol: this.config.brokerEnv.maxNotionalPerSymbol ?? "unset",
+        dailyLossLimit: this.config.brokerEnv.dailyLossLimit ?? "unset"
+      });
+      logger.info("");
     } catch (error) {
-      console.warn("⚠️  Could not fetch portfolio data:", error);
+      logger.warn("⚠️  Could not fetch portfolio data:", error as Error);
     }
 
     // Load existing strategies from database
@@ -261,8 +227,8 @@ export class LiveTradingOrchestrator {
       await this.handleNewStrategyFromDB(strategy);
     });
 
-    console.log("✓ Orchestrator initialized");
-    console.log("");
+    logger.info("✓ Orchestrator initialized");
+    logger.info("");
   }
 
   /**
@@ -270,7 +236,7 @@ export class LiveTradingOrchestrator {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.warn("Orchestrator already running");
+      logger.warn("Orchestrator already running");
       return;
     }
 
@@ -279,10 +245,10 @@ export class LiveTradingOrchestrator {
     // Start database poller
     this.databasePoller.start();
 
-    console.log("════════════════════════════════════════════════════════════");
-    console.log("RUNNING MULTI-STRATEGY TRADING LOOP");
-    console.log("════════════════════════════════════════════════════════════");
-    console.log("");
+    logger.info("════════════════════════════════════════════════════════════");
+    logger.info("RUNNING MULTI-STRATEGY TRADING LOOP");
+    logger.info("════════════════════════════════════════════════════════════");
+    logger.info("");
 
     // Run main loop
     await this.mainLoop();
@@ -296,8 +262,8 @@ export class LiveTradingOrchestrator {
       return;
     }
 
-    console.log("");
-    console.log("🛑 Stopping orchestrator...");
+    logger.info("");
+    logger.info("🛑 Stopping orchestrator...");
 
     this.running = false;
 
@@ -319,7 +285,7 @@ export class LiveTradingOrchestrator {
     // Close evaluator client
     await this.evaluatorClient.close();
 
-    console.log("✓ Orchestrator stopped");
+    logger.info("✓ Orchestrator stopped");
   }
 
   /**
@@ -330,7 +296,7 @@ export class LiveTradingOrchestrator {
       try {
         // Check if market is open
         // if (!this.isMarketOpen()) {
-        //   console.log('📴 Market is closed. Exiting orchestrator.');
+        //   logger.info('📴 Market is closed. Exiting orchestrator.');
         //   await this.stop();
         //   return;
         // }
@@ -340,7 +306,7 @@ export class LiveTradingOrchestrator {
           this.multiStrategyManager.getActiveStrategies();
 
         if (activeStrategies.length === 0) {
-          console.log(
+          logger.info(
             "⏸️  No active strategies. Waiting for strategies to be added..."
           );
           await this.sleep(30000); // Wait 30 seconds
@@ -353,9 +319,9 @@ export class LiveTradingOrchestrator {
           this.config.brokerEnv.currentDailyPnL =
             portfolio.realizedPnL + portfolio.unrealizedPnL;
         } catch (error) {
-          console.warn(
+          logger.warn(
             "⚠️  Failed to refresh portfolio snapshot for risk caps:",
-            error
+            error as Error
           );
         }
 
@@ -371,11 +337,11 @@ export class LiveTradingOrchestrator {
         }
 
         if (strategiesNeedingBars.length === 0) {
-          console.log(
+          logger.info(
             `⏭️  No strategies need bar updates yet (all waiting for timeframe intervals)`
           );
         } else {
-          console.log(
+          logger.info(
             `🔄 Fetching bars for ${strategiesNeedingBars.length}/${
               activeStrategies.length
             } strategy(ies): ${strategiesNeedingBars.join(", ")}`
@@ -428,12 +394,12 @@ export class LiveTradingOrchestrator {
         const sleepInterval = this.calculateSleepInterval(activeStrategies);
         const sleepSeconds = Math.round(sleepInterval / 1000);
         const humanReadable = this.formatDuration(sleepInterval);
-        console.log(`⏰ Next check in ${humanReadable} (${sleepSeconds}s)`);
-        console.log("");
+        logger.info(`⏰ Next check in ${humanReadable} (${sleepSeconds}s)`);
+        logger.info("");
 
         await this.sleep(sleepInterval);
       } catch (error) {
-        console.error("Error in main loop:", error);
+        logger.error("Error in main loop:", error as Error);
         await this.sleep(60000); // Wait 1 minute on error
       }
     }
@@ -443,7 +409,7 @@ export class LiveTradingOrchestrator {
    * Handle new strategy detected by database poller
    */
   private async handleNewStrategyFromDB(strategy: Strategy): Promise<void> {
-    console.log(
+    logger.info(
       `📥 New strategy detected: ${strategy.name} (${strategy.symbol})`
     );
 
@@ -451,7 +417,7 @@ export class LiveTradingOrchestrator {
       // Check if this symbol is currently being swapped (distributed lock check)
       const lockKey = DistributedLockService.symbolLockKey(strategy.symbol);
       if (await this.lockService.isLocked(lockKey)) {
-        console.log(
+        logger.info(
           `⏸️  Symbol ${strategy.symbol} is currently locked (swap in progress). Skipping auto-load.`
         );
         return;
@@ -459,7 +425,7 @@ export class LiveTradingOrchestrator {
 
       // Check if strategy for this symbol already exists
       if (this.multiStrategyManager.getStrategyBySymbol(strategy.symbol)) {
-        console.log(
+        logger.info(
           `⚠️  Strategy for ${strategy.symbol} already loaded. Skipping.`
         );
         return;
@@ -470,7 +436,7 @@ export class LiveTradingOrchestrator {
         this.multiStrategyManager.getActiveCount() >=
         this.config.maxConcurrentStrategies
       ) {
-        console.warn(
+        logger.warn(
           `⚠️ Max concurrent strategies (${this.config.maxConcurrentStrategies}) reached. Ignoring new strategy.`
         );
         return;
@@ -482,12 +448,12 @@ export class LiveTradingOrchestrator {
       // Mark as active
       await this.repositoryFactory.getStrategyRepo().activate(strategy.id);
 
-      console.log(`✓ Successfully loaded strategy ${strategy.name}`);
+      logger.info(`✓ Successfully loaded strategy ${strategy.name}`);
 
       // Wake up main loop to recalculate interval immediately
       this.wakeUpEarly();
     } catch (error: any) {
-      console.error(`Failed to load strategy ${strategy.name}:`, error.message);
+      logger.error(`Failed to load strategy ${strategy.name}:`, error.message);
 
       // Mark strategy as failed
       await this.repositoryFactory
@@ -500,22 +466,22 @@ export class LiveTradingOrchestrator {
    * Load existing strategies from database
    */
   private async loadExistingStrategies(): Promise<void> {
-    console.log(
+    logger.info(
       `📊 Loading existing strategies from database for user: ${this.config.userId}`
     );
 
     const strategies = await this.repositoryFactory
       .getStrategyRepo()
       .findActiveByUser(this.config.userId);
-    console.log(`Found ${strategies.length} active strategy(ies)`);
+    logger.info(`Found ${strategies.length} active strategy(ies)`);
 
     // Load each strategy
     for (const strategy of strategies) {
       try {
         await this.multiStrategyManager.loadStrategy(strategy.id);
-        console.log(`✓ Loaded ${strategy.name} (${strategy.symbol})`);
+        logger.info(`✓ Loaded ${strategy.name} (${strategy.symbol})`);
       } catch (error: any) {
-        console.error(`Failed to load ${strategy.name}:`, error.message);
+        logger.error(`Failed to load ${strategy.name}:`, error.message);
 
         // Mark as failed
         await this.repositoryFactory
@@ -524,7 +490,7 @@ export class LiveTradingOrchestrator {
       }
     }
 
-    console.log(
+    logger.info(
       `✓ Loaded ${this.multiStrategyManager.getActiveCount()} strategy(ies)`
     );
   }
@@ -577,7 +543,7 @@ export class LiveTradingOrchestrator {
     const match = timeframe.match(/^(\d+)([smhd])$/i);
 
     if (!match) {
-      console.warn(
+      logger.warn(
         `Unknown timeframe format: ${timeframe}, defaulting to 5 minutes`
       );
       return 5 * 60 * 1000; // 5 minutes default
@@ -650,7 +616,7 @@ export class LiveTradingOrchestrator {
       this.currentSleepTimeout = undefined;
     }
     if (this.currentSleepResolve) {
-      console.log("⚡ Waking up early due to new strategy...");
+      logger.info("⚡ Waking up early due to new strategy...");
       this.currentSleepResolve();
       this.currentSleepResolve = undefined;
     }
@@ -689,14 +655,14 @@ export class LiveTradingOrchestrator {
   private async runStartupReconciliation(): Promise<void> {
     const activeStrategies = this.multiStrategyManager.getActiveStrategies();
     if (activeStrategies.length === 0) {
-      console.log("ℹ️  No active strategies - skipping startup reconciliation");
+      logger.info("ℹ️  No active strategies - skipping startup reconciliation");
       return;
     }
 
     // Collect all symbols from active strategies
     const symbols = [...new Set(activeStrategies.map((s) => s.symbol))];
 
-    console.log(
+    logger.info(
       `🔍 Running startup reconciliation for ${
         symbols.length
       } symbol(s): ${symbols.join(", ")}`
@@ -714,9 +680,9 @@ export class LiveTradingOrchestrator {
         report.orphanedOrders.length === 0 &&
         report.missingOrders.length === 0
       ) {
-        console.log("✓ Reconciliation complete - no discrepancies found");
+        logger.info("✓ Reconciliation complete - no discrepancies found");
       } else {
-        console.log(
+        logger.info(
           `⚠️  Reconciliation complete - found ${report.orphanedOrders.length} orphaned, ${report.missingOrders.length} missing`
         );
       }
@@ -724,7 +690,7 @@ export class LiveTradingOrchestrator {
       // Update last reconciliation time
       this.lastReconciliationTime = Date.now();
     } catch (error) {
-      console.error("❌ Startup reconciliation failed:", error);
+      logger.error("❌ Startup reconciliation failed:", error as Error);
     }
   }
 
@@ -749,7 +715,7 @@ export class LiveTradingOrchestrator {
     // Collect all symbols from active strategies
     const symbols = [...new Set(activeStrategies.map((s) => s.symbol))];
 
-    console.log(
+    logger.info(
       `\n🔍 Running periodic reconciliation for ${symbols.length} symbol(s)...`
     );
 
@@ -762,7 +728,7 @@ export class LiveTradingOrchestrator {
 
       // Log if any discrepancies found
       if (report.orphanedOrders.length > 0 || report.missingOrders.length > 0) {
-        console.warn(
+        logger.warn(
           `⚠️  Reconciliation found discrepancies - orphaned: ${report.orphanedOrders.length}, missing: ${report.missingOrders.length}`
         );
       }
@@ -770,7 +736,7 @@ export class LiveTradingOrchestrator {
       // Update last reconciliation time
       this.lastReconciliationTime = now;
     } catch (error) {
-      console.error("❌ Periodic reconciliation failed:", error);
+      logger.error("❌ Periodic reconciliation failed:", error as Error);
     }
   }
 }
