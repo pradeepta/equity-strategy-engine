@@ -7,13 +7,14 @@ type JsonRpcMessage = {
   error?: { message?: string };
 };
 
-// Note: The gateway will filter out stdio MCP servers since ACP agent only supports HTTP/SSE
-// The stdio MCP server config is kept here for future bridge implementation
+// MCP Server Configuration
+// Now using HTTP/SSE transport which is compatible with ACP agent
 const STOCKS_MCP_SERVER = {
   name: "stocks-mcp",
-  type: "stdio",
-  command: "node",
-  args: ["/Users/pradeeptadash/stocks/dist/mcp-server.js"],
+  type: "sse",
+  url: "http://localhost:3001/sse",
+  headers: [],
+  env: [],
 };
 
 type UpdateCallback = (chunk: string) => void;
