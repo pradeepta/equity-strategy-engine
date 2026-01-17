@@ -20,8 +20,15 @@ export function spawnAgent(session: Session): void {
     const lines = session.stdoutBuffer.split("\n");
     session.stdoutBuffer = lines.pop() || "";
     for (const line of lines) {
-      forwardToClient(session, line.trimEnd());
+      const payload = line.trimEnd();
+      if (payload) {
+        console.log(
+          `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
+        );
+      }
+      forwardToClient(session, payload);
     }
+    tryFlushJsonBuffer(session);
   });
 
   child.stderr?.on("data", (buf: Buffer) => {
@@ -44,13 +51,20 @@ export function writeToAgentStdin(session: Session, message: string): void {
     console.error(`[agent] stdin not writable for session ${session.id}`);
     return;
   }
-  session.child.stdin.write(`${message}\n`);
+  const payload = `${message}\n`;
+  console.log(
+    `[agent][stdin] session=${session.id}: ${payload.slice(0, 2000)}`
+  );
+  session.child.stdin.write(payload);
 }
 
 function forwardToClient(session: Session, message: string): void {
   if (!message) {
     return;
   }
+  console.log(
+    `[gateway][ws->client] session=${session.id}: ${message.slice(0, 2000)}`
+  );
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     session.ws.send(message);
   } else {
@@ -60,5 +74,25 @@ function forwardToClient(session: Session, message: string): void {
         200
       )}`
     );
+  }
+}
+
+function tryFlushJsonBuffer(session: Session): void {
+  const buffer = session.stdoutBuffer.trim();
+  if (!buffer) {
+    return;
+  }
+  if (!buffer.startsWith("{") || !buffer.endsWith("}")) {
+    return;
+  }
+  try {
+    JSON.parse(buffer);
+    console.log(
+      `[agent][stdout] session=${session.id}: ${buffer.slice(0, 2000)}`
+    );
+    forwardToClient(session, buffer);
+    session.stdoutBuffer = "";
+  } catch {
+    // Wait for more data
   }
 }
