@@ -122,6 +122,7 @@ export default function HomePage() {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
     const isMessageUpdate =
       messages.length === prevMessagesLengthRef.current && messages.length > 0;
+    const isFirstMessage = prevMessagesLengthRef.current === 0 && messages.length > 0;
     prevMessagesLengthRef.current = messages.length;
 
     const scrollDistanceFromBottom =
@@ -129,13 +130,15 @@ export default function HomePage() {
     const isNearBottom = scrollDistanceFromBottom < 200;
 
     const shouldScroll =
+      isFirstMessage ||
       userJustSentMessageRef.current ||
       isNearBottom ||
-      container.scrollTop === 0 ||
-      (isMessageUpdate && isNearBottom);
+      isMessageUpdate;
 
     if (shouldScroll) {
-      endElement.scrollIntoView({ behavior: "smooth" });
+      requestAnimationFrame(() => {
+        endElement.scrollIntoView({ behavior: isFirstMessage ? "instant" : "smooth" });
+      });
       setShowScrollButton(false);
       if (status !== "streaming" && userJustSentMessageRef.current) {
         userJustSentMessageRef.current = false;
@@ -216,7 +219,7 @@ export default function HomePage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="topbar-title">Tradewithclaude</div>
+        <div className="topbar-title">Trade•with•Claude</div>
         <div className="topbar-status">
           Status: {status}
           {sessionId ? ` | Session: ${sessionId}` : ""}
