@@ -113,7 +113,8 @@ export default function HomePage() {
     // Always start session on page load
     // If reconnecting to an existing session, the gateway will handle it
     // If session is dead, this creates a new one
-    client.startSession("/");
+    const defaultCwd = process.env.NEXT_PUBLIC_ACP_CWD || "/Users/pradeeptadash/sandbox";
+    client.startSession(defaultCwd);
 
     // Cleanup function - only reset on actual unmount
     return () => {
