@@ -90,13 +90,30 @@ export class AcpClient {
     });
   }
 
-  sendPrompt(prompt: string): void {
+  sendPrompt(
+    prompt: string,
+    images?: { data: string; mimeType: string }[]
+  ): void {
     if (!this.sessionId) {
       this.onError("Session not initialized");
       return;
     }
     const id = this.nextId();
     console.log("[ACP] session/prompt", { id, sessionId: this.sessionId });
+    const payload: Array<{
+      type: string;
+      text?: string;
+      data?: string;
+      mimeType?: string;
+    }> = [];
+    if (prompt) {
+      payload.push({ type: "text", text: prompt });
+    }
+    if (images?.length) {
+      images.forEach((img) => {
+        payload.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      });
+    }
     this.send({
       jsonrpc: "2.0",
       id,
@@ -104,7 +121,7 @@ export class AcpClient {
       params: {
         sessionId: this.sessionId,
         stream: true,
-        prompt: [{ type: "text", text: prompt }],
+        prompt: payload,
       },
     });
   }

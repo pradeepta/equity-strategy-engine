@@ -8,6 +8,7 @@ import { AcpClient } from "../src/lib/acpClient";
 type ChatMessage = {
   role: "user" | "agent";
   content: string;
+  images?: { data: string; mimeType: string }[];
 };
 
 const mergeChunk = (current: string, chunk: string) => {
@@ -45,6 +46,10 @@ export default function HomePage() {
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<
+    { data: string; mimeType: string }[]
+  >([]);
+  const [isDragging, setIsDragging] = useState(false);
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -152,12 +157,16 @@ export default function HomePage() {
 
   const sendMessage = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text && attachedImages.length === 0) return;
     userJustSentMessageRef.current = true;
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: text, images: attachedImages },
+    ]);
     setInput("");
     setStatus("streaming");
-    client.sendPrompt(text);
+    client.sendPrompt(text, attachedImages);
+    setAttachedImages([]);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -165,6 +174,43 @@ export default function HomePage() {
       event.preventDefault();
       sendMessage();
     }
+  };
+
+  const handleDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const files = Array.from(event.dataTransfer.files);
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    const newImages = await Promise.all(
+      imageFiles.map(
+        (file) =>
+          new Promise<{ data: string; mimeType: string }>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const base64 = (reader.result as string).split(",")[1];
+              resolve({ data: base64, mimeType: file.type });
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          })
+      )
+    );
+    setAttachedImages((prev) => [...prev, ...newImages]);
+  };
+
+  const removeImage = (index: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -184,6 +230,17 @@ export default function HomePage() {
           )}
           {messages.map((msg, idx) => (
             <div key={idx} className={`message ${msg.role}`}>
+              {msg.images && msg.images.length > 0 && (
+                <div className="message-images">
+                  {msg.images.map((img, imageIdx) => (
+                    <img
+                      key={imageIdx}
+                      src={`data:${img.mimeType};base64,${img.data}`}
+                      alt="Attachment"
+                    />
+                  ))}
+                </div>
+              )}
               <div className="message-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {msg.content}
@@ -201,7 +258,32 @@ export default function HomePage() {
         )}
 
         <div className="composer">
-          <div className="composer-inner">
+          <div
+            className={`composer-inner ${
+              isDragging ? "composer-dragging" : ""
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {attachedImages.length > 0 && (
+              <div className="composer-images">
+                {attachedImages.map((img, imageIdx) => (
+                  <div key={imageIdx} className="composer-image">
+                    <img
+                      src={`data:${img.mimeType};base64,${img.data}`}
+                      alt="Preview"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(imageIdx)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
@@ -210,9 +292,49 @@ export default function HomePage() {
               placeholder="Message the advisor..."
               rows={1}
             />
+            <label className="composer-attach">
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={async (event) => {
+                  if (!event.target.files) return;
+                  const files = Array.from(event.target.files);
+                  const imageFiles = files.filter((file) =>
+                    file.type.startsWith("image/")
+                  );
+                  if (!imageFiles.length) return;
+                  const newImages = await Promise.all(
+                    imageFiles.map(
+                      (file) =>
+                        new Promise<{ data: string; mimeType: string }>(
+                          (resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              const base64 = (reader.result as string).split(
+                                ","
+                              )[1];
+                              resolve({ data: base64, mimeType: file.type });
+                            };
+                            reader.onerror = reject;
+                            reader.readAsDataURL(file);
+                          }
+                        )
+                    )
+                  );
+                  setAttachedImages((prev) => [...prev, ...newImages]);
+                  event.target.value = "";
+                }}
+              />
+              +
+            </label>
             <button
               onClick={sendMessage}
-              disabled={status === "connecting" || status === "missing_url"}
+              disabled={
+                status === "connecting" ||
+                status === "missing_url" ||
+                (!input.trim() && attachedImages.length === 0)
+              }
             >
               Send
             </button>
