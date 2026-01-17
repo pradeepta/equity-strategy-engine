@@ -50,7 +50,10 @@ export class LiveTradingOrchestrator {
   private lastReconciliationTime: number = 0;
   private reconciliationIntervalMs: number = 5 * 60 * 1000; // 5 minutes
 
-  constructor(config: OrchestratorConfig, repositoryFactory?: RepositoryFactory) {
+  constructor(
+    config: OrchestratorConfig,
+    repositoryFactory?: RepositoryFactory
+  ) {
     this.config = config;
     this.repositoryFactory = repositoryFactory || new RepositoryFactory();
 
@@ -78,14 +81,18 @@ export class LiveTradingOrchestrator {
     }
 
     // Initialize operation queue service
-    this.operationQueue = new OperationQueueService(this.repositoryFactory.getPrisma());
+    this.operationQueue = new OperationQueueService(
+      this.repositoryFactory.getPrisma()
+    );
 
     // Initialize distributed lock service
-    this.lockService = new DistributedLockService(this.repositoryFactory.getPool());
+    this.lockService = new DistributedLockService(
+      this.repositoryFactory.getPool()
+    );
 
     // Initialize alert service
     this.alertService = new OrderAlertService([
-      { type: 'console', enabled: true },
+      { type: "console", enabled: true },
       // Add webhook/email channels as needed:
       // { type: 'webhook', enabled: true, config: { url: process.env.ALERT_WEBHOOK_URL } },
     ]);
@@ -214,12 +221,30 @@ export class LiveTradingOrchestrator {
       }
       console.log("");
       console.log("🛡️  Risk Controls:");
-      console.log(`   allowLiveOrders: ${this.config.brokerEnv.allowLiveOrders !== false}`);
-      console.log(`   allowCancelEntries: ${this.config.brokerEnv.allowCancelEntries === true}`);
-      console.log(`   maxOrdersPerSymbol: ${this.config.brokerEnv.maxOrdersPerSymbol ?? 'unset'}`);
-      console.log(`   maxOrderQty: ${this.config.brokerEnv.maxOrderQty ?? 'unset'}`);
-      console.log(`   maxNotionalPerSymbol: ${this.config.brokerEnv.maxNotionalPerSymbol ?? 'unset'}`);
-      console.log(`   dailyLossLimit: ${this.config.brokerEnv.dailyLossLimit ?? 'unset'}`);
+      console.log(
+        `   allowLiveOrders: ${this.config.brokerEnv.allowLiveOrders !== false}`
+      );
+      console.log(
+        `   allowCancelEntries: ${
+          this.config.brokerEnv.allowCancelEntries === true
+        }`
+      );
+      console.log(
+        `   maxOrdersPerSymbol: ${
+          this.config.brokerEnv.maxOrdersPerSymbol ?? "unset"
+        }`
+      );
+      console.log(
+        `   maxOrderQty: ${this.config.brokerEnv.maxOrderQty ?? "unset"}`
+      );
+      console.log(
+        `   maxNotionalPerSymbol: ${
+          this.config.brokerEnv.maxNotionalPerSymbol ?? "unset"
+        }`
+      );
+      console.log(
+        `   dailyLossLimit: ${this.config.brokerEnv.dailyLossLimit ?? "unset"}`
+      );
       console.log("");
     } catch (error) {
       console.warn("⚠️  Could not fetch portfolio data:", error);
@@ -328,7 +353,10 @@ export class LiveTradingOrchestrator {
           this.config.brokerEnv.currentDailyPnL =
             portfolio.realizedPnL + portfolio.unrealizedPnL;
         } catch (error) {
-          console.warn('⚠️  Failed to refresh portfolio snapshot for risk caps:', error);
+          console.warn(
+            "⚠️  Failed to refresh portfolio snapshot for risk caps:",
+            error
+          );
         }
 
         // Check which strategies need bar updates based on their timeframe
@@ -415,7 +443,9 @@ export class LiveTradingOrchestrator {
    * Handle new strategy detected by database poller
    */
   private async handleNewStrategyFromDB(strategy: Strategy): Promise<void> {
-    console.log(`📥 New strategy detected: ${strategy.name} (${strategy.symbol})`);
+    console.log(
+      `📥 New strategy detected: ${strategy.name} (${strategy.symbol})`
+    );
 
     try {
       // Check if this symbol is currently being swapped (distributed lock check)
@@ -429,7 +459,9 @@ export class LiveTradingOrchestrator {
 
       // Check if strategy for this symbol already exists
       if (this.multiStrategyManager.getStrategyBySymbol(strategy.symbol)) {
-        console.log(`⚠️  Strategy for ${strategy.symbol} already loaded. Skipping.`);
+        console.log(
+          `⚠️  Strategy for ${strategy.symbol} already loaded. Skipping.`
+        );
         return;
       }
 
@@ -458,7 +490,9 @@ export class LiveTradingOrchestrator {
       console.error(`Failed to load strategy ${strategy.name}:`, error.message);
 
       // Mark strategy as failed
-      await this.repositoryFactory.getStrategyRepo().markFailed(strategy.id, error.message);
+      await this.repositoryFactory
+        .getStrategyRepo()
+        .markFailed(strategy.id, error.message);
     }
   }
 
@@ -466,9 +500,13 @@ export class LiveTradingOrchestrator {
    * Load existing strategies from database
    */
   private async loadExistingStrategies(): Promise<void> {
-    console.log(`📊 Loading existing strategies from database for user: ${this.config.userId}`);
+    console.log(
+      `📊 Loading existing strategies from database for user: ${this.config.userId}`
+    );
 
-    const strategies = await this.repositoryFactory.getStrategyRepo().findActiveByUser(this.config.userId);
+    const strategies = await this.repositoryFactory
+      .getStrategyRepo()
+      .findActiveByUser(this.config.userId);
     console.log(`Found ${strategies.length} active strategy(ies)`);
 
     // Load each strategy
@@ -480,7 +518,9 @@ export class LiveTradingOrchestrator {
         console.error(`Failed to load ${strategy.name}:`, error.message);
 
         // Mark as failed
-        await this.repositoryFactory.getStrategyRepo().markFailed(strategy.id, error.message);
+        await this.repositoryFactory
+          .getStrategyRepo()
+          .markFailed(strategy.id, error.message);
       }
     }
 
@@ -654,9 +694,13 @@ export class LiveTradingOrchestrator {
     }
 
     // Collect all symbols from active strategies
-    const symbols = [...new Set(activeStrategies.map(s => s.symbol))];
+    const symbols = [...new Set(activeStrategies.map((s) => s.symbol))];
 
-    console.log(`🔍 Running startup reconciliation for ${symbols.length} symbol(s): ${symbols.join(", ")}`);
+    console.log(
+      `🔍 Running startup reconciliation for ${
+        symbols.length
+      } symbol(s): ${symbols.join(", ")}`
+    );
 
     try {
       const report = await this.reconciliationService.reconcileOnStartup(
@@ -666,10 +710,15 @@ export class LiveTradingOrchestrator {
       );
 
       // Log summary
-      if (report.orphanedOrders.length === 0 && report.missingOrders.length === 0) {
+      if (
+        report.orphanedOrders.length === 0 &&
+        report.missingOrders.length === 0
+      ) {
         console.log("✓ Reconciliation complete - no discrepancies found");
       } else {
-        console.log(`⚠️  Reconciliation complete - found ${report.orphanedOrders.length} orphaned, ${report.missingOrders.length} missing`);
+        console.log(
+          `⚠️  Reconciliation complete - found ${report.orphanedOrders.length} orphaned, ${report.missingOrders.length} missing`
+        );
       }
 
       // Update last reconciliation time
@@ -698,9 +747,11 @@ export class LiveTradingOrchestrator {
     }
 
     // Collect all symbols from active strategies
-    const symbols = [...new Set(activeStrategies.map(s => s.symbol))];
+    const symbols = [...new Set(activeStrategies.map((s) => s.symbol))];
 
-    console.log(`\n🔍 Running periodic reconciliation for ${symbols.length} symbol(s)...`);
+    console.log(
+      `\n🔍 Running periodic reconciliation for ${symbols.length} symbol(s)...`
+    );
 
     try {
       const report = await this.reconciliationService.reconcilePeriodic(
@@ -711,7 +762,9 @@ export class LiveTradingOrchestrator {
 
       // Log if any discrepancies found
       if (report.orphanedOrders.length > 0 || report.missingOrders.length > 0) {
-        console.warn(`⚠️  Reconciliation found discrepancies - orphaned: ${report.orphanedOrders.length}, missing: ${report.missingOrders.length}`);
+        console.warn(
+          `⚠️  Reconciliation found discrepancies - orphaned: ${report.orphanedOrders.length}, missing: ${report.missingOrders.length}`
+        );
       }
 
       // Update last reconciliation time
