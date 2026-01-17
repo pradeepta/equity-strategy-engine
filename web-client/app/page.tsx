@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { AcpClient } from "../src/lib/acpClient";
 
 type ChatMessage = {
@@ -42,8 +44,14 @@ export default function HomePage() {
   const [input, setInput] = useState("");
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prevMessagesLengthRef = useRef(messages.length);
+  const userJustSentMessageRef = useRef(false);
 
   const client = useMemo(() => {
     return getClient(
@@ -86,49 +94,134 @@ export default function HomePage() {
     client.startSession("/");
   }, [client, gatewayUrl]);
 
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      const scrollDistanceFromBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      const isNearBottom = scrollDistanceFromBottom < 200;
+      if (isNearBottom) {
+        setShowScrollButton(false);
+      }
+    };
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    const endElement = messagesEndRef.current;
+    if (!container || !endElement) return;
+
+    const isNewMessage = messages.length > prevMessagesLengthRef.current;
+    const isMessageUpdate =
+      messages.length === prevMessagesLengthRef.current && messages.length > 0;
+    prevMessagesLengthRef.current = messages.length;
+
+    const scrollDistanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    const isNearBottom = scrollDistanceFromBottom < 200;
+
+    const shouldScroll =
+      userJustSentMessageRef.current ||
+      isNearBottom ||
+      container.scrollTop === 0 ||
+      (isMessageUpdate && isNearBottom);
+
+    if (shouldScroll) {
+      endElement.scrollIntoView({ behavior: "smooth" });
+      setShowScrollButton(false);
+      if (status !== "streaming" && userJustSentMessageRef.current) {
+        userJustSentMessageRef.current = false;
+      }
+    } else if (isNewMessage) {
+      setShowScrollButton(true);
+      userJustSentMessageRef.current = false;
+    }
+  }, [messages, status]);
+
+  useEffect(() => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = `${Math.min(
+      textareaRef.current.scrollHeight,
+      200
+    )}px`;
+  }, [input]);
+
   const sendMessage = () => {
     const text = input.trim();
     if (!text) return;
+    userJustSentMessageRef.current = true;
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setInput("");
     setStatus("streaming");
     client.sendPrompt(text);
   };
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
+    }
+  };
+
   return (
-    <div className="container">
-      <div className="card">
-        <h1>Stock Advisor Chat</h1>
-        <p className="status">
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="topbar-title">Tradewithclaude</div>
+        <div className="topbar-status">
           Status: {status}
           {sessionId ? ` | Session: ${sessionId}` : ""}
-        </p>
-      </div>
+        </div>
+      </header>
 
-      <div className="card messages">
-        {messages.length === 0 && (
-          <div className="status">Start a conversation…</div>
+      <section className="chat-shell">
+        <div className="messages" ref={messagesContainerRef}>
+          {messages.length === 0 && (
+            <div className="empty-state">Start a conversation…</div>
+          )}
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`message ${msg.role}`}>
+              <div className="message-content">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {showScrollButton && (
+          <button className="scroll-button" onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })}>
+            Jump to latest
+          </button>
         )}
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message ${msg.role}`}>
-            {msg.content}
-          </div>
-        ))}
-      </div>
 
-      <div className="card inputRow">
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Ask about market positioning..."
-        />
-        <button
-          onClick={sendMessage}
-          disabled={status === "connecting" || status === "missing_url"}
-        >
-          Send
-        </button>
-      </div>
+        <div className="composer">
+          <div className="composer-inner">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Message the advisor..."
+              rows={1}
+            />
+            <button
+              onClick={sendMessage}
+              disabled={status === "connecting" || status === "missing_url"}
+            >
+              Send
+            </button>
+          </div>
+          <div className="composer-hint">
+            Press Enter to send • Shift+Enter for a new line
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

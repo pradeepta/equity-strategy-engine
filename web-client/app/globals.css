@@ -4,93 +4,214 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, sans-serif;
-  background: #0b0c10;
-  color: #f4f5f7;
+  font-family: "Source Serif 4", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #faf8f5;
+  color: #1a1a1a;
+  height: 100vh;
 }
 
 main {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   justify-content: center;
-  padding: 32px 16px 48px;
+  padding: 24px 16px 32px;
 }
 
-.container {
+.app-shell {
   width: 100%;
-  max-width: 900px;
+  max-width: 980px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
+  min-height: 0;
 }
 
-.card {
-  background: #14161b;
-  border: 1px solid #23262f;
-  border-radius: 12px;
-  padding: 20px;
+.topbar {
+  background: #ffffff;
+  border: 1px solid #ebe6dd;
+  border-radius: 16px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.topbar-status {
+  font-size: 12px;
+  color: #737373;
+}
+
+.chat-shell {
+  background: #ffffff;
+  border: 1px solid #ebe6dd;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;
 }
 
 .messages {
+  flex: 1;
+  padding: 20px 20px 32px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 360px;
-  max-height: 540px;
-  overflow-y: auto;
-  padding-right: 4px;
+  justify-content: flex-end;
+  gap: 16px;
+  background: #ffffff;
+  min-height: 0;
+}
+
+.empty-state {
+  color: #737373;
+  font-size: 14px;
 }
 
 .message {
   padding: 12px 14px;
-  border-radius: 10px;
-  line-height: 1.4;
+  border-radius: 14px;
+  line-height: 1.25;
   white-space: pre-wrap;
+  max-width: 85%;
+  box-shadow: 0 1px 2px rgba(24, 24, 24, 0.05);
+}
+
+.message-content {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.message-content p {
+  margin: 0 0 0.2rem;
+}
+
+.message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.message-content ul,
+.message-content ol {
+  padding-left: 1.25rem;
+  margin: 0 0 0.2rem;
+}
+
+.message-content li {
+  margin: 0.1rem 0;
+}
+
+.message-content code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9em;
+}
+
+.message-content pre {
+  background: rgba(0, 0, 0, 0.08);
+  padding: 8px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 0 0 0.2rem;
+}
+
+.message-content pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4 {
+  margin: 0.25rem 0 0.25rem;
+  font-weight: 600;
 }
 
 .message.user {
   align-self: flex-end;
-  background: #2563eb;
+  background: #f55036;
   color: #ffffff;
 }
 
 .message.agent {
   align-self: flex-start;
-  background: #1f2937;
+  background: #f4f1eb;
+  color: #1a1a1a;
 }
 
-.status {
+.scroll-button {
+  position: absolute;
+  right: 24px;
+  bottom: 140px;
+  background: #ffffff;
+  border: 1px solid #ebe6dd;
+  border-radius: 999px;
+  padding: 8px 14px;
   font-size: 12px;
-  color: #9ca3af;
+  color: #404040;
+  cursor: pointer;
+  box-shadow: 0 8px 16px rgba(24, 24, 24, 0.08);
 }
 
-.inputRow {
+.composer {
+  border-top: 1px solid #ebe6dd;
+  background: #faf8f5;
+  padding: 16px 20px 18px;
+}
+
+.composer-inner {
   display: flex;
   gap: 12px;
-}
-
-textarea {
-  flex: 1;
-  resize: vertical;
-  min-height: 64px;
-  border-radius: 10px;
-  border: 1px solid #2c2f3a;
-  background: #0f1117;
-  color: #f4f5f7;
+  align-items: flex-end;
+  background: #ffffff;
+  border: 1px solid #ddd6ca;
+  border-radius: 16px;
   padding: 12px;
 }
 
-button {
-  background: #10b981;
+.composer-inner textarea {
+  flex: 1;
+  resize: none;
   border: none;
-  border-radius: 10px;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #1a1a1a;
+  max-height: 200px;
+  outline: none;
+}
+
+.composer-inner button {
+  background: #f55036;
+  border: none;
+  border-radius: 12px;
   color: #ffffff;
   font-weight: 600;
-  padding: 0 18px;
+  padding: 10px 16px;
   cursor: pointer;
 }
 
-button:disabled {
-  opacity: 0.6;
+.composer-inner button:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
+}
+
+.composer-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #737373;
+  text-align: center;
 }
