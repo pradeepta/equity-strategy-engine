@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import { WebSocket } from "ws";
-import type { Session } from "./types.js";
+import type { Session, PermissionOption } from "./types.js";
+import { AUTO_APPROVE_PERMISSIONS } from "./config.js";
 
 export function spawnAgent(session: Session): void {
   if (session.child) {
@@ -63,6 +64,15 @@ function forwardToClient(session: Session, message: string): void {
   if (!message) {
     return;
   }
+
+  // Try to handle permission requests before forwarding
+  try {
+    const parsed = JSON.parse(message) as Record<string, unknown>;
+    handlePermissionRequest(session, parsed);
+  } catch {
+    // Not JSON or parsing error, just forward
+  }
+
   console.log(
     `[gateway][ws->client] session=${session.id}: ${message.slice(0, 2000)}`
   );
@@ -97,6 +107,76 @@ function tryFlushJsonBuffer(session: Session): void {
   } catch {
     // Wait for more data
   }
+}
+
+function handlePermissionRequest(
+  session: Session,
+  parsed: Record<string, unknown>
+): void {
+  // Only process permission requests
+  if (parsed.method !== "session/request_permission") {
+    return;
+  }
+  if (parsed.id === undefined) {
+    return;
+  }
+
+  // Extract options and tool call info
+  const params = parsed.params as Record<string, unknown> | undefined;
+  const options = params?.options as Array<PermissionOption> | undefined;
+  if (!options) {
+    return;
+  }
+
+  const toolCallId = (params?.toolCall as Record<string, unknown>)
+    ?.toolCallId as string | undefined;
+
+  console.log(
+    `[agent] Permission request for session ${session.id}:`,
+    JSON.stringify(parsed)
+  );
+
+  // Early exit if auto-approve is disabled
+  if (!AUTO_APPROVE_PERMISSIONS) {
+    console.log(
+      `[agent] Auto-approve disabled; not responding to permission id=${
+        parsed.id
+      } toolCallId=${toolCallId ?? "unknown"}`
+    );
+    return;
+  }
+
+  // Option priority: allow > allow_once > allow_always > first option
+  const allowOption =
+    options.find((o) => o.optionId === "allow") ||
+    options.find((o) => o.optionId === "allow_once") ||
+    options.find((o) => o.optionId === "allow_always") ||
+    options[0];
+
+  if (!allowOption?.optionId) {
+    console.warn(`[agent] No allow option found in permission request`);
+    return;
+  }
+
+  // Construct and send response
+  const response = {
+    jsonrpc: "2.0",
+    id: parsed.id,
+    result: {
+      outcome: {
+        outcome: "selected",
+        optionId: allowOption.optionId,
+      },
+    },
+  };
+
+  console.log(`[agent] Permission response:`, JSON.stringify(response));
+  writeToAgentStdin(session, JSON.stringify(response));
+  console.log(
+    `[agent] Auto-approved permission id=${parsed.id} optionId=${
+      allowOption.optionId
+    } toolCallId=${toolCallId ?? "unknown"}`
+  );
 }
 
 function maybeHandleSessionNew(session: Session, payload: string): void {

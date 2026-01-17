@@ -7,6 +7,10 @@ type JsonRpcMessage = {
   error?: { message?: string };
 };
 
+// Note: stdio MCP servers should be configured in the gateway's MCP_SERVERS_JSON env var
+// The ACP agent only supports HTTP/SSE MCP servers
+const STOCKS_MCP_SERVER = null;
+
 type UpdateCallback = (chunk: string) => void;
 type DoneCallback = () => void;
 type ErrorCallback = (message: string) => void;
@@ -79,13 +83,14 @@ export class AcpClient {
   startSession(cwd: string): void {
     const id = this.nextId();
     console.log("[ACP] session/new", { id, cwd });
+    const mcpServers = STOCKS_MCP_SERVER ? [STOCKS_MCP_SERVER] : [];
     this.send({
       jsonrpc: "2.0",
       id,
       method: "session/new",
       params: {
         cwd,
-        mcpServers: [],
+        mcpServers,
       },
     });
   }

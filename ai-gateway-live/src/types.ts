@@ -10,6 +10,7 @@ export interface Session {
   stdoutBuffer: string;
   persona?: string;
   pendingSessionNewRequestId?: number | string;
+  mcpServers?: Array<Record<string, unknown>>;
   systemPrompt?: string;
   systemPromptSent?: boolean;
   sessionId?: string;
@@ -30,5 +31,22 @@ export interface JsonRpcResponse {
     code: number;
     message: string;
     data?: unknown;
+  };
+}
+
+export interface PermissionOption {
+  optionId?: string;
+  [key: string]: unknown;
+}
+
+export interface PermissionRequest {
+  jsonrpc: "2.0";
+  id: number | string;
+  method: "session/request_permission";
+  params: {
+    options: PermissionOption[];
+    toolCall?: {
+      toolCallId?: string;
+    };
   };
 }

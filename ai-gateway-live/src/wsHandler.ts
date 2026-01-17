@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "http";
 import { WebSocket } from "ws";
 import type { Session, JsonRpcRequest, JsonRpcResponse } from "./types.js";
-import { RECONNECT_WINDOW_MS, getAgentCommand } from "./config.js";
+import { AUTO_MCP_SERVERS, RECONNECT_WINDOW_MS, getAgentCommand } from "./config.js";
 import {
   getSession,
   hasSession,
@@ -34,6 +34,31 @@ export function handleWebSocketConnection(
   });
   ws.on("close", () => handleClose(session, sessionId));
   ws.on("error", (err) => handleError(sessionId, err));
+}
+
+function mergeMcpServers(
+  incoming: Array<Record<string, unknown>>,
+  autoServers: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  if (autoServers.length === 0) {
+    return incoming;
+  }
+  if (incoming.length === 0) {
+    return autoServers;
+  }
+  const seenNames = new Set<string>();
+  const merged: Array<Record<string, unknown>> = [];
+  const pushServer = (server: Record<string, unknown>) => {
+    const name = server?.name;
+    if (typeof name === "string") {
+      if (seenNames.has(name)) return;
+      seenNames.add(name);
+    }
+    merged.push(server);
+  };
+  incoming.forEach(pushServer);
+  autoServers.forEach(pushServer);
+  return merged;
 }
 
 function reconnectToSession(sessionId: string, ws: WebSocket): Session {
@@ -78,6 +103,7 @@ function createNewSession(
 async function handleMessage(session: Session, rawMessage: string): Promise<void> {
   const message = rawMessage.trim();
   if (!message) return;
+  let messageToWrite = message;
 
   try {
     const parsed = JSON.parse(message) as JsonRpcRequest;
@@ -87,6 +113,24 @@ async function handleMessage(session: Session, rawMessage: string): Promise<void
     }
     if (parsed.method === "session/new") {
       session.pendingSessionNewRequestId = parsed.id;
+      const params = (parsed.params || {}) as Record<string, unknown>;
+      const incomingServers = Array.isArray(params.mcpServers)
+        ? (params.mcpServers as Array<Record<string, unknown>>)
+        : [];
+      const mergedServers = mergeMcpServers(incomingServers, AUTO_MCP_SERVERS);
+      if (
+        mergedServers.length !== incomingServers.length ||
+        mergedServers.some((s, i) => s !== incomingServers[i])
+      ) {
+        parsed.params = {
+          ...params,
+          mcpServers: mergedServers,
+        };
+        messageToWrite = JSON.stringify(parsed);
+      }
+      if (mergedServers.length > 0) {
+        session.mcpServers = mergedServers;
+      }
     }
   } catch {
     // non-JSON; pass through
@@ -95,7 +139,7 @@ async function handleMessage(session: Session, rawMessage: string): Promise<void
   if (!session.child) {
     spawnAgent(session);
   }
-  writeToAgentStdin(session, message);
+  writeToAgentStdin(session, messageToWrite);
 }
 
 function handleStopRequest(session: Session, parsed: JsonRpcRequest): void {

@@ -9,6 +9,18 @@ export const DEFAULT_AGENT_CMD =
   process.env.AGENT_CMD ||
   "npx -y @zed-industries/claude-code-acp@latest --timeout 180000";
 
+export const AUTO_MCP_SERVERS: Array<Record<string, unknown>> = (() => {
+  const raw = process.env.MCP_SERVERS_JSON;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
+  } catch {
+    console.warn("[config] Invalid MCP_SERVERS_JSON; expected JSON array.");
+    return [];
+  }
+})();
+
 export function getAgentCommand(persona?: string): string {
   if (!persona) {
     return DEFAULT_AGENT_CMD;
@@ -32,3 +44,6 @@ export function getPersonaPrompt(persona?: string): string | undefined {
   }
   return PERSONA_PROMPTS[persona];
 }
+
+export const AUTO_APPROVE_PERMISSIONS =
+  (process.env.AUTO_APPROVE_PERMISSIONS || "false").toLowerCase() === "true";
