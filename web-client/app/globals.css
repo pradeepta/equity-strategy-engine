@@ -58,6 +58,27 @@ main {
 .topbar-status {
   font-size: 12px;
   color: #737373;
+  flex: 1;
+}
+
+.new-session-button {
+  background: #f55036;
+  border: none;
+  border-radius: 10px;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.new-session-button:hover {
+  opacity: 0.9;
+}
+
+.new-session-button:active {
+  opacity: 0.8;
 }
 
 .chat-shell {

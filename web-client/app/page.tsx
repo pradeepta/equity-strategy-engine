@@ -239,6 +239,16 @@ export default function HomePage() {
     setAttachedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const handleNewSession = () => {
+    if (typeof window !== "undefined") {
+      // Clear session cookies
+      window.localStorage.removeItem("acp_gateway_session_id");
+      window.localStorage.removeItem("acp_agent_session_id");
+      // Reload the page
+      window.location.reload();
+    }
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -247,6 +257,9 @@ export default function HomePage() {
           Status: {status}
           {sessionId ? ` | Session: ${sessionId}` : ""}
         </div>
+        <button className="new-session-button" onClick={handleNewSession}>
+          New Session
+        </button>
       </header>
 
       <section className="chat-shell">
