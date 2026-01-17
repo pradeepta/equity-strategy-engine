@@ -7,6 +7,16 @@
  * via Model Context Protocol (MCP).
  */
 
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+
+// Load environment variables from multiple possible locations
+// Try current directory first, then parent directory (for when running from dist/)
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -20,9 +30,9 @@ import { StrategyCompiler } from './compiler/compile';
 import { StrategyEngine } from './runtime/engine';
 import { createStandardRegistry } from './features/registry';
 import { validateStrategyDSL } from './spec/schema';
+import { getRepositoryFactory } from './database/RepositoryFactory';
 import * as yaml from 'yaml';
 import * as fs from 'fs';
-import * as path from 'path';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 
@@ -135,6 +145,20 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'get_dsl_schema',
+    description: 'Get the complete DSL schema documentation with all field definitions, types, and examples. Use this FIRST when creating strategies to understand the exact format required.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        section: {
+          type: 'string',
+          description: 'Optional: Get specific section (meta, features, rules, orderPlans, risk). If omitted, returns full schema.',
+          enum: ['full', 'meta', 'features', 'rules', 'orderPlans', 'risk'],
+        },
+      },
+    },
+  },
+  {
     name: 'get_strategy_template',
     description: 'Get a YAML template for a specific strategy type',
     inputSchema: {
@@ -169,6 +193,31 @@ const TOOLS: Tool[] = [
         },
       },
       required: ['backtest_results'],
+    },
+  },
+  {
+    name: 'deploy_strategy',
+    description: 'Deploy a strategy to the live trading system. Creates a database record with status PENDING so the orchestrator picks it up. User and account are automatically loaded from environment variables (USER_ID and TWS_ACCOUNT_ID). Just provide the YAML content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        yaml_content: {
+          type: 'string',
+          description: 'YAML strategy content (use this OR yaml_file_path)',
+        },
+        yaml_file_path: {
+          type: 'string',
+          description: 'Path to YAML file (use this OR yaml_content)',
+        },
+        user_id: {
+          type: 'string',
+          description: 'Optional: Override user ID (auto-loaded from USER_ID env or defaults to "default-user")',
+        },
+        account_id: {
+          type: 'string',
+          description: 'Optional: Override account ID (auto-loaded from TWS_ACCOUNT_ID env)',
+        },
+      },
     },
   },
   {
@@ -596,6 +645,263 @@ states:
 }
 
 /**
+ * Get DSL schema documentation handler
+ */
+async function handleGetDSLSchema(args: any) {
+  const section = args.section || 'full';
+
+  const schemaDocs = {
+    full: `# Trading Strategy DSL Schema
+
+## Complete Structure
+
+\`\`\`yaml
+meta:
+  name: string            # Strategy name
+  symbol: string          # Trading symbol (e.g., "AAPL", "GOOGL")
+  timeframe: string       # Bar timeframe (e.g., "1m", "5m", "1h", "1d")
+  description: string     # Optional description
+
+features:                 # Array of features (indicators, built-ins, microstructure)
+  - name: string          # Unique feature name
+    type: builtin|indicator|microstructure
+    params:               # Optional parameters (specific to feature type)
+      key: value
+
+rules:
+  arm: string            # Optional: Expression to arm (enable) the strategy
+  trigger: string        # Optional: Expression that triggers order execution
+  invalidate:            # Optional: Conditions to invalidate armed state
+    when_any:
+      - string           # Array of invalidation expressions
+
+orderPlans:              # Array of order plans
+  - name: string         # Order plan name
+    side: buy|sell       # Order side
+    entryZone:           # Entry price zone [min, max]
+      - number
+      - number
+    qty: number          # Quantity (positive number)
+    stopPrice: number    # Stop loss price
+    targets:             # Array of profit targets
+      - price: number
+        ratioOfPosition: number  # Ratio of position (0-1)
+
+execution:               # Optional execution settings
+  entryTimeoutBars: number     # Bars to wait before timeout (default: 10)
+  rthOnly: boolean             # Regular trading hours only (default: false)
+
+risk:
+  maxRiskPerTrade: number      # Maximum risk per trade (positive number)
+\`\`\`
+
+## Field Details
+
+### meta
+- **name**: Human-readable strategy name
+- **symbol**: Stock symbol to trade
+- **timeframe**: Candle period - "1m", "5m", "15m", "30m", "1h", "4h", "1d"
+- **description**: Optional strategy description
+
+### features
+Array of features that calculate indicators or extract data:
+- **name**: Unique identifier used in expressions
+- **type**:
+  - \`builtin\`: Built-in features (close, open, high, low, volume, timestamp, dayOfWeek, hour, minute)
+  - \`indicator\`: Technical indicators (rsi, macd, ema, sma, bbands, atr, adx, etc.)
+  - \`microstructure\`: Market microstructure features
+- **params**: Type-specific parameters (e.g., \`period: 14\` for RSI)
+
+### rules
+State machine rules:
+- **arm**: Expression that enables the strategy (e.g., \`rsi < 30\`)
+- **trigger**: Expression that fires orders (e.g., \`close > ema20\`)
+- **invalidate.when_any**: Array of expressions that disable armed state
+
+### orderPlans
+- **name**: Descriptive name for the order
+- **side**: "buy" or "sell"
+- **entryZone**: [minPrice, maxPrice] - acceptable entry range
+- **qty**: Number of shares
+- **stopPrice**: Stop loss price
+- **targets**: Array of profit targets with price and position ratio
+
+### execution (optional)
+- **entryTimeoutBars**: How many bars to wait before canceling entry (default: 10)
+- **rthOnly**: Only trade during regular trading hours (default: false)
+
+### risk
+- **maxRiskPerTrade**: Maximum $ risk per trade
+
+## Example Strategy
+
+\`\`\`yaml
+meta:
+  name: "RSI Mean Reversion"
+  symbol: "AAPL"
+  timeframe: "5m"
+  description: "Buy oversold, sell overbought"
+
+features:
+  - name: rsi
+    type: indicator
+    params:
+      period: 14
+  - name: ema20
+    type: indicator
+    params:
+      period: 20
+
+rules:
+  arm: "rsi < 30"
+  trigger: "close > ema20"
+  invalidate:
+    when_any:
+      - "rsi > 70"
+
+orderPlans:
+  - name: "long_entry"
+    side: buy
+    entryZone: [99, 101]
+    qty: 100
+    stopPrice: 95
+    targets:
+      - price: 105
+        ratioOfPosition: 0.5
+      - price: 110
+        ratioOfPosition: 0.5
+
+risk:
+  maxRiskPerTrade: 500
+\`\`\``,
+
+    meta: `### meta Section
+\`\`\`yaml
+meta:
+  name: string            # Strategy name
+  symbol: string          # Trading symbol
+  timeframe: string       # Bar timeframe
+  description: string     # Optional
+\`\`\`
+
+Timeframe values: "1m", "5m", "15m", "30m", "1h", "4h", "1d"`,
+
+    features: `### features Section
+
+**IMPORTANT**: Features are pre-registered with fixed names. Use the exact feature names below.
+
+\`\`\`yaml
+features:
+  - name: <feature_name>  # Use exact name from list below
+\`\`\`
+
+**Available Features** (use exact names):
+
+**Built-in OHLCV**:
+- close, open, high, low, volume, price
+
+**Indicators**:
+- rsi (14-period RSI)
+- macd, macd_signal, macd_histogram (12,26,9 MACD)
+- ema20, ema50 (20 and 50-period EMAs)
+- sma50, sma150, sma200 (50, 150, 200-period SMAs)
+- sma50_rising, sma150_rising, sma200_rising (trend detection)
+- bb_upper, bb_middle, bb_lower (Bollinger Bands)
+- vwap (Volume Weighted Average Price)
+
+**Microstructure**:
+- delta, absorption, volume_zscore
+- lod (low of day)
+- fifty_two_week_high, fifty_two_week_low
+- cup_handle_confidence
+
+**Example** (use exact feature names):
+\`\`\`yaml
+features:
+  - name: rsi          # 14-period RSI
+  - name: ema20        # 20-period EMA
+  - name: ema50        # 50-period EMA
+  - name: volume_zscore
+\`\`\``,
+
+    rules: `### rules Section
+\`\`\`yaml
+rules:
+  arm: string            # Expression to arm strategy
+  trigger: string        # Expression to trigger orders
+  invalidate:
+    when_any:
+      - string          # Invalidation conditions
+\`\`\`
+
+Expressions use feature names and operators:
+- Comparisons: <, >, <=, >=, ==, !=
+- Logic: &&, ||, !
+- Math: +, -, *, /, %
+
+**Example**:
+\`\`\`yaml
+rules:
+  arm: "rsi < 30 && close > ema20"
+  trigger: "close > open"
+  invalidate:
+    when_any:
+      - "rsi > 70"
+      - "close < ema20"
+\`\`\``,
+
+    orderPlans: `### orderPlans Section
+\`\`\`yaml
+orderPlans:
+  - name: string
+    side: buy|sell
+    entryZone: [number, number]
+    qty: number
+    stopPrice: number
+    targets:
+      - price: number
+        ratioOfPosition: number
+\`\`\`
+
+**Example**:
+\`\`\`yaml
+orderPlans:
+  - name: "long_position"
+    side: buy
+    entryZone: [100, 102]
+    qty: 100
+    stopPrice: 95
+    targets:
+      - price: 110
+        ratioOfPosition: 0.5
+      - price: 115
+        ratioOfPosition: 0.5
+\`\`\``,
+
+    risk: `### risk Section
+\`\`\`yaml
+risk:
+  maxRiskPerTrade: number  # Maximum $ risk per trade
+\`\`\`
+
+**Example**:
+\`\`\`yaml
+risk:
+  maxRiskPerTrade: 500  # Risk max $500 per trade
+\`\`\``
+  };
+
+  const doc = schemaDocs[section as keyof typeof schemaDocs] || schemaDocs.full;
+
+  return {
+    success: true,
+    section,
+    documentation: doc,
+    available_sections: Object.keys(schemaDocs),
+  };
+}
+
+/**
  * Analyze performance handler
  */
 async function handleAnalyzePerformance(args: any) {
@@ -632,6 +938,67 @@ async function handleAnalyzePerformance(args: any) {
       sell_orders: sellOrders,
     },
   };
+}
+
+/**
+ * Deploy strategy handler - Add strategy directly to database
+ */
+async function handleDeployStrategy(args: any) {
+  try {
+    // Get YAML content
+    const yamlContent = loadYamlContent(args);
+
+    // Parse and validate
+    const parsed = yaml.parse(yamlContent);
+    const validated = validateStrategyDSL(parsed);
+
+    // Extract metadata
+    const { symbol, name, timeframe } = validated.meta;
+    const userId = args.user_id || process.env.USER_ID || 'default-user';
+    const accountId = args.account_id || process.env.TWS_ACCOUNT_ID;
+
+    // Create strategy in database
+    const factory = getRepositoryFactory();
+    const strategyRepo = factory.getStrategyRepo();
+
+    const strategy = await strategyRepo.createWithVersion({
+      userId,
+      accountId,
+      symbol,
+      name,
+      timeframe,
+      yamlContent,
+      changeReason: 'Deployed via MCP',
+    });
+
+    // Mark as PENDING so orchestrator picks it up
+    const updatedStrategy = await factory.getPrisma().strategy.update({
+      where: { id: strategy.id },
+      data: { status: 'PENDING' },
+    });
+
+    await factory.disconnect();
+
+    return {
+      success: true,
+      message: 'Strategy deployed successfully',
+      strategy: {
+        id: updatedStrategy.id,
+        name: updatedStrategy.name,
+        symbol: updatedStrategy.symbol,
+        timeframe: updatedStrategy.timeframe,
+        status: updatedStrategy.status,
+      },
+      instructions: 'Strategy is PENDING and will be picked up by the orchestrator automatically.',
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Deployment failed',
+      message: error.message,
+      details: error.errors || error.stack,
+    };
+  }
 }
 
 /**
@@ -693,11 +1060,17 @@ function registerHandlers(server: Server): void {
         case 'list_strategy_types':
           result = await handleListStrategyTypes();
           break;
+        case 'get_dsl_schema':
+          result = await handleGetDSLSchema(args);
+          break;
         case 'get_strategy_template':
           result = await handleGetStrategyTemplate(args);
           break;
         case 'analyze_strategy_performance':
           result = await handleAnalyzePerformance(args);
+          break;
+        case 'deploy_strategy':
+          result = await handleDeployStrategy(args);
           break;
         case 'create_live_engine':
           result = await handleCreateLiveEngine(args);
