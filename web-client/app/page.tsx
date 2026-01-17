@@ -274,6 +274,15 @@ export default function HomePage() {
               </div>
             </div>
           ))}
+          {status === "streaming" && messages[messages.length - 1]?.role === "user" && (
+            <div className="message agent typing-indicator">
+              <div className="typing-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
 
