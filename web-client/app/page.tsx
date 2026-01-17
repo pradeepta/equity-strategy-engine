@@ -46,6 +46,7 @@ export default function HomePage() {
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [activeTab, setActiveTab] = useState<"chat" | "dashboard">("chat");
   const [attachedImages, setAttachedImages] = useState<
     { data: string; mimeType: string }[]
   >([]);
@@ -254,6 +255,20 @@ export default function HomePage() {
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-title">Trade•with•Claude</div>
+        <div className="topbar-tabs">
+          <button
+            className={`tab-button ${activeTab === "chat" ? "active" : ""}`}
+            onClick={() => setActiveTab("chat")}
+          >
+            Chat
+          </button>
+          <button
+            className={`tab-button ${activeTab === "dashboard" ? "active" : ""}`}
+            onClick={() => setActiveTab("dashboard")}
+          >
+            Dashboard
+          </button>
+        </div>
         <div className="topbar-status">
           Status: {status}
           {sessionId ? ` | Session: ${sessionId}` : ""}
@@ -263,6 +278,7 @@ export default function HomePage() {
         </button>
       </header>
 
+      {activeTab === "chat" && (
       <section className="chat-shell">
         <div className="messages" ref={messagesContainerRef}>
           {messages.length === 0 && (
@@ -392,7 +408,658 @@ export default function HomePage() {
             Press Enter to send • Shift+Enter for a new line
           </div>
         </div>
-      </section>
+        </section>
+      )}
+
+      {activeTab === "dashboard" && (
+        <section className="chat-shell">
+          <Dashboard />
+        </section>
+      )}
+    </div>
+  );
+}
+
+// Dashboard Component
+function Dashboard() {
+  const [portfolioData, setPortfolioData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Filter states
+  const [strategyStatusFilter, setStrategyStatusFilter] = useState<string>('ALL');
+  const [tradeStatusFilter, setTradeStatusFilter] = useState<string>('ALL');
+  const [symbolFilter, setSymbolFilter] = useState<string>('');
+
+  // Modal states
+  const [selectedStrategy, setSelectedStrategy] = useState<any>(null);
+  const [showStrategyModal, setShowStrategyModal] = useState(false);
+  const [selectedAuditLog, setSelectedAuditLog] = useState<any>(null);
+  const [showAuditModal, setShowAuditModal] = useState(false);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch('http://localhost:3002/api/portfolio/overview');
+        if (!response.ok) throw new Error('Failed to fetch portfolio data');
+        const data = await response.json();
+        setPortfolioData(data);
+        setError(null);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load portfolio data');
+        console.error('Portfolio fetch error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 10000); // Refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
+
+  if (loading && !portfolioData) {
+    return (
+      <div className="dashboard-loading">
+        <div className="typing-dots">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <div style={{ marginTop: '12px', color: '#737373' }}>Loading portfolio data...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="dashboard-error">
+        <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>Unable to Load Dashboard</div>
+        <div style={{ fontSize: '14px', color: '#737373' }}>{error}</div>
+        <div style={{ fontSize: '12px', color: '#737373', marginTop: '12px' }}>
+          Make sure the portfolio API server is running: npm run portfolio:api:dev
+        </div>
+      </div>
+    );
+  }
+
+  const { pnl, strategies, recentTrades, orderStats, auditTrail } = portfolioData || {};
+
+  // Filter strategies
+  const filteredStrategies = strategies?.filter((strategy: any) => {
+    const matchesStatus = strategyStatusFilter === 'ALL' || strategy.status === strategyStatusFilter;
+    const matchesSymbol = !symbolFilter || strategy.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
+    return matchesStatus && matchesSymbol;
+  }) || [];
+
+  const getStrategyTimestamp = (strategy: any) => {
+    return (
+      strategy.updatedAt ||
+      strategy.activatedAt ||
+      strategy.closedAt ||
+      strategy.archivedAt ||
+      strategy.createdAt ||
+      null
+    );
+  };
+
+  const sortedStrategies = [...filteredStrategies].sort((a: any, b: any) => {
+    const aTime = getStrategyTimestamp(a) ? new Date(getStrategyTimestamp(a)).getTime() : 0;
+    const bTime = getStrategyTimestamp(b) ? new Date(getStrategyTimestamp(b)).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  // Filter trades
+  const filteredTrades = recentTrades?.filter((trade: any) => {
+    const matchesStatus = tradeStatusFilter === 'ALL' || trade.status === tradeStatusFilter;
+    const matchesSymbol = !symbolFilter || trade.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
+    return matchesStatus && matchesSymbol;
+  }) || [];
+
+  return (
+    <div className="dashboard">
+      {/* P&L Summary */}
+      <div className="dashboard-section">
+        <h2 className="dashboard-title">Portfolio Summary</h2>
+        <div className="dashboard-cards">
+          <div className="dashboard-card">
+            <div className="card-label">Realized P&L</div>
+            <div className={`card-value ${(pnl?.realizedPnL || 0) >= 0 ? 'positive' : 'negative'}`}>
+              ${pnl?.realizedPnL?.toFixed(2) || '0.00'}
+            </div>
+          </div>
+          <div className="dashboard-card">
+            <div className="card-label">Open Positions</div>
+            <div className="card-value">{pnl?.totalPositions || 0}</div>
+          </div>
+          <div className="dashboard-card">
+            <div className="card-label">Active Strategies</div>
+            <div className="card-value">{strategies?.filter((s: any) => s.status === 'ACTIVE').length || 0}</div>
+          </div>
+          <div className="dashboard-card">
+            <div className="card-label">Total Orders</div>
+            <div className="card-value">
+              {Object.values(orderStats || {}).reduce((a: number, b: unknown) => a + (b as number), 0)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Current Positions */}
+      {pnl?.currentPositions && pnl.currentPositions.length > 0 && (
+        <div className="dashboard-section">
+          <h2 className="dashboard-title">Current Positions</h2>
+          <div className="dashboard-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Quantity</th>
+                  <th>Avg Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pnl.currentPositions.map((pos: any, idx: number) => (
+                  <tr key={idx}>
+                    <td className="symbol-cell">{pos.symbol}</td>
+                    <td>{pos.qty}</td>
+                    <td>${pos.avgPrice.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Trail */}
+      <div className="dashboard-section dashboard-fixed-height">
+        <div className="dashboard-header">
+          <div className="dashboard-title-group">
+            <h2 className="dashboard-title">Audit Trail</h2>
+            <div className="dashboard-subtitle">Source: order_audit_log</div>
+          </div>
+        </div>
+        <div className="dashboard-table-container">
+          <div className="dashboard-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Strategy</th>
+                  <th>Symbol</th>
+                  <th>Event</th>
+                  <th>Status Change</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditTrail && auditTrail.length > 0 ? (
+                  auditTrail.slice(0, 20).map((log: any) => (
+                    <tr
+                      key={log.id}
+                      onClick={() => {
+                        setSelectedAuditLog(log);
+                        setShowAuditModal(true);
+                      }}
+                      className="clickable-row"
+                    >
+                      <td className="time-cell">
+                        {new Date(log.createdAt).toLocaleString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit'
+                        })}
+                      </td>
+                      <td className="strategy-cell">{log.strategyName}</td>
+                      <td className="symbol-cell">{log.symbol}</td>
+                      <td>
+                        <span className={`status-badge ${log.eventType.toLowerCase()}`}>
+                          {log.eventType}
+                        </span>
+                      </td>
+                      <td>
+                        {log.oldStatus && log.newStatus ? (
+                          <span className="status-change">
+                            {log.oldStatus} → {log.newStatus}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td>
+                        {log.errorMessage ? (
+                          <span className="error-message">{log.errorMessage.substring(0, 50)}...</span>
+                        ) : log.quantity ? (
+                          <span>Qty: {log.quantity} {log.price ? `@ $${log.price.toFixed(2)}` : ''}</span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="empty-row">No audit logs yet</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* Strategy Performance */}
+      {strategies && strategies.length > 0 && (
+        <div className="dashboard-section dashboard-fixed-height">
+          <div className="dashboard-header">
+            <h2 className="dashboard-title">Strategy Performance</h2>
+            <div className="dashboard-filters">
+              <input
+                type="text"
+                placeholder="Filter by symbol..."
+                value={symbolFilter}
+                onChange={(e) => setSymbolFilter(e.target.value)}
+                className="filter-input"
+              />
+              <select
+                value={strategyStatusFilter}
+                onChange={(e) => setStrategyStatusFilter(e.target.value)}
+                className="filter-select"
+              >
+                <option value="ALL">All Status</option>
+                <option value="ACTIVE">Active</option>
+                <option value="CLOSED">Closed</option>
+                <option value="DRAFT">Draft</option>
+                <option value="PENDING">Pending</option>
+              </select>
+            </div>
+          </div>
+          <div className="dashboard-table-container">
+            <div className="dashboard-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th>Symbol</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>P&L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedStrategies.length > 0 ? (
+                    sortedStrategies.map((strategy: any) => (
+                      <tr
+                        key={strategy.id}
+                        onClick={() => {
+                          setSelectedStrategy(strategy);
+                          setShowStrategyModal(true);
+                        }}
+                        className="clickable-row"
+                      >
+                        <td className="strategy-cell">{strategy.name}</td>
+                        <td className="symbol-cell">{strategy.symbol}</td>
+                        <td>
+                          <span className={`status-badge ${strategy.status.toLowerCase()}`}>
+                            {strategy.status}
+                          </span>
+                        </td>
+                        <td className="time-cell">
+                          {getStrategyTimestamp(strategy)
+                            ? new Date(getStrategyTimestamp(strategy)).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                            : '-'}
+                        </td>
+                        <td>{strategy.totalTrades}</td>
+                        <td>{strategy.winRate.toFixed(1)}%</td>
+                        <td className={strategy.totalPnL >= 0 ? 'positive' : 'negative'}>
+                          ${strategy.totalPnL.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="empty-row">No strategies match the filter</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recent Trades */}
+      {recentTrades && recentTrades.length > 0 && (
+        <div className="dashboard-section dashboard-fixed-height">
+          <div className="dashboard-header">
+            <h2 className="dashboard-title">Recent Trades</h2>
+            <div className="dashboard-filters">
+              <select
+                value={tradeStatusFilter}
+                onChange={(e) => setTradeStatusFilter(e.target.value)}
+                className="filter-select"
+              >
+                <option value="ALL">All Status</option>
+                <option value="FILLED">Filled</option>
+                <option value="PARTIALLY_FILLED">Partially Filled</option>
+                <option value="SUBMITTED">Submitted</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            </div>
+          </div>
+          <div className="dashboard-table-container">
+            <div className="dashboard-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Strategy</th>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTrades.length > 0 ? (
+                    filteredTrades.slice(0, 10).map((trade: any) => (
+                      <tr key={trade.id}>
+                        <td className="time-cell">
+                          {trade.filledAt ? new Date(trade.filledAt).toLocaleString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          }) : '-'}
+                        </td>
+                        <td className="strategy-cell">{trade.strategyName}</td>
+                        <td className="symbol-cell">{trade.symbol}</td>
+                        <td>
+                          <span className={`side-badge ${trade.side.toLowerCase()}`}>
+                            {trade.side}
+                          </span>
+                        </td>
+                        <td>{trade.qty}</td>
+                        <td>${trade.price?.toFixed(2) || '-'}</td>
+                        <td>
+                          <span className={`status-badge ${trade.status.toLowerCase()}`}>
+                            {trade.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="empty-row">No trades match the filter</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {(!strategies || strategies.length === 0) && (!recentTrades || recentTrades.length === 0) && (
+        <div className="dashboard-empty">
+          <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>No Trading Data Yet</div>
+          <div style={{ fontSize: '14px', color: '#737373' }}>
+            Start trading strategies to see portfolio metrics and performance data here.
+          </div>
+        </div>
+      )}
+
+      {/* Strategy Detail Modal */}
+      {showStrategyModal && selectedStrategy && (
+        <div className="modal-overlay" onClick={() => setShowStrategyModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">{selectedStrategy.name}</h2>
+              <button className="modal-close" onClick={() => setShowStrategyModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Symbol</div>
+                    <div className="modal-value symbol-cell">{selectedStrategy.symbol}</div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Status</div>
+                    <div className="modal-value">
+                      <span className={`status-badge ${selectedStrategy.status.toLowerCase()}`}>
+                        {selectedStrategy.status}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Timeframe</div>
+                    <div className="modal-value">{selectedStrategy.timeframe}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-section">
+                <h3 className="modal-section-title">Performance Metrics</h3>
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Total Trades</div>
+                    <div className="modal-value">{selectedStrategy.totalTrades}</div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Wins / Losses</div>
+                    <div className="modal-value">{selectedStrategy.wins} / {selectedStrategy.losses}</div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Win Rate</div>
+                    <div className="modal-value">{selectedStrategy.winRate.toFixed(1)}%</div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Total P&L</div>
+                    <div className={`modal-value ${selectedStrategy.totalPnL >= 0 ? 'positive' : 'negative'}`}>
+                      ${selectedStrategy.totalPnL.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {selectedStrategy.latestRecommendation && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Latest Recommendation</h3>
+                  <div className="modal-value">
+                    <span className={`status-badge ${selectedStrategy.latestRecommendation.toLowerCase()}`}>
+                      {selectedStrategy.latestRecommendation}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {selectedStrategy.activatedAt && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Timeline</h3>
+                  <div className="modal-field">
+                    <div className="modal-label">Activated At</div>
+                    <div className="modal-value">
+                      {new Date(selectedStrategy.activatedAt).toLocaleString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedStrategy.yamlContent && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Strategy Configuration</h3>
+                  <pre className="yaml-content">
+                    <code>{selectedStrategy.yamlContent}</code>
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Trail Detail Modal */}
+      {showAuditModal && selectedAuditLog && (
+        <div className="modal-overlay" onClick={() => setShowAuditModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Audit Log Details</h2>
+              <button className="modal-close" onClick={() => setShowAuditModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Event Type</div>
+                    <div className="modal-value">
+                      <span className={`status-badge ${selectedAuditLog.eventType.toLowerCase()}`}>
+                        {selectedAuditLog.eventType}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Timestamp</div>
+                    <div className="modal-value">
+                      {new Date(selectedAuditLog.createdAt).toLocaleString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-section">
+                <h3 className="modal-section-title">Strategy Information</h3>
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Strategy Name</div>
+                    <div className="modal-value">{selectedAuditLog.strategyName}</div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Symbol</div>
+                    <div className="modal-value symbol-cell">{selectedAuditLog.symbol}</div>
+                  </div>
+                </div>
+              </div>
+
+              {(selectedAuditLog.orderId || selectedAuditLog.brokerOrderId) && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Order Information</h3>
+                  <div className="modal-row">
+                    {selectedAuditLog.orderId && (
+                      <div className="modal-field">
+                        <div className="modal-label">Order ID</div>
+                        <div className="modal-value audit-id">{selectedAuditLog.orderId}</div>
+                      </div>
+                    )}
+                    {selectedAuditLog.brokerOrderId && (
+                      <div className="modal-field">
+                        <div className="modal-label">Broker Order ID</div>
+                        <div className="modal-value audit-id">{selectedAuditLog.brokerOrderId}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(selectedAuditLog.oldStatus || selectedAuditLog.newStatus) && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Status Change</h3>
+                  <div className="modal-row">
+                    {selectedAuditLog.oldStatus && (
+                      <div className="modal-field">
+                        <div className="modal-label">Old Status</div>
+                        <div className="modal-value">
+                          <span className={`status-badge ${selectedAuditLog.oldStatus.toLowerCase()}`}>
+                            {selectedAuditLog.oldStatus}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {selectedAuditLog.newStatus && (
+                      <div className="modal-field">
+                        <div className="modal-label">New Status</div>
+                        <div className="modal-value">
+                          <span className={`status-badge ${selectedAuditLog.newStatus.toLowerCase()}`}>
+                            {selectedAuditLog.newStatus}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(selectedAuditLog.quantity || selectedAuditLog.price) && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Trade Details</h3>
+                  <div className="modal-row">
+                    {selectedAuditLog.quantity && (
+                      <div className="modal-field">
+                        <div className="modal-label">Quantity</div>
+                        <div className="modal-value">{selectedAuditLog.quantity}</div>
+                      </div>
+                    )}
+                    {selectedAuditLog.price && (
+                      <div className="modal-field">
+                        <div className="modal-label">Price</div>
+                        <div className="modal-value">${selectedAuditLog.price.toFixed(2)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {selectedAuditLog.errorMessage && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Error Message</h3>
+                  <div className="error-message-full">
+                    {selectedAuditLog.errorMessage}
+                  </div>
+                </div>
+              )}
+
+              {selectedAuditLog.metadata && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Metadata</h3>
+                  <pre className="yaml-content">
+                    <code>{JSON.stringify(selectedAuditLog.metadata, null, 2)}</code>
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
