@@ -226,22 +226,22 @@ const getAuditTrail = async (limit: number = 50) => {
     const auditLogs = await prisma.$queryRaw<any[]>`
       SELECT
         oal.id,
-        oal.order_id AS "orderId",
-        oal.broker_order_id AS "brokerOrderId",
-        oal.strategy_id AS "strategyId",
+        oal."orderId",
+        oal."brokerOrderId",
+        oal."strategyId",
         COALESCE(s.name, 'Unknown') AS "strategyName",
         COALESCE(s.symbol, 'N/A') AS "symbol",
-        oal.event_type AS "eventType",
-        oal.old_status AS "oldStatus",
-        oal.new_status AS "newStatus",
+        oal."eventType",
+        oal."oldStatus",
+        oal."newStatus",
         oal.quantity,
         oal.price,
-        oal.error_message AS "errorMessage",
+        oal."errorMessage",
         oal.metadata,
-        oal.created_at AS "createdAt"
+        oal."createdAt"
       FROM order_audit_log oal
-      LEFT JOIN strategies s ON s.id = oal.strategy_id
-      ORDER BY oal.created_at DESC
+      LEFT JOIN strategies s ON s.id = oal."strategyId"
+      ORDER BY oal."createdAt" DESC
       LIMIT ${limit}
     `;
 
