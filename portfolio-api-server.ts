@@ -287,6 +287,74 @@ const getAuditTrail = async (limit: number = 50) => {
   });
 };
 
+// Get system logs
+const getSystemLogs = async (params: {
+  limit?: number;
+  level?: string;
+  component?: string;
+  strategyId?: string;
+  since?: string;
+}) => {
+  const { limit = 100, level, component, strategyId, since } = params;
+
+  const where: any = {};
+  if (level) where.level = level;
+  if (component) where.component = component;
+  if (strategyId) where.strategyId = strategyId;
+  if (since) where.createdAt = { gte: new Date(since) };
+
+  const logs = await prisma.systemLog.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+
+  return logs;
+};
+
+// Get log statistics
+const getLogStats = async () => {
+  const [byLevel, byComponent, recentErrors] = await Promise.all([
+    prisma.systemLog.groupBy({
+      by: ['level'],
+      _count: true,
+    }),
+    prisma.systemLog.groupBy({
+      by: ['component'],
+      _count: true,
+      orderBy: {
+        _count: {
+          component: 'desc',
+        },
+      },
+      take: 10,
+    }),
+    prisma.systemLog.findMany({
+      where: { level: 'ERROR' },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        id: true,
+        component: true,
+        message: true,
+        createdAt: true,
+      },
+    }),
+  ]);
+
+  return {
+    byLevel: byLevel.reduce((acc, item) => {
+      acc[item.level] = item._count;
+      return acc;
+    }, {} as Record<string, number>),
+    byComponent: byComponent.map((item) => ({
+      component: item.component,
+      count: item._count,
+    })),
+    recentErrors,
+  };
+};
+
 // Request handler
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   setCORSHeaders(res);
@@ -337,6 +405,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     } else if (pathname === '/api/portfolio/stats') {
       const orderStats = await getOrderStats();
       sendJSON(res, { orderStats });
+    } else if (pathname === '/api/logs') {
+      // Get system logs with filters
+      const params = {
+        limit: parseInt(url.searchParams.get('limit') || '100', 10),
+        level: url.searchParams.get('level') || undefined,
+        component: url.searchParams.get('component') || undefined,
+        strategyId: url.searchParams.get('strategyId') || undefined,
+        since: url.searchParams.get('since') || undefined,
+      };
+      const logs = await getSystemLogs(params);
+      sendJSON(res, { logs, count: logs.length });
+    } else if (pathname === '/api/logs/stats') {
+      // Get log statistics
+      const stats = await getLogStats();
+      sendJSON(res, { stats });
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -359,6 +442,8 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategies - Strategy performance metrics`);
   console.log(`  GET /api/portfolio/trades?limit=20 - Recent trades`);
   console.log(`  GET /api/portfolio/stats - Order statistics`);
+  console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
+  console.log(`  GET /api/logs/stats - Log statistics`);
   console.log(`  GET /health - Health check`);
 });
 

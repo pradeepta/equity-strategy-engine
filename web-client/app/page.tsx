@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AcpClient } from "../src/lib/acpClient";
+import { LogsViewer } from "./components/LogsViewer";
+import { AuditLogsViewer } from "./components/AuditLogsViewer";
 
 type ChatMessage = {
   role: "user" | "agent";
@@ -46,7 +48,7 @@ export default function HomePage() {
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "dashboard">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "dashboard" | "logs" | "audit">("chat");
   const [attachedImages, setAttachedImages] = useState<
     { data: string; mimeType: string }[]
   >([]);
@@ -268,6 +270,18 @@ export default function HomePage() {
           >
             Dashboard
           </button>
+          <button
+            className={`tab-button ${activeTab === "audit" ? "active" : ""}`}
+            onClick={() => setActiveTab("audit")}
+          >
+            Audit Logs
+          </button>
+          <button
+            className={`tab-button ${activeTab === "logs" ? "active" : ""}`}
+            onClick={() => setActiveTab("logs")}
+          >
+            System Logs
+          </button>
         </div>
         <div className="topbar-status">
           Status: {status}
@@ -414,6 +428,18 @@ export default function HomePage() {
       {activeTab === "dashboard" && (
         <section className="chat-shell">
           <Dashboard />
+        </section>
+      )}
+
+      {activeTab === "audit" && (
+        <section className="chat-shell">
+          <AuditLogsViewer />
+        </section>
+      )}
+
+      {activeTab === "logs" && (
+        <section className="chat-shell">
+          <LogsViewer />
         </section>
       )}
     </div>
@@ -572,85 +598,6 @@ function Dashboard() {
           </div>
         </div>
       )}
-
-      {/* Audit Trail */}
-      <div className="dashboard-section dashboard-fixed-height">
-        <div className="dashboard-header">
-          <div className="dashboard-title-group">
-            <h2 className="dashboard-title">Audit Trail</h2>
-            <div className="dashboard-subtitle">Source: order_audit_log</div>
-          </div>
-        </div>
-        <div className="dashboard-table-container">
-          <div className="dashboard-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Strategy</th>
-                  <th>Symbol</th>
-                  <th>Event</th>
-                  <th>Status Change</th>
-                  <th>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditTrail && auditTrail.length > 0 ? (
-                  auditTrail.slice(0, 20).map((log: any) => (
-                    <tr
-                      key={log.id}
-                      onClick={() => {
-                        setSelectedAuditLog(log);
-                        setShowAuditModal(true);
-                      }}
-                      className="clickable-row"
-                    >
-                      <td className="time-cell">
-                        {new Date(log.createdAt).toLocaleString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        })}
-                      </td>
-                      <td className="strategy-cell">{log.strategyName}</td>
-                      <td className="symbol-cell">{log.symbol}</td>
-                      <td>
-                        <span className={`status-badge ${log.eventType.toLowerCase()}`}>
-                          {log.eventType}
-                        </span>
-                      </td>
-                      <td>
-                        {log.oldStatus && log.newStatus ? (
-                          <span className="status-change">
-                            {log.oldStatus} → {log.newStatus}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td>
-                        {log.errorMessage ? (
-                          <span className="error-message">{log.errorMessage.substring(0, 50)}...</span>
-                        ) : log.quantity ? (
-                          <span>Qty: {log.quantity} {log.price ? `@ $${log.price.toFixed(2)}` : ''}</span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={6} className="empty-row">No audit logs yet</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
 
       {/* Strategy Performance */}
       {strategies && strategies.length > 0 && (

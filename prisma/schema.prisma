@@ -447,15 +447,26 @@ model SystemLog {
   id                String            @id @default(cuid())
 
   level             LogLevel
-  component         String            // FilesystemWatcher, StrategyLifecycleManager, etc.
+  component         String            // FilesystemWatcher, StrategyLifecycleManager, live-server, etc.
   message           String            @db.Text
   metadata          Json?
+
+  // Additional context
+  strategyId        String?           // Link to strategy if relevant
+  orderId           String?           // Link to order if relevant
+
+  // Error tracking
+  stackTrace        String?           @db.Text
+  errorCode         String?
 
   createdAt         DateTime          @default(now())
 
   @@index([level])
   @@index([component])
   @@index([createdAt])
+  @@index([strategyId])
+  @@index([level, createdAt])
+  @@index([component, createdAt])
   @@map("system_logs")
 }
 
