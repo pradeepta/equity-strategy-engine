@@ -8,24 +8,51 @@ type ChatMessage = {
   content: string;
 };
 
+const mergeChunk = (current: string, chunk: string) => {
+  if (!chunk) return current;
+  if (!current) return chunk;
+  if (current.endsWith(chunk)) return current;
+  const maxOverlap = Math.min(current.length, chunk.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (current.slice(-size) === chunk.slice(0, size)) {
+      return current + chunk.slice(size);
+    }
+  }
+  return current + chunk;
+};
+
+let sharedClient: AcpClient | null = null;
+
+const getClient = (
+  onChunk: (chunk: string) => void,
+  onDone: () => void,
+  onError: (message: string) => void,
+  onSession: (sessionId: string) => void
+) => {
+  if (!sharedClient) {
+    sharedClient = new AcpClient(onChunk, onDone, onError, onSession);
+  } else {
+    sharedClient.setHandlers(onChunk, onDone, onError, onSession);
+  }
+  return sharedClient;
+};
+
 export default function HomePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const didInit = useRef(false);
-
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
 
   const client = useMemo(() => {
-    return new AcpClient(
+    return getClient(
       (chunk) => {
         setMessages((prev) => {
           const copy = [...prev];
           const last = copy[copy.length - 1];
           if (last?.role === "agent") {
-            last.content += chunk;
+            last.content = mergeChunk(last.content, chunk);
             return copy;
           }
           return [...copy, { role: "agent", content: chunk }];
@@ -46,10 +73,6 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (didInit.current) {
-      return;
-    }
-    didInit.current = true;
     if (!gatewayUrl) {
       setStatus("missing_url");
       return;

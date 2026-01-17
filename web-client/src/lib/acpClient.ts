@@ -35,7 +35,22 @@ export class AcpClient {
     this.onSession = onSession;
   }
 
+  setHandlers(
+    onChunk: UpdateCallback,
+    onDone: DoneCallback,
+    onError: ErrorCallback,
+    onSession: SessionCallback
+  ): void {
+    this.onChunk = onChunk;
+    this.onDone = onDone;
+    this.onError = onError;
+    this.onSession = onSession;
+  }
+
   connect(url: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
     this.ws = new WebSocket(url);
     console.log("[ACP] connecting", url);
     this.ws.onopen = () => {
@@ -166,7 +181,15 @@ export class AcpClient {
   }
 
   private send(message: JsonRpcMessage): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws) {
+      this.onError("WebSocket not connected");
+      return;
+    }
+    if (this.ws.readyState === WebSocket.CONNECTING) {
+      this.pendingSends.push(message);
+      return;
+    }
+    if (this.ws.readyState !== WebSocket.OPEN) {
       this.pendingSends.push(message);
       this.onError("WebSocket not connected");
       return;
