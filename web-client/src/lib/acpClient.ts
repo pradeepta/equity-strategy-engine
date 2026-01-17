@@ -61,6 +61,17 @@ export class AcpClient {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return;
     }
+
+    // Try to restore session from localStorage
+    const storedSessionId = localStorage.getItem("acp_session_id");
+    if (storedSessionId) {
+      this.sessionId = storedSessionId;
+      // Append sessionId to URL for reconnection
+      const separator = url.includes("?") ? "&" : "?";
+      url = `${url}${separator}sessionId=${storedSessionId}`;
+      console.log("[ACP] Restoring session", storedSessionId);
+    }
+
     this.ws = new WebSocket(url);
     console.log("[ACP] connecting", url);
     this.ws.onopen = () => {
@@ -86,7 +97,14 @@ export class AcpClient {
     };
   }
 
-  startSession(cwd: string): void {
+  startSession(cwd: string, forceNew = false): void {
+    // Clear stored session if forcing new session
+    if (forceNew) {
+      localStorage.removeItem("acp_session_id");
+      this.sessionId = null;
+      console.log("[ACP] Forcing new session");
+    }
+
     const id = this.nextId();
     console.log("[ACP] session/new", { id, cwd });
     // Send the MCP server config - gateway will filter out unsupported types
@@ -166,6 +184,8 @@ export class AcpClient {
     if (msg.result?.sessionId && !msg.method) {
       console.log("[ACP] session created", msg.result.sessionId);
       this.sessionId = msg.result.sessionId as string;
+      // Persist sessionId to localStorage for reconnection after browser refresh
+      localStorage.setItem("acp_session_id", this.sessionId);
       this.onSession(this.sessionId);
       return true;
     }
