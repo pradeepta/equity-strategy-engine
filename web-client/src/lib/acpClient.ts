@@ -7,9 +7,14 @@ type JsonRpcMessage = {
   error?: { message?: string };
 };
 
-// Note: stdio MCP servers should be configured in the gateway's MCP_SERVERS_JSON env var
-// The ACP agent only supports HTTP/SSE MCP servers
-const STOCKS_MCP_SERVER = null;
+// Note: The gateway will filter out stdio MCP servers since ACP agent only supports HTTP/SSE
+// The stdio MCP server config is kept here for future bridge implementation
+const STOCKS_MCP_SERVER = {
+  name: "stocks-mcp",
+  type: "stdio",
+  command: "node",
+  args: ["/Users/pradeeptadash/stocks/dist/mcp-server.js"],
+};
 
 type UpdateCallback = (chunk: string) => void;
 type DoneCallback = () => void;
@@ -83,6 +88,7 @@ export class AcpClient {
   startSession(cwd: string): void {
     const id = this.nextId();
     console.log("[ACP] session/new", { id, cwd });
+    // Send the MCP server config - gateway will filter out unsupported types
     const mcpServers = STOCKS_MCP_SERVER ? [STOCKS_MCP_SERVER] : [];
     this.send({
       jsonrpc: "2.0",

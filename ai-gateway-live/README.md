@@ -44,12 +44,39 @@ ws://localhost:8787/acp?sessionId=my-session&persona=engineer
 
 **Important:** The ACP agent (`@zed-industries/claude-code-acp`) only supports HTTP/SSE-based MCP servers, not stdio-based servers.
 
-For stdio-based MCP servers (like the stocks-mcp server), you have two options:
+### How MCP Servers are Handled
 
-1. **Leave MCP_SERVERS_JSON empty** (recommended for now) - The gateway will work without MCP servers
-2. **Convert stdio servers to HTTP/SSE** - Wrap stdio-based MCP servers in an HTTP/SSE bridge
+1. **Client sends MCP server configs** - Clients can send any MCP server configuration (stdio, http, sse) in the `session/new` request
+2. **Gateway filters unsupported types** - The gateway automatically filters out `stdio` type servers and only passes `http`/`sse` servers to the ACP agent
+3. **Warnings logged** - When stdio servers are filtered out, a warning is logged with the server name
 
-Example of HTTP/SSE MCP server config in `MCP_SERVERS_JSON`:
+This means:
+- ✅ Clients can include stdio MCP server configs without causing errors
+- ⚠️ Stdio servers will be silently filtered out (with a warning logged)
+- ✅ HTTP/SSE servers will work as expected
+
+### Configuring MCP Servers
+
+**From the client:**
+```typescript
+mcpServers: [
+  {
+    name: "stocks-mcp",
+    type: "stdio",  // Will be filtered out by gateway
+    command: "node",
+    args: ["/path/to/mcp-server.js"]
+  },
+  {
+    name: "example-http-mcp",
+    type: "sse",  // Will be passed to ACP agent
+    url: "http://localhost:3000/mcp",
+    headers: [],
+    env: []
+  }
+]
+```
+
+**Via environment variable (`MCP_SERVERS_JSON`):**
 ```json
 [
   {

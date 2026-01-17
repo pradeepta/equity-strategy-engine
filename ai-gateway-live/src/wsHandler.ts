@@ -36,15 +36,35 @@ export function handleWebSocketConnection(
   ws.on("error", (err) => handleError(sessionId, err));
 }
 
+function filterSupportedMcpServers(
+  servers: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const filtered = servers.filter((server) => {
+    const type = server?.type;
+    // ACP agent only supports http and sse types
+    if (type === "http" || type === "sse") {
+      return true;
+    }
+    // Log filtered out servers
+    if (type === "stdio") {
+      console.warn(
+        `[gateway] Filtering out stdio MCP server "${server?.name}" - ACP agent only supports http/sse`
+      );
+    }
+    return false;
+  });
+  return filtered;
+}
+
 function mergeMcpServers(
   incoming: Array<Record<string, unknown>>,
   autoServers: Array<Record<string, unknown>>
 ): Array<Record<string, unknown>> {
   if (autoServers.length === 0) {
-    return incoming;
+    return filterSupportedMcpServers(incoming);
   }
   if (incoming.length === 0) {
-    return autoServers;
+    return filterSupportedMcpServers(autoServers);
   }
   const seenNames = new Set<string>();
   const merged: Array<Record<string, unknown>> = [];
@@ -58,7 +78,7 @@ function mergeMcpServers(
   };
   incoming.forEach(pushServer);
   autoServers.forEach(pushServer);
-  return merged;
+  return filterSupportedMcpServers(merged);
 }
 
 function reconnectToSession(sessionId: string, ws: WebSocket): Session {
