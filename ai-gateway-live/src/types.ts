@@ -10,6 +10,9 @@ export interface Session {
   stdoutBuffer: string;
   persona?: string;
   pendingSessionNewRequestId?: number | string;
+  systemPrompt?: string;
+  systemPromptSent?: boolean;
+  sessionId?: string;
 }
 
 export interface JsonRpcRequest {

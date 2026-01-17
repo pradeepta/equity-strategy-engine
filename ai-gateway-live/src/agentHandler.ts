@@ -26,6 +26,7 @@ export function spawnAgent(session: Session): void {
           `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
         );
       }
+      maybeHandleSessionNew(session, payload);
       forwardToClient(session, payload);
     }
     tryFlushJsonBuffer(session);
@@ -90,9 +91,45 @@ function tryFlushJsonBuffer(session: Session): void {
     console.log(
       `[agent][stdout] session=${session.id}: ${buffer.slice(0, 2000)}`
     );
+    maybeHandleSessionNew(session, buffer);
     forwardToClient(session, buffer);
     session.stdoutBuffer = "";
   } catch {
     // Wait for more data
   }
+}
+
+function maybeHandleSessionNew(session: Session, payload: string): void {
+  if (session.systemPromptSent || !session.systemPrompt) {
+    return;
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return;
+  }
+  if (!parsed?.result?.sessionId || parsed.method) {
+    return;
+  }
+  session.sessionId = parsed.result.sessionId;
+  const requestId = Date.now();
+  const promptPayload = {
+    jsonrpc: "2.0",
+    id: requestId,
+    method: "session/prompt",
+    params: {
+      sessionId: session.sessionId,
+      stream: true,
+      prompt: [{ type: "text", text: session.systemPrompt }],
+    },
+  };
+  console.log(
+    `[agent][stdin] session=${session.id}: ${JSON.stringify(promptPayload).slice(
+      0,
+      2000
+    )}`
+  );
+  writeToAgentStdin(session, JSON.stringify(promptPayload));
+  session.systemPromptSent = true;
 }

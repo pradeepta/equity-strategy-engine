@@ -1,0 +1,96 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0b0c10;
+  color: #f4f5f7;
+}
+
+main {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 32px 16px 48px;
+}
+
+.container {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card {
+  background: #14161b;
+  border: 1px solid #23262f;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 360px;
+  max-height: 540px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.message {
+  padding: 12px 14px;
+  border-radius: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.message.agent {
+  align-self: flex-start;
+  background: #1f2937;
+}
+
+.status {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.inputRow {
+  display: flex;
+  gap: 12px;
+}
+
+textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 64px;
+  border-radius: 10px;
+  border: 1px solid #2c2f3a;
+  background: #0f1117;
+  color: #f4f5f7;
+  padding: 12px;
+}
+
+button {
+  background: #10b981;
+  border: none;
+  border-radius: 10px;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 0 18px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

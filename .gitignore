@@ -81,3 +81,15 @@ Thumbs.db
 strategies/
 
 /generated/prisma
+
+/web-client/node_modules
+/web-client/dist
+/web-client/build
+/web-client/package-lock.json
+/web-client/yarn.lock
+/web-client/pnpm-lock.yaml
+/web-client/bun.lockb
+/web-client/bun.lock
+/web-client/bun.lock.json
+/web-client/bun.lock.yaml
+/web-client/.next

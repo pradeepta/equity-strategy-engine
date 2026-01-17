@@ -1,4 +1,5 @@
 import type { Session } from "./types.js";
+import { getPersonaPrompt } from "./config.js";
 
 const sessions = new Map<string, Session>();
 
@@ -31,6 +32,8 @@ export function createSession(
     cleanupTimeout: null,
     stdoutBuffer: "",
     persona,
+    systemPrompt: getPersonaPrompt(persona),
+    systemPromptSent: false,
   };
   sessions.set(id, session);
   return session;
