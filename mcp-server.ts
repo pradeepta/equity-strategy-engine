@@ -9,11 +9,13 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StrategyCompiler } from './compiler/compile';
 import { StrategyEngine } from './runtime/engine';
 import { createStandardRegistry } from './features/registry';
@@ -21,22 +23,28 @@ import { validateStrategyDSL } from './spec/schema';
 import * as yaml from 'yaml';
 import * as fs from 'fs';
 import * as path from 'path';
+import express from 'express';
+import { randomUUID } from 'node:crypto';
 
 // ============================================================================
 // Server Setup
 // ============================================================================
 
-const server = new Server(
-  {
-    name: 'stocks-trading-mcp-server',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+function createServer(): Server {
+  const server = new Server(
+    {
+      name: 'stocks-trading-mcp-server',
+      version: '1.0.0',
     },
-  }
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+  registerHandlers(server);
+  return server;
+}
 
 // ============================================================================
 // Tool Definitions
@@ -682,75 +690,152 @@ async function handleCreateLiveEngine(args: any) {
 // Request Handlers
 // ============================================================================
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: TOOLS };
-});
+function registerHandlers(server: Server): void {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return { tools: TOOLS };
+  });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
 
-  try {
-    let result;
+    try {
+      let result;
 
-    switch (name) {
-      case 'compile_strategy':
-        result = await handleCompileStrategy(args);
-        break;
-      case 'validate_strategy':
-        result = await handleValidateStrategy(args);
-        break;
-      case 'backtest_strategy':
-        result = await handleBacktestStrategy(args);
-        break;
-      case 'list_strategy_types':
-        result = await handleListStrategyTypes();
-        break;
-      case 'get_strategy_template':
-        result = await handleGetStrategyTemplate(args);
-        break;
-      case 'analyze_strategy_performance':
-        result = await handleAnalyzePerformance(args);
-        break;
-      case 'create_live_engine':
-        result = await handleCreateLiveEngine(args);
-        break;
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+      switch (name) {
+        case 'compile_strategy':
+          result = await handleCompileStrategy(args);
+          break;
+        case 'validate_strategy':
+          result = await handleValidateStrategy(args);
+          break;
+        case 'backtest_strategy':
+          result = await handleBacktestStrategy(args);
+          break;
+        case 'list_strategy_types':
+          result = await handleListStrategyTypes();
+          break;
+        case 'get_strategy_template':
+          result = await handleGetStrategyTemplate(args);
+          break;
+        case 'analyze_strategy_performance':
+          result = await handleAnalyzePerformance(args);
+          break;
+        case 'create_live_engine':
+          result = await handleCreateLiveEngine(args);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                success: false,
+                error: error.message,
+                stack: error.stack,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
     }
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
-  } catch (error: any) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: error.message,
-            stack: error.stack,
-          }, null, 2),
-        },
-      ],
-      isError: true,
-    };
-  }
-});
+  });
+}
 
 // ============================================================================
 // Server Start
 // ============================================================================
 
-async function main() {
+const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3000);
+const MCP_TRANSPORT = (process.env.MCP_TRANSPORT || '').toLowerCase();
+
+function parseSessionIdHeader(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+async function startHttpServer(): Promise<void> {
+  const app = express();
+  app.use(express.json({ limit: '10mb' }));
+
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+
+  app.post('/mcp', async (req, res) => {
+    const sessionId = parseSessionIdHeader(req.headers['mcp-session-id']);
+    let transport = sessionId ? transports.get(sessionId) : undefined;
+
+    if (!transport && isInitializeRequest(req.body)) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+      transport.onclose = () => {
+        const id = transport?.sessionId;
+        if (id) {
+          transports.delete(id);
+        }
+      };
+      const server = createServer();
+      await server.connect(transport);
+      if (transport.sessionId) {
+        transports.set(transport.sessionId, transport);
+      }
+    }
+
+    if (!transport) {
+      res.status(400).json({ error: 'Missing or invalid MCP session' });
+      return;
+    }
+
+    await transport.handleRequest(req, res, req.body);
+  });
+
+  app.get('/mcp', async (req, res) => {
+    const sessionId = parseSessionIdHeader(req.headers['mcp-session-id']);
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+    if (!transport) {
+      res.status(404).end();
+      return;
+    }
+    await transport.handleRequest(req, res);
+  });
+
+  app.listen(MCP_HTTP_PORT, () => {
+    console.error(
+      `Stocks Trading MCP Server running on http://localhost:${MCP_HTTP_PORT}/mcp`
+    );
+  });
+}
+
+async function startStdioServer(): Promise<void> {
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Stocks Trading MCP Server running on stdio');
+}
+
+async function main() {
+  if (MCP_TRANSPORT === 'http') {
+    await startHttpServer();
+    return;
+  }
+  await startStdioServer();
 }
 
 main().catch((error) => {

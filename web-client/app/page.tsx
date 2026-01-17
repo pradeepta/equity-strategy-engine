@@ -57,6 +57,7 @@ export default function HomePage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevMessagesLengthRef = useRef(messages.length);
   const userJustSentMessageRef = useRef(false);
+  const hasConnectedRef = useRef(false);
 
   const client = useMemo(() => {
     return getClient(
@@ -90,13 +91,35 @@ export default function HomePage() {
       setStatus("missing_url");
       return;
     }
+
+    // Prevent double connection in StrictMode
+    if (hasConnectedRef.current) {
+      console.log("[HomePage] Already connected, skipping effect");
+      return;
+    }
+
     const url = new URL(gatewayUrl);
     url.searchParams.set("persona", persona);
-    url.searchParams.set("sessionId", crypto.randomUUID());
+
+    // Check if we have a stored session
+    const storedSessionId = localStorage.getItem("acp_session_id");
+
+    console.log("[HomePage] Initiating connection, storedSession:", storedSessionId);
+    hasConnectedRef.current = true;
 
     setStatus("connecting");
     client.connect(url.toString());
+
+    // Always start session on page load
+    // If reconnecting to an existing session, the gateway will handle it
+    // If session is dead, this creates a new one
     client.startSession("/");
+
+    // Cleanup function - only reset on actual unmount
+    return () => {
+      console.log("[HomePage] Effect cleanup - component unmounting");
+      hasConnectedRef.current = false;
+    };
   }, [client, gatewayUrl]);
 
   useEffect(() => {
