@@ -277,12 +277,71 @@ export class StrategyLifecycleManager {
         return;
       }
 
+      const suggestedMeta = this.parseSuggestedMeta(
+        response.suggestedStrategy.yamlContent
+      );
+      const suggestedSymbolRaw = suggestedMeta?.symbol?.trim();
+      const suggestedSymbol = suggestedSymbolRaw || instance.symbol;
+      const suggestedTimeframe =
+        suggestedMeta?.timeframe?.trim() || instance.getTimeframe();
+      const crossSymbol =
+        suggestedSymbol.toUpperCase() !== instance.symbol.toUpperCase();
+      const allowCrossSymbolSwap =
+        this.orchestrator?.config?.allowCrossSymbolSwap === true;
+
+      if (crossSymbol && !allowCrossSymbolSwap) {
+        const errorMsg = `Swap suggested for ${instance.symbol} but evaluator returned ${suggestedSymbol}. Cross-symbol swaps disabled.`;
+        console.error(`❌ ${errorMsg}`);
+        await this.execHistoryRepo.markActionTaken(
+          evaluationId,
+          `Swap aborted: ${errorMsg}`
+        );
+        await this.execHistoryRepo.logEvent({
+          strategyId: oldStrategyId,
+          eventType: "ERROR",
+          swapReason: errorMsg,
+          metadata: {
+            symbol: instance.symbol,
+            operationId,
+            suggestedSymbol,
+          },
+        });
+        await failOperation(errorMsg);
+        return;
+      }
+
+      if (crossSymbol) {
+        if (this.multiStrategyManager.getStrategyBySymbol(suggestedSymbol)) {
+          const errorMsg = `Cross-symbol swap blocked: strategy for ${suggestedSymbol} already loaded.`;
+          console.error(`❌ ${errorMsg}`);
+          await this.execHistoryRepo.markActionTaken(
+            evaluationId,
+            `Swap aborted: ${errorMsg}`
+          );
+          await this.execHistoryRepo.logEvent({
+            strategyId: oldStrategyId,
+            eventType: "ERROR",
+            swapReason: errorMsg,
+            metadata: {
+              symbol: instance.symbol,
+              operationId,
+              suggestedSymbol,
+            },
+          });
+          await failOperation(errorMsg);
+          return;
+        }
+        console.warn(
+          `⚠️ Cross-symbol swap enabled: ${instance.symbol} -> ${suggestedSymbol}`
+        );
+      }
+
       // Create new strategy in database (DRAFT until swap succeeds)
       const newStrategy = await this.strategyRepo.createWithVersion({
         userId: instance.userId,
-        symbol: instance.symbol,
+        symbol: suggestedSymbol,
         name: response.suggestedStrategy.name,
-        timeframe: instance.getTimeframe(),
+        timeframe: suggestedTimeframe,
         yamlContent: response.suggestedStrategy.yamlContent,
         changeReason: "Auto-swap by evaluator",
       });
@@ -330,6 +389,7 @@ export class StrategyLifecycleManager {
           symbol: instance.symbol,
           oldStrategyId,
           newStrategyId: newStrategy.id,
+          newSymbol: suggestedSymbol,
         },
       });
 
@@ -613,6 +673,23 @@ export class StrategyLifecycleManager {
 
   private async sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private parseSuggestedMeta(
+    yamlContent: string
+  ): { symbol?: string; timeframe?: string } | null {
+    try {
+      const parsed = YAML.parse(yamlContent) as any;
+      return {
+        symbol: parsed?.meta?.symbol,
+        timeframe: parsed?.meta?.timeframe,
+      };
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to parse suggested strategy meta: ${String(error)}`
+      );
+      return null;
+    }
   }
 
   private logEvaluationDebug(

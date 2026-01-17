@@ -28,6 +28,7 @@ export interface OrchestratorConfig {
   watchInterval: number;
   twsHost?: string;
   twsPort?: number;
+  allowCrossSymbolSwap?: boolean;
 }
 
 export class LiveTradingOrchestrator {

@@ -50,6 +50,7 @@ async function main() {
     userId: userId,
     evalEndpoint: process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8080/evaluate',
     evalEnabled: process.env.STRATEGY_EVAL_ENABLED === 'true',
+    allowCrossSymbolSwap: process.env.ALLOW_CROSS_SYMBOL_SWAP === 'true',
     maxConcurrentStrategies: parseInt(process.env.MAX_CONCURRENT_STRATEGIES || '10'),
     watchInterval: parseInt(process.env.STRATEGY_WATCH_INTERVAL_MS || '30000'),
     twsHost,
