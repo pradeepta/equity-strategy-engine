@@ -53,67 +53,59 @@ function createServer(): Server {
 const TOOLS: Tool[] = [
   {
     name: 'compile_strategy',
-    description: 'Compile a trading strategy from YAML DSL to type-safe intermediate representation (IR)',
+    description: 'Compile a trading strategy from YAML DSL to type-safe intermediate representation (IR). Provide either yaml_content OR yaml_file_path.',
     inputSchema: {
       type: 'object',
       properties: {
         yaml_content: {
           type: 'string',
-          description: 'YAML strategy definition',
+          description: 'YAML strategy definition (use this OR yaml_file_path)',
         },
         yaml_file_path: {
           type: 'string',
-          description: 'Path to YAML file (alternative to yaml_content)',
+          description: 'Path to YAML file (use this OR yaml_content)',
         },
       },
-      oneOf: [
-        { required: ['yaml_content'] },
-        { required: ['yaml_file_path'] },
-      ],
     },
   },
   {
     name: 'validate_strategy',
-    description: 'Validate a trading strategy YAML against the schema',
+    description: 'Validate a trading strategy YAML against the schema. Provide either yaml_content OR yaml_file_path.',
     inputSchema: {
       type: 'object',
       properties: {
         yaml_content: {
           type: 'string',
-          description: 'YAML strategy definition to validate',
+          description: 'YAML strategy definition to validate (use this OR yaml_file_path)',
         },
         yaml_file_path: {
           type: 'string',
-          description: 'Path to YAML file (alternative to yaml_content)',
+          description: 'Path to YAML file (use this OR yaml_content)',
         },
       },
-      oneOf: [
-        { required: ['yaml_content'] },
-        { required: ['yaml_file_path'] },
-      ],
     },
   },
   {
     name: 'backtest_strategy',
-    description: 'Backtest a compiled strategy against historical data',
+    description: 'Backtest a compiled strategy against historical data. Provide: (compiled_ir OR yaml_content OR yaml_file_path) AND (historical_data OR data_file_path).',
     inputSchema: {
       type: 'object',
       properties: {
         compiled_ir: {
           type: 'object',
-          description: 'Compiled strategy IR (from compile_strategy)',
+          description: 'Compiled strategy IR from compile_strategy (use this OR yaml_content OR yaml_file_path)',
         },
         yaml_content: {
           type: 'string',
-          description: 'YAML strategy (will be compiled automatically)',
+          description: 'YAML strategy that will be compiled automatically (use this OR compiled_ir OR yaml_file_path)',
         },
         yaml_file_path: {
           type: 'string',
-          description: 'Path to YAML file (will be compiled automatically)',
+          description: 'Path to YAML file that will be compiled automatically (use this OR compiled_ir OR yaml_content)',
         },
         historical_data: {
           type: 'array',
-          description: 'Array of historical bar data (OHLCV)',
+          description: 'Array of historical bar data with OHLCV fields (use this OR data_file_path)',
           items: {
             type: 'object',
             properties: {
@@ -129,17 +121,9 @@ const TOOLS: Tool[] = [
         },
         data_file_path: {
           type: 'string',
-          description: 'Path to JSON file containing historical data',
+          description: 'Path to JSON file containing historical data (use this OR historical_data)',
         },
       },
-      oneOf: [
-        { required: ['compiled_ir', 'historical_data'] },
-        { required: ['compiled_ir', 'data_file_path'] },
-        { required: ['yaml_content', 'historical_data'] },
-        { required: ['yaml_content', 'data_file_path'] },
-        { required: ['yaml_file_path', 'historical_data'] },
-        { required: ['yaml_file_path', 'data_file_path'] },
-      ],
     },
   },
   {
@@ -189,21 +173,21 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'create_live_engine',
-    description: 'Create a live trading engine instance for real-time execution (dry-run by default)',
+    description: 'Create a live trading engine instance for real-time execution (dry-run by default). Provide compiled_ir OR yaml_content OR yaml_file_path.',
     inputSchema: {
       type: 'object',
       properties: {
         compiled_ir: {
           type: 'object',
-          description: 'Compiled strategy IR',
+          description: 'Compiled strategy IR (use this OR yaml_content OR yaml_file_path)',
         },
         yaml_content: {
           type: 'string',
-          description: 'YAML strategy (will be compiled automatically)',
+          description: 'YAML strategy that will be compiled automatically (use this OR compiled_ir OR yaml_file_path)',
         },
         yaml_file_path: {
           type: 'string',
-          description: 'Path to YAML file (will be compiled automatically)',
+          description: 'Path to YAML file that will be compiled automatically (use this OR compiled_ir OR yaml_content)',
         },
         dry_run: {
           type: 'boolean',
@@ -211,11 +195,6 @@ const TOOLS: Tool[] = [
           default: true,
         },
       },
-      oneOf: [
-        { required: ['compiled_ir'] },
-        { required: ['yaml_content'] },
-        { required: ['yaml_file_path'] },
-      ],
     },
   },
 ];

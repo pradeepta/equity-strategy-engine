@@ -9,9 +9,9 @@ type JsonRpcMessage = {
 
 const STOCKS_MCP_SERVER = {
   name: "stocks-mcp",
-  type: "http",
-  url: process.env.NEXT_PUBLIC_MCP_URL || "http://localhost:3000/mcp",
-  headers: [],
+  type: "stdio",
+  command: "node",
+  args: ["/Users/pradeeptadash/stocks/dist/mcp-server.js"],
   env: [],
 };
 

@@ -39,21 +39,8 @@ export function handleWebSocketConnection(
 function filterSupportedMcpServers(
   servers: Array<Record<string, unknown>>
 ): Array<Record<string, unknown>> {
-  const filtered = servers.filter((server) => {
-    const type = server?.type;
-    // ACP agent only supports http and sse types
-    if (type === "http" || type === "sse") {
-      return true;
-    }
-    // Log filtered out servers
-    if (type === "stdio") {
-      console.warn(
-        `[gateway] Filtering out stdio MCP server "${server?.name}" - ACP agent only supports http/sse`
-      );
-    }
-    return false;
-  });
-  return filtered;
+  // ACP agent supports stdio, http, and sse types - no filtering needed
+  return servers;
 }
 
 function mergeMcpServers(
@@ -137,7 +124,10 @@ async function handleMessage(session: Session, rawMessage: string): Promise<void
       const incomingServers = Array.isArray(params.mcpServers)
         ? (params.mcpServers as Array<Record<string, unknown>>)
         : [];
+      console.log(`[ws] session/new incoming servers:`, JSON.stringify(incomingServers, null, 2));
+      console.log(`[ws] AUTO_MCP_SERVERS:`, JSON.stringify(AUTO_MCP_SERVERS, null, 2));
       const mergedServers = mergeMcpServers(incomingServers, AUTO_MCP_SERVERS);
+      console.log(`[ws] merged servers:`, JSON.stringify(mergedServers, null, 2));
       if (
         mergedServers.length !== incomingServers.length ||
         mergedServers.some((s, i) => s !== incomingServers[i])
@@ -147,6 +137,7 @@ async function handleMessage(session: Session, rawMessage: string): Promise<void
           mcpServers: mergedServers,
         };
         messageToWrite = JSON.stringify(parsed);
+        console.log(`[ws] modified session/new message:`, messageToWrite);
       }
       if (mergedServers.length > 0) {
         session.mcpServers = mergedServers;

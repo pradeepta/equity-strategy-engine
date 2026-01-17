@@ -231,7 +231,34 @@ app.get('/sse', (req: Request, res: Response) => {
   });
 });
 
-// POST endpoint for sending messages to MCP server
+// Main MCP endpoint - handles JSON-RPC messages
+app.post('/', async (req: Request, res: Response) => {
+  const message = req.body;
+  console.log(`[mcp-http] POST / received:`, JSON.stringify(message));
+
+  // For the first request, create or get a session
+  // The ACP agent doesn't send sessionId, so we use a default session
+  let session = sessions.size > 0 ? Array.from(sessions.values())[0] : createSession();
+
+  try {
+    const response = await sendToMcpServer(session, message);
+    console.log(`[mcp-http] POST / response:`, JSON.stringify(response).slice(0, 200));
+    res.json(response);
+  } catch (error: any) {
+    console.error(`[mcp-http][${session.id}] Error handling request:`, error);
+    res.status(500).json({
+      jsonrpc: '2.0',
+      id: message.id || null,
+      error: {
+        code: -32603,
+        message: 'Internal error',
+        data: error.message,
+      },
+    });
+  }
+});
+
+// POST endpoint for sending messages to MCP server (legacy)
 app.post('/message', async (req: Request, res: Response) => {
   const { sessionId, message } = req.body;
 
