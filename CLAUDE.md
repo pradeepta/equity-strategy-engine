@@ -766,9 +766,12 @@ The MCP server exposes the following tools for AI agents to interact with the tr
 - **`validate_strategy`** - Validate YAML against schema
 - **`compile_strategy`** - Compile YAML to intermediate representation (IR)
 
-### Backtesting & Analysis Tools
+### Backtesting & Analysis Tools ⚠️
 - **`backtest_strategy`** - Backtest strategy against historical data
+  - **WARNING: Not reliable** - Mock broker has limitations (instant fills, no price validation, no order tracking)
+  - **Recommendation: Skip backtesting** - Focus on conservative strategy design with proper risk management instead
 - **`analyze_strategy_performance`** - Calculate performance metrics from backtest results
+  - Only useful if backtest was run, but backtest results are unreliable
 
 ### Market Context Tools (NEW)
 - **`get_portfolio_overview`** - Get historical portfolio data from database (P&L, positions, active strategies, recent trades)
@@ -862,19 +865,14 @@ rules:
 `
 ```
 
-3. **Validate & Backtest**:
+3. **Validate**:
 ```typescript
-// Validate first
+// Validate syntax and schema compliance
 const validation = await validate_strategy({ yaml_content: yamlContent })
 
-// Backtest with recent data
-const backtest = await backtest_strategy({
-  yaml_content: yamlContent,
-  historical_data: marketData.bars
-})
-
-// Analyze results
-const analysis = await analyze_strategy_performance({ backtest_results: backtest })
+// Note: Skip backtesting - the mock broker implementation is unrealistic
+// (instant fills, no price validation, no order tracking)
+// Instead: Design conservative strategies with proper risk management
 ```
 
 4. **Deploy**:

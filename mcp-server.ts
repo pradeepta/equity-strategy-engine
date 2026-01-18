@@ -1055,7 +1055,7 @@ async function handleDeployStrategy(args: any) {
       data: { status: 'PENDING' },
     });
 
-    await factory.disconnect();
+    // NOTE: Do NOT disconnect - factory is a singleton reused across tool calls
 
     return {
       success: true,
@@ -1206,7 +1206,7 @@ async function handleGetActiveStrategies() {
 
     const strategies = await strategyRepo.findByStatus(userId, 'ACTIVE');
 
-    await factory.disconnect();
+    // NOTE: Do NOT disconnect - factory is a singleton reused across tool calls
 
     return {
       success: true,
