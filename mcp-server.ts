@@ -300,6 +300,53 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: 'get_sector_info',
+    description: 'Get sector/industry classification for a symbol using TWS contract details. Returns industry, category, and subcategory information.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Trading symbol (e.g., "AAPL", "GOOGL")',
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'get_sector_peers',
+    description: 'Get peer stocks in the same sector as a reference symbol. Uses TWS to identify sector, then finds other stocks in that sector.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Reference trading symbol (e.g., "AAPL")',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of peer stocks to return (default: 10)',
+          default: 10,
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'get_portfolio_sector_concentration',
+    description: 'Analyze sector concentration/diversification of current portfolio positions. Fetches live portfolio from TWS, maps each position to its sector, and calculates sector exposure percentages. Use this to assess portfolio risk and diversification before deploying new strategies.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force_refresh: {
+          type: 'boolean',
+          description: 'Force refresh portfolio data (bypass 30s cache). Default: false',
+          default: false,
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -1301,6 +1348,201 @@ async function handleGetLivePortfolioSnapshot(args: any) {
   }
 }
 
+/**
+ * Get sector info handler
+ */
+async function handleGetSectorInfo(args: any) {
+  try {
+    const { symbol } = args;
+    const brokerType = process.env.BROKER || 'tws';
+
+    if (brokerType !== 'tws') {
+      return {
+        success: false,
+        error: 'Sector info only supported for TWS broker',
+        broker: brokerType,
+      };
+    }
+
+    const { TwsSectorDataClient } = await import('./broker/twsSectorData');
+
+    const host = process.env.TWS_HOST || '127.0.0.1';
+    const port = parseInt(process.env.TWS_PORT || '7497', 10);
+    const clientId = 4; // Client ID 4 for sector data
+
+    const client = new TwsSectorDataClient(host, port, clientId);
+    const sectorInfo = await client.getSectorInfo(symbol);
+
+    return {
+      success: true,
+      symbol: sectorInfo.symbol,
+      industry: sectorInfo.industry,
+      category: sectorInfo.category,
+      subcategory: sectorInfo.subcategory,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch sector info',
+      message: error.message,
+      symbol: args.symbol,
+      note: 'Make sure TWS/IB Gateway is running and the symbol is valid',
+    };
+  }
+}
+
+/**
+ * Get sector peers handler
+ */
+async function handleGetSectorPeers(args: any) {
+  try {
+    const { symbol, limit = 10 } = args;
+    const brokerType = process.env.BROKER || 'tws';
+
+    if (brokerType !== 'tws') {
+      return {
+        success: false,
+        error: 'Sector peers only supported for TWS broker',
+        broker: brokerType,
+      };
+    }
+
+    const { TwsSectorDataClient } = await import('./broker/twsSectorData');
+
+    const host = process.env.TWS_HOST || '127.0.0.1';
+    const port = parseInt(process.env.TWS_PORT || '7497', 10);
+    const clientId = 4; // Client ID 4 for sector data
+
+    const client = new TwsSectorDataClient(host, port, clientId);
+    const peers = await client.getSectorPeers(symbol, limit);
+
+    return {
+      success: true,
+      referenceSymbol: symbol,
+      peers,
+      count: peers.length,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch sector peers',
+      message: error.message,
+      symbol: args.symbol,
+      note: 'Make sure TWS/IB Gateway is running and the symbol is valid',
+    };
+  }
+}
+
+/**
+ * Get portfolio sector concentration handler
+ */
+async function handleGetPortfolioSectorConcentration(args: any) {
+  try {
+    const forceRefresh = args.force_refresh || false;
+    const brokerType = process.env.BROKER || 'tws';
+
+    if (brokerType !== 'tws') {
+      return {
+        success: false,
+        error: 'Portfolio sector concentration only supported for TWS broker',
+        broker: brokerType,
+      };
+    }
+
+    // Import both portfolio and sector clients
+    const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+    const { TwsSectorDataClient } = await import('./broker/twsSectorData');
+
+    const host = process.env.TWS_HOST || '127.0.0.1';
+    const port = parseInt(process.env.TWS_PORT || '7497', 10);
+
+    // Fetch portfolio snapshot
+    const portfolioFetcher = new PortfolioDataFetcher(host, port, 3);
+    const snapshot = await portfolioFetcher.getPortfolioSnapshot(forceRefresh);
+
+    if (snapshot.positions.length === 0) {
+      return {
+        success: true,
+        message: 'Portfolio has no positions',
+        totalValue: snapshot.totalValue,
+        positions: 0,
+        sectors: {},
+        sectorExposure: [],
+      };
+    }
+
+    // Fetch sector info for each position
+    const sectorClient = new TwsSectorDataClient(host, port, 4);
+    const sectorMap: Record<string, { marketValue: number; positions: any[] }> = {};
+
+    for (const position of snapshot.positions) {
+      try {
+        const sectorInfo = await sectorClient.getSectorInfo(position.symbol);
+        const sector = sectorInfo.industry || 'Unknown';
+
+        if (!sectorMap[sector]) {
+          sectorMap[sector] = { marketValue: 0, positions: [] };
+        }
+
+        sectorMap[sector].marketValue += position.marketValue;
+        sectorMap[sector].positions.push({
+          symbol: position.symbol,
+          marketValue: position.marketValue,
+          quantity: position.quantity,
+          unrealizedPnL: position.unrealizedPnL,
+        });
+      } catch (err: any) {
+        // If sector info fails for a symbol, categorize as Unknown
+        const sector = 'Unknown';
+        if (!sectorMap[sector]) {
+          sectorMap[sector] = { marketValue: 0, positions: [] };
+        }
+        sectorMap[sector].marketValue += position.marketValue;
+        sectorMap[sector].positions.push({
+          symbol: position.symbol,
+          marketValue: position.marketValue,
+          quantity: position.quantity,
+          unrealizedPnL: position.unrealizedPnL,
+        });
+      }
+    }
+
+    // Calculate sector exposure percentages
+    const totalPositionValue = snapshot.positions.reduce((sum, p) => sum + p.marketValue, 0);
+    const sectorExposure = Object.entries(sectorMap)
+      .map(([sector, data]) => ({
+        sector,
+        marketValue: data.marketValue,
+        percentage: (data.marketValue / totalPositionValue) * 100,
+        positionCount: data.positions.length,
+        positions: data.positions,
+      }))
+      .sort((a, b) => b.marketValue - a.marketValue); // Sort by market value descending
+
+    return {
+      success: true,
+      portfolio: {
+        totalValue: snapshot.totalValue,
+        totalPositionValue,
+        cash: snapshot.cash,
+        positionCount: snapshot.positions.length,
+      },
+      sectors: sectorMap,
+      sectorExposure,
+      diversificationScore: sectorExposure.length, // Simple score: number of sectors
+      topSector: sectorExposure[0],
+      note: 'Use this data to assess portfolio diversification risk before deploying new strategies',
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to analyze portfolio sector concentration',
+      message: error.message,
+      note: 'Make sure TWS/IB Gateway is running and connected',
+    };
+  }
+}
+
 // ============================================================================
 // Request Handlers
 // ============================================================================
@@ -1355,6 +1597,15 @@ function registerHandlers(server: Server): void {
           break;
         case 'get_live_portfolio_snapshot':
           result = await handleGetLivePortfolioSnapshot(args);
+          break;
+        case 'get_sector_info':
+          result = await handleGetSectorInfo(args);
+          break;
+        case 'get_sector_peers':
+          result = await handleGetSectorPeers(args);
+          break;
+        case 'get_portfolio_sector_concentration':
+          result = await handleGetPortfolioSectorConcentration(args);
           break;
         default:
           throw new Error(`Unknown tool: ${name}`);
