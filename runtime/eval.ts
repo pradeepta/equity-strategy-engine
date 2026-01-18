@@ -96,5 +96,66 @@ function evaluate(node: ExprNode, ctx: EvaluationContext): FeatureValue {
     return func(args as number[]);
   }
 
+  if (node.type === 'member') {
+    // Handle dot notation: macd.histogram
+    // Convert to underscore format: macd_histogram
+    const objectName = (node.object as any).name;
+    if (!objectName) {
+      throw new Error('Member expression object must be an identifier');
+    }
+    const property = node.property!;
+    const featureName = `${objectName}_${property}`;
+
+    // Look up in features
+    if (ctx.features.has(featureName)) {
+      return ctx.features.get(featureName)!;
+    }
+    if (ctx.builtins.has(featureName)) {
+      return ctx.builtins.get(featureName)!;
+    }
+    throw new Error(`Undefined feature: ${featureName} (from ${objectName}.${property})`);
+  }
+
+  if (node.type === 'array_access') {
+    // Handle array indexing: feature[1], macd.histogram[0]
+    const index = evaluate(node.index!, ctx) as number;
+
+    // Get the base identifier (could be simple or member expression)
+    let featureName: string;
+    if (node.object!.type === 'identifier') {
+      featureName = (node.object as any).name;
+    } else if (node.object!.type === 'member') {
+      // macd.histogram[1] -> macd_histogram
+      const objectName = ((node.object as any).object as any).name;
+      const property = (node.object as any).property;
+      featureName = `${objectName}_${property}`;
+    } else {
+      throw new Error(`Array access requires identifier or member expression, got ${node.object!.type}`);
+    }
+
+    // Look up historical values
+    if (!ctx.featureHistory || !ctx.featureHistory.has(featureName)) {
+      throw new Error(`No history available for feature: ${featureName}`);
+    }
+
+    const history = ctx.featureHistory.get(featureName)!;
+    if (history.length === 0) {
+      throw new Error(`Feature history is empty for: ${featureName}`);
+    }
+
+    // Index 0 = most recent (current), 1 = previous, 2 = 2 bars ago, etc.
+    // History array is stored oldest to newest, so we index from the end
+    const historyIndex = history.length - 1 - index;
+
+    if (historyIndex < 0 || historyIndex >= history.length) {
+      throw new Error(
+        `Insufficient history for ${featureName}[${index}]. ` +
+        `Available: ${history.length} bars, requested: ${index + 1} bars ago`
+      );
+    }
+
+    return history[historyIndex];
+  }
+
   throw new Error(`Unknown node type: ${(node as any).type}`);
 }

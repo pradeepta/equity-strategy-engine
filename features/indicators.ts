@@ -281,6 +281,181 @@ export function computeMACDHistogram(ctx: FeatureComputeContext): FeatureValue {
 }
 
 // ============================================================================
+// MACD Momentum Helpers (for detecting crossovers without array indexing)
+// ============================================================================
+
+/**
+ * MACD Histogram Rising - Current histogram > previous histogram
+ * Use case: Detect bullish momentum increase
+ */
+export function computeMACDHistogramRising(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeMACD(ctx).histogram;
+
+  // Compute MACD for previous bar
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeMACD(prevCtx).histogram;
+
+  return current > previous ? 1 : 0;
+}
+
+/**
+ * MACD Histogram Falling - Current histogram < previous histogram
+ * Use case: Detect bearish momentum decrease
+ */
+export function computeMACDHistogramFalling(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeMACD(ctx).histogram;
+
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeMACD(prevCtx).histogram;
+
+  return current < previous ? 1 : 0;
+}
+
+/**
+ * MACD Bullish Crossover - MACD line crossed above signal line
+ * Use case: Buy signal in MACD strategy
+ */
+export function computeMACDBullishCrossover(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeMACD(ctx);
+  const currentDiff = current.macd - current.signal;
+
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeMACD(prevCtx);
+  const previousDiff = previous.macd - previous.signal;
+
+  // Crossover: was below (<=0), now above (>0)
+  return previousDiff <= 0 && currentDiff > 0 ? 1 : 0;
+}
+
+/**
+ * MACD Bearish Crossover - MACD line crossed below signal line
+ * Use case: Sell signal in MACD strategy
+ */
+export function computeMACDBearishCrossover(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeMACD(ctx);
+  const currentDiff = current.macd - current.signal;
+
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeMACD(prevCtx);
+  const previousDiff = previous.macd - previous.signal;
+
+  // Crossover: was above (>=0), now below (<0)
+  return previousDiff >= 0 && currentDiff < 0 ? 1 : 0;
+}
+
+// ============================================================================
+// RSI Momentum Helpers
+// ============================================================================
+
+/**
+ * RSI Rising - Current RSI > previous RSI
+ * Use case: Detect momentum building
+ */
+export function computeRSIRising(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeRSI(ctx, 14);
+
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeRSI(prevCtx, 14);
+
+  return current > previous ? 1 : 0;
+}
+
+/**
+ * RSI Falling - Current RSI < previous RSI
+ * Use case: Detect momentum fading
+ */
+export function computeRSIFalling(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+
+  const current = computeRSI(ctx, 14);
+
+  const prevCtx: FeatureComputeContext = {
+    bar: ctx.history[ctx.history.length - 1],
+    history: ctx.history.slice(0, -1),
+    features: ctx.features,
+    now: ctx.now,
+  };
+  const previous = computeRSI(prevCtx, 14);
+
+  return current < previous ? 1 : 0;
+}
+
+// ============================================================================
+// Price Action Helpers
+// ============================================================================
+
+/**
+ * Price Rising - Current close > previous close
+ * Use case: Simple upward momentum
+ */
+export function computePriceRising(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+  const previous = ctx.history[ctx.history.length - 1];
+  return ctx.bar.close > previous.close ? 1 : 0;
+}
+
+/**
+ * Price Falling - Current close < previous close
+ * Use case: Simple downward momentum
+ */
+export function computePriceFalling(ctx: FeatureComputeContext): FeatureValue {
+  if (ctx.history.length < 1) return 0;
+  const previous = ctx.history[ctx.history.length - 1];
+  return ctx.bar.close < previous.close ? 1 : 0;
+}
+
+/**
+ * Green Bar - Close > Open
+ * Use case: Bullish bar pattern
+ */
+export function computeGreenBar(ctx: FeatureComputeContext): FeatureValue {
+  return ctx.bar.close > ctx.bar.open ? 1 : 0;
+}
+
+/**
+ * Red Bar - Close < Open
+ * Use case: Bearish bar pattern
+ */
+export function computeRedBar(ctx: FeatureComputeContext): FeatureValue {
+  return ctx.bar.close < ctx.bar.open ? 1 : 0;
+}
+
+// ============================================================================
 // SEPA INDICATORS (Mark Minervini Growth Screener)
 // ============================================================================
 

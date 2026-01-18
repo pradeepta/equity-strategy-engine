@@ -197,7 +197,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'deploy_strategy',
-    description: 'Deploy a strategy to the live trading system. Creates a database record with status PENDING so the orchestrator picks it up. User and account are automatically loaded from environment variables (USER_ID and TWS_ACCOUNT_ID). Just provide the YAML content.',
+    description: 'Deploy a strategy to the live trading system. Creates a database record with status PENDING so the orchestrator picks it up. User and account are automatically loaded from environment variables (USER_ID and TWS_ACCOUNT_ID). Account association is optional - if account does not exist in database, strategy will be created without account link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -215,7 +215,7 @@ const TOOLS: Tool[] = [
         },
         account_id: {
           type: 'string',
-          description: 'Optional: Override account ID (auto-loaded from TWS_ACCOUNT_ID env)',
+          description: 'Optional: Override account ID (auto-loaded from TWS_ACCOUNT_ID env). If account does not exist, strategy will be created without account association.',
         },
       },
     },
@@ -1033,12 +1033,26 @@ async function handleDeployStrategy(args: any) {
     // Extract metadata
     const { symbol, name, timeframe } = validated.meta;
     const userId = args.user_id || process.env.USER_ID || 'default-user';
-    const accountId = args.account_id || process.env.TWS_ACCOUNT_ID;
+    let accountId = args.account_id || process.env.TWS_ACCOUNT_ID;
 
     // Create strategy in database
     const factory = getRepositoryFactory();
     const strategyRepo = factory.getStrategyRepo();
 
+    // Validate account exists if accountId is provided
+    if (accountId) {
+      const accountExists = await factory.getPrisma().account.findUnique({
+        where: { id: accountId },
+      });
+
+      if (!accountExists) {
+        console.warn(`[deploy_strategy] Account ${accountId} not found in database. Creating strategy without account association.`);
+        accountId = undefined; // Don't use non-existent account
+      }
+    }
+
+    // Note: accountId is optional - if not provided or account doesn't exist,
+    // strategy will be created without account association (accountId: null)
     const strategy = await strategyRepo.createWithVersion({
       userId,
       accountId,

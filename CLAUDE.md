@@ -847,6 +847,21 @@ const schema = await get_dsl_schema({ section: 'full' })
 // - Active strategy conflicts
 // - Risk management (position sizes, stop losses)
 
+// CRITICAL: DSL Expression Syntax Limitations
+// ❌ NO array indexing: Can't use macd.histogram[1] or rsi[0]
+// ❌ NO dot notation: Use 'macd_histogram' not 'macd.histogram'
+// ❌ NO previous bar access: Can't compare current vs previous values directly
+// ✅ Use CURRENT indicator values: rsi < 30, macd_histogram > 0
+// ✅ Use thresholds and comparisons: close > bb_lower, volume > volume_sma
+
+// Supported Features:
+// - Basic: close, open, high, low, volume
+// - Moving Averages: ema20, ema50, sma50, sma150, sma200
+// - Oscillators: rsi, macd, macd_signal, macd_histogram, stochastic_k, stochastic_d
+// - Volatility: bb_upper, bb_middle, bb_lower, atr
+// - Volume: volume_sma, volume_ema, volume_zscore, obv
+// - Others: vwap, adx, cci, williams_r, hod, lod
+
 // Create strategy YAML
 const yamlContent = `
 meta:

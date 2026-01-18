@@ -17,6 +17,16 @@ import {
   computeMACDLine,
   computeMACDSignal,
   computeMACDHistogram,
+  computeMACDHistogramRising,
+  computeMACDHistogramFalling,
+  computeMACDBullishCrossover,
+  computeMACDBearishCrossover,
+  computeRSIRising,
+  computeRSIFalling,
+  computePriceRising,
+  computePriceFalling,
+  computeGreenBar,
+  computeRedBar,
   computeSMA150,
   computeSMA200,
   computeSMA50Rising,
@@ -276,6 +286,88 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: computeMACDHistogram,
+  });
+
+  // ========== MOMENTUM HELPERS (Crossovers & Changes) ==========
+
+  // MACD Histogram Rising (current > previous)
+  registry.registerFeature('macd_histogram_rising', {
+    name: 'macd_histogram_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDHistogramRising,
+  });
+
+  // MACD Histogram Falling (current < previous)
+  registry.registerFeature('macd_histogram_falling', {
+    name: 'macd_histogram_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDHistogramFalling,
+  });
+
+  // MACD Bullish Crossover (MACD crossed above signal)
+  registry.registerFeature('macd_bullish_crossover', {
+    name: 'macd_bullish_crossover',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDBullishCrossover,
+  });
+
+  // MACD Bearish Crossover (MACD crossed below signal)
+  registry.registerFeature('macd_bearish_crossover', {
+    name: 'macd_bearish_crossover',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDBearishCrossover,
+  });
+
+  // RSI Rising (current > previous)
+  registry.registerFeature('rsi_rising', {
+    name: 'rsi_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeRSIRising,
+  });
+
+  // RSI Falling (current < previous)
+  registry.registerFeature('rsi_falling', {
+    name: 'rsi_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeRSIFalling,
+  });
+
+  // Price Rising (close > previous close)
+  registry.registerFeature('price_rising', {
+    name: 'price_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computePriceRising,
+  });
+
+  // Price Falling (close < previous close)
+  registry.registerFeature('price_falling', {
+    name: 'price_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computePriceFalling,
+  });
+
+  // Green Bar (close > open)
+  registry.registerFeature('green_bar', {
+    name: 'green_bar',
+    type: 'indicator',
+    dependencies: ['close', 'open'],
+    compute: computeGreenBar,
+  });
+
+  // Red Bar (close < open)
+  registry.registerFeature('red_bar', {
+    name: 'red_bar',
+    type: 'indicator',
+    dependencies: ['close', 'open'],
+    compute: computeRedBar,
   });
 
   // ========== SEPA INDICATORS (Mark Minervini Growth Screener) ==========

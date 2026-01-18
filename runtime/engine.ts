@@ -27,7 +27,9 @@ export class StrategyEngine {
   private state: StrategyRuntimeState;
   private timers: TimerManager;
   private barHistory: Bar[] = [];
+  private featureHistory: Map<string, FeatureValue[]> = new Map();
   private replayMode: boolean = false;
+  private readonly MAX_FEATURE_HISTORY = 100; // Keep last 100 bars of history
 
   constructor(
     private ir: CompiledIR,
@@ -103,6 +105,18 @@ export class StrategyEngine {
         }
 
         newFeatures.set(feature.name, value);
+
+        // Store feature history for array indexing support
+        if (!this.featureHistory.has(feature.name)) {
+          this.featureHistory.set(feature.name, []);
+        }
+        const history = this.featureHistory.get(feature.name)!;
+        history.push(value);
+
+        // Keep only last MAX_FEATURE_HISTORY bars to manage memory
+        if (history.length > this.MAX_FEATURE_HISTORY) {
+          history.shift();
+        }
       } catch (e) {
         const err = e as Error;
         this.log('error', `Failed to compute ${feature.name}: ${err.message}`);
@@ -193,6 +207,7 @@ export class StrategyEngine {
           ['volume', this.state.currentBar?.volume || 0],
           ['price', this.state.currentBar?.close || 0],
         ]),
+        featureHistory: this.featureHistory,
         functions: new Map<string, (args: FeatureValue[]) => FeatureValue>([
           [
             'in_range',
