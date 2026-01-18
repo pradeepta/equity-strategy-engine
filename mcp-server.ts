@@ -246,6 +246,60 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: 'get_portfolio_overview',
+    description: 'Get current portfolio data including positions, active strategies, P&L, recent trades, and order statistics. Use this before deploying strategies to understand current portfolio state.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_market_data',
+    description: 'Get recent market data (OHLCV bars) for a symbol. Use this to understand current market conditions before deploying a strategy.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Trading symbol (e.g., "AAPL", "GOOGL")',
+        },
+        timeframe: {
+          type: 'string',
+          description: 'Bar timeframe (e.g., "1m", "5m", "1h")',
+          default: '5m',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of bars to fetch (default: 100)',
+          default: 100,
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'get_active_strategies',
+    description: 'Get list of currently active strategies with their symbols, timeframes, and performance metrics. Use this to check for conflicts before deploying.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_live_portfolio_snapshot',
+    description: 'Get real-time portfolio snapshot from TWS broker including account value, cash, buying power, positions with current prices and unrealized P&L. This is the SAME data used by automated strategy swaps. Use this for deployment decisions requiring live portfolio context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force_refresh: {
+          type: 'boolean',
+          description: 'Force refresh (bypass 30s cache). Default: false',
+          default: false,
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -1056,6 +1110,183 @@ async function handleCreateLiveEngine(args: any) {
   };
 }
 
+/**
+ * Get portfolio overview handler
+ */
+async function handleGetPortfolioOverview() {
+  try {
+    const portfolioApiUrl = process.env.PORTFOLIO_API_URL || 'http://localhost:3002';
+    const response = await fetch(`${portfolioApiUrl}/api/portfolio/overview`);
+
+    if (!response.ok) {
+      throw new Error(`Portfolio API returned ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+
+    return {
+      success: true,
+      portfolio: {
+        realizedPnL: data.pnl.realizedPnL,
+        totalPositions: data.pnl.totalPositions,
+        currentPositions: data.pnl.currentPositions,
+        activeStrategies: data.strategies.filter((s: any) => s.status === 'ACTIVE'),
+        totalStrategies: data.strategies.length,
+        recentTrades: data.recentTrades.slice(0, 10), // Last 10 trades
+        orderStats: data.orderStats,
+      },
+      timestamp: data.timestamp,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch portfolio overview',
+      message: error.message,
+      note: 'Make sure the portfolio API server is running on port 3002',
+    };
+  }
+}
+
+/**
+ * Get market data handler
+ */
+async function handleGetMarketData(args: any) {
+  try {
+    const { symbol, timeframe = '5m', limit = 100 } = args;
+
+    // Import broker adapter
+    const brokerType = process.env.BROKER || 'tws';
+
+    if (brokerType === 'tws') {
+      const { TwsMarketDataClient } = await import('./broker/twsMarketData');
+
+      const client = new TwsMarketDataClient();
+      const bars = await client.getHistoricalBars(symbol, limit, timeframe);
+
+      return {
+        success: true,
+        symbol,
+        timeframe,
+        bars: bars.map((bar: any) => ({
+          timestamp: bar.timestamp,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        })),
+        count: bars.length,
+        latestPrice: bars.length > 0 ? bars[bars.length - 1].close : null,
+      };
+    } else {
+      return {
+        success: false,
+        error: 'Market data fetching not implemented for this broker',
+        broker: brokerType,
+      };
+    }
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch market data',
+      message: error.message,
+      note: 'Make sure the broker connection is available',
+    };
+  }
+}
+
+/**
+ * Get active strategies handler
+ */
+async function handleGetActiveStrategies() {
+  try {
+    const factory = getRepositoryFactory();
+    const strategyRepo = factory.getStrategyRepo();
+    const userId = process.env.USER_ID || 'default-user';
+
+    const strategies = await strategyRepo.findByStatus(userId, 'ACTIVE');
+
+    await factory.disconnect();
+
+    return {
+      success: true,
+      strategies: strategies.map(s => ({
+        id: s.id,
+        name: s.name,
+        symbol: s.symbol,
+        timeframe: s.timeframe,
+        status: s.status,
+        activatedAt: s.activatedAt,
+        yamlContent: s.yamlContent,
+      })),
+      count: strategies.length,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch active strategies',
+      message: error.message,
+    };
+  }
+}
+
+/**
+ * Get live portfolio snapshot from TWS handler
+ */
+async function handleGetLivePortfolioSnapshot(args: any) {
+  try {
+    const forceRefresh = args.force_refresh || false;
+    const brokerType = process.env.BROKER || 'tws';
+
+    if (brokerType !== 'tws') {
+      return {
+        success: false,
+        error: 'Live portfolio snapshot only supported for TWS broker',
+        broker: brokerType,
+      };
+    }
+
+    // Import and use PortfolioDataFetcher (same as swap evaluation)
+    const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+
+    const host = process.env.TWS_HOST || '127.0.0.1';
+    const port = parseInt(process.env.TWS_PORT || '7497', 10);
+    const clientId = 3; // Client ID 3 for portfolio data (same as swap evaluation)
+
+    const fetcher = new PortfolioDataFetcher(host, port, clientId);
+    const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
+
+    return {
+      success: true,
+      snapshot: {
+        timestamp: snapshot.timestamp,
+        accountId: snapshot.accountId,
+        totalValue: snapshot.totalValue,
+        cash: snapshot.cash,
+        buyingPower: snapshot.buyingPower,
+        unrealizedPnL: snapshot.unrealizedPnL,
+        realizedPnL: snapshot.realizedPnL,
+        positions: snapshot.positions.map(p => ({
+          symbol: p.symbol,
+          quantity: p.quantity,
+          avgCost: p.avgCost,
+          currentPrice: p.currentPrice,
+          unrealizedPnL: p.unrealizedPnL,
+          marketValue: p.marketValue,
+        })),
+      },
+      note: 'This is the same real-time data used by automated strategy swap evaluations',
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to fetch live portfolio snapshot',
+      message: error.message,
+      note: 'Make sure TWS/IB Gateway is running and connected',
+    };
+  }
+}
+
 // ============================================================================
 // Request Handlers
 // ============================================================================
@@ -1098,6 +1329,18 @@ function registerHandlers(server: Server): void {
           break;
         case 'create_live_engine':
           result = await handleCreateLiveEngine(args);
+          break;
+        case 'get_portfolio_overview':
+          result = await handleGetPortfolioOverview();
+          break;
+        case 'get_market_data':
+          result = await handleGetMarketData(args);
+          break;
+        case 'get_active_strategies':
+          result = await handleGetActiveStrategies();
+          break;
+        case 'get_live_portfolio_snapshot':
+          result = await handleGetLivePortfolioSnapshot(args);
           break;
         default:
           throw new Error(`Unknown tool: ${name}`);

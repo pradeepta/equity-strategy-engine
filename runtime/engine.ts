@@ -124,6 +124,47 @@ export class StrategyEngine {
       if (await this.evaluateCondition(transition.when)) {
         // Transition triggered!
         this.log('info', `Transition: ${transition.from} -> ${transition.to}`);
+
+        // Detect invalidation event (MANAGING -> EXITED)
+        const isInvalidation = transition.from === 'MANAGING' && transition.to === 'EXITED';
+
+        // Audit log for state transitions (especially important in replay mode)
+        if (this.replayMode) {
+          this.brokerEnv.auditEvent?.({
+            component: 'StrategyEngine',
+            level: 'info',
+            message: `Replay mode state transition: ${transition.from} -> ${transition.to}`,
+            metadata: {
+              symbol: this.ir.symbol,
+              barCount: this.state.barCount,
+              fromState: transition.from,
+              toState: transition.to,
+              replayMode: true,
+              timestamp: this.state.currentBar?.timestamp,
+              price: this.state.currentBar?.close,
+              invalidation: isInvalidation,
+            },
+          });
+        }
+
+        // Audit log for invalidation events (in both live and replay mode)
+        if (isInvalidation) {
+          this.brokerEnv.auditEvent?.({
+            component: 'StrategyEngine',
+            level: 'warn',
+            message: 'Strategy invalidated - exit condition triggered',
+            metadata: {
+              symbol: this.ir.symbol,
+              barCount: this.state.barCount,
+              replayMode: this.replayMode,
+              timestamp: this.state.currentBar?.timestamp,
+              price: this.state.currentBar?.close,
+              openOrdersCount: this.state.openOrders.length,
+              features: Object.fromEntries(this.state.features),
+            },
+          });
+        }
+
         this.state.currentState = transition.to;
 
         // Execute actions
@@ -227,6 +268,19 @@ export class StrategyEngine {
               'info',
               `Replay mode active - skipping order plan submission${action.planId ? ` (${action.planId})` : ''}`
             );
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'info',
+              message: 'Replay mode - simulated order plan submission',
+              metadata: {
+                symbol: this.ir.symbol,
+                planId: action.planId,
+                barCount: this.state.barCount,
+                replayMode: true,
+                price: this.state.currentBar?.close,
+                timestamp: this.state.currentBar?.timestamp,
+              },
+            });
             return;
           }
           if (action.planId) {
@@ -385,6 +439,18 @@ export class StrategyEngine {
         case 'cancel_entries':
           if (this.replayMode) {
             this.log('info', 'Replay mode active - skipping order cancellation');
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'info',
+              message: 'Replay mode - simulated order cancellation',
+              metadata: {
+                symbol: this.ir.symbol,
+                barCount: this.state.barCount,
+                replayMode: true,
+                openOrdersCount: this.state.openOrders.length,
+                timestamp: this.state.currentBar?.timestamp,
+              },
+            });
             return;
           }
           if (this.brokerEnv.allowCancelEntries !== true) {

@@ -345,17 +345,37 @@ npx prisma generate
 
 ### Adding a New MCP Tool
 
-1. **Implement tool handler** in [mcp-server.ts](mcp-server.ts):
+1. **Add tool definition** to TOOLS array in [mcp-server.ts](mcp-server.ts):
 ```typescript
-server.tool('my_tool', 'Tool description', {
-  param1: z.string().describe('Parameter description')
-}, async (args) => {
-  // Implementation
-  return { content: [{ type: 'text', text: result }] }
-})
+{
+  name: 'my_tool',
+  description: 'Tool description',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      param1: { type: 'string', description: 'Parameter description' }
+    },
+    required: ['param1']
+  }
+}
 ```
 
-2. **Test with MCP Inspector**:
+2. **Implement tool handler**:
+```typescript
+async function handleMyTool(args: any) {
+  // Implementation
+  return { success: true, result: 'data' }
+}
+```
+
+3. **Wire up handler** in switch statement:
+```typescript
+case 'my_tool':
+  result = await handleMyTool(args);
+  break;
+```
+
+4. **Test with MCP Inspector**:
 ```bash
 npm run mcp:dev
 ```
@@ -732,6 +752,145 @@ npm start
 - Edit CSS custom properties in [web-client/app/globals.css](web-client/app/globals.css)
 - Update color palette in `:root` selector
 - Modify component-specific styles
+
+---
+
+## MCP Tools for AI Agents
+
+The MCP server exposes the following tools for AI agents to interact with the trading system:
+
+### Strategy Development Tools
+- **`get_dsl_schema`** - Get DSL schema documentation (ALWAYS use this first when creating strategies)
+- **`get_strategy_template`** - Get YAML template for specific strategy types (rsi, macd, bollinger_bands, etc.)
+- **`list_strategy_types`** - List all available indicators and strategy types
+- **`validate_strategy`** - Validate YAML against schema
+- **`compile_strategy`** - Compile YAML to intermediate representation (IR)
+
+### Backtesting & Analysis Tools
+- **`backtest_strategy`** - Backtest strategy against historical data
+- **`analyze_strategy_performance`** - Calculate performance metrics from backtest results
+
+### Market Context Tools (NEW)
+- **`get_portfolio_overview`** - Get historical portfolio data from database (P&L, positions, active strategies, recent trades)
+  - Data source: Database (historical fills and orders)
+  - Returns: realizedPnL, currentPositions (with avgPrice), activeStrategies, recentTrades, orderStats
+  - Note: Does NOT include current market prices or unrealized P&L
+
+- **`get_live_portfolio_snapshot`** ⭐ - Get real-time portfolio snapshot from TWS broker
+  - **This is the SAME data used by automated strategy swap evaluations**
+  - Data source: TWS/IB Gateway (live broker connection)
+  - Parameters: force_refresh (default: false, bypasses 30s cache)
+  - Returns:
+    - Account: totalValue, cash, buyingPower, unrealizedPnL, realizedPnL
+    - Positions: symbol, quantity, avgCost, **currentPrice**, unrealizedPnL, marketValue
+  - Use this for deployment decisions requiring live portfolio context
+  - Requires: TWS/IB Gateway running and connected
+
+- **`get_market_data`** - Get recent OHLCV bars for a symbol
+  - Parameters: symbol (required), timeframe (default: "5m"), limit (default: 100)
+  - Data source: TWS historical data API
+  - Use this to understand current market conditions
+  - Returns: bars array with timestamp, OHLCV data, latestPrice
+
+- **`get_active_strategies`** - Get list of currently active strategies
+  - Data source: Database
+  - Use this to check for conflicts before deploying (avoid duplicate symbols)
+  - Returns: strategies array with id, name, symbol, timeframe, status, yamlContent
+
+### Deployment Tools
+- **`deploy_strategy`** - Deploy strategy to live trading system
+  - Creates database record with status PENDING
+  - Orchestrator automatically picks up and activates
+  - User and account loaded from environment variables (USER_ID, TWS_ACCOUNT_ID)
+
+### AI Agent Strategy Deployment Workflow
+
+When an AI agent helps deploy a new strategy, it should follow this workflow:
+
+1. **Gather Context** (SAME as automated swap evaluation):
+```typescript
+// Get LIVE portfolio snapshot from TWS (real-time data)
+const livePortfolio = await get_live_portfolio_snapshot()
+// - Account value, cash, buying power
+// - Current positions with live prices and unrealized P&L
+// - Risk exposure assessment
+
+// Get historical portfolio data from DB (optional, for trends)
+const dbPortfolio = await get_portfolio_overview()
+// - Recent trades and performance
+// - Realized P&L history
+// - Strategy performance metrics
+
+// Get market data
+const marketData = await get_market_data({ symbol: "AAPL", timeframe: "5m", limit: 100 })
+// - Analyze recent price action
+// - Check volatility
+// - Identify trends
+
+// Check for conflicts
+const activeStrategies = await get_active_strategies()
+// - Ensure no duplicate symbols (unless user explicitly wants)
+// - Review timeframe distribution
+```
+
+2. **Create Strategy** (with context-aware decisions):
+```typescript
+// Use DSL schema first
+const schema = await get_dsl_schema({ section: 'full' })
+
+// Consider:
+// - Current portfolio exposure (don't over-concentrate)
+// - Market conditions (volatility, trend)
+// - Active strategy conflicts
+// - Risk management (position sizes, stop losses)
+
+// Create strategy YAML
+const yamlContent = `
+meta:
+  name: "AAPL RSI Mean Reversion"
+  symbol: "AAPL"
+  timeframe: "5m"
+
+features:
+  - name: rsi
+  - name: ema20
+
+rules:
+  arm: "rsi < 30"
+  trigger: "close > ema20"
+  ...
+`
+```
+
+3. **Validate & Backtest**:
+```typescript
+// Validate first
+const validation = await validate_strategy({ yaml_content: yamlContent })
+
+// Backtest with recent data
+const backtest = await backtest_strategy({
+  yaml_content: yamlContent,
+  historical_data: marketData.bars
+})
+
+// Analyze results
+const analysis = await analyze_strategy_performance({ backtest_results: backtest })
+```
+
+4. **Deploy**:
+```typescript
+// Deploy to live system
+const deployment = await deploy_strategy({ yaml_content: yamlContent })
+// Strategy status: PENDING → orchestrator picks up → ACTIVE
+```
+
+**Key Principle:** Just like the automated swap system uses `StrategyEvaluatorClient.evaluate()` with full context (portfolio, market data, performance), AI agents should gather the same context before deployment decisions.
+
+### Agent Persona Configuration
+
+The **BlackRock advisor agent** (`blackrock_advisor` persona) is configured in [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts) with the above workflow built into its system prompt. When users interact with this agent in the web dashboard, it will automatically follow the 5-step workflow for strategy deployments.
+
+**See detailed workflow example:** [docs/agent-workflow-example.md](docs/agent-workflow-example.md)
 
 ---
 

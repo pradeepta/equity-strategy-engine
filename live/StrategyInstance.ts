@@ -57,15 +57,33 @@ export class StrategyInstance {
       return;
     }
 
-    // Compile YAML to IR (yamlContent already provided in constructor)
-    this.ir = this.compiler.compileFromYAML(this.yamlContent);
+    try {
+      // Compile YAML to IR (yamlContent already provided in constructor)
+      this.ir = this.compiler.compileFromYAML(this.yamlContent);
 
-    // Create engine
-    const featureRegistry = createStandardRegistry();
-    this.engine = new StrategyEngine(this.ir, featureRegistry, this.brokerAdapter, this.brokerEnv);
+      // Create engine
+      const featureRegistry = createStandardRegistry();
+      this.engine = new StrategyEngine(this.ir, featureRegistry, this.brokerAdapter, this.brokerEnv);
 
-    this.initialized = true;
-    console.log(`✓ Initialized strategy: ${this.strategyName} for ${this.symbol} (ID: ${this.strategyId})`);
+      this.initialized = true;
+      console.log(`✓ Initialized strategy: ${this.strategyName} for ${this.symbol} (ID: ${this.strategyId})`);
+    } catch (error: any) {
+      // Audit log for compilation failure
+      this.brokerEnv.auditEvent?.({
+        component: 'StrategyInstance',
+        level: 'error',
+        message: 'Strategy compilation failed',
+        metadata: {
+          strategyId: this.strategyId,
+          strategyName: this.strategyName,
+          symbol: this.symbol,
+          error: error.message,
+          stackTrace: error.stack,
+        },
+      });
+      console.error(`✗ Failed to compile strategy ${this.strategyName} for ${this.symbol}:`, error.message);
+      throw error;
+    }
   }
 
   /**

@@ -316,8 +316,37 @@ export class LiveTradingOrchestrator {
         // Update risk snapshot for broker environment
         try {
           const portfolio = await this.portfolioFetcher.getPortfolioSnapshot();
+          const previousDailyPnL = this.config.brokerEnv.currentDailyPnL;
           this.config.brokerEnv.currentDailyPnL =
             portfolio.realizedPnL + portfolio.unrealizedPnL;
+
+          // Audit log when daily loss limit is first breached
+          if (
+            this.config.brokerEnv.dailyLossLimit !== undefined &&
+            this.config.brokerEnv.currentDailyPnL !== undefined &&
+            this.config.brokerEnv.currentDailyPnL <= -this.config.brokerEnv.dailyLossLimit &&
+            (previousDailyPnL === undefined ||
+              previousDailyPnL > -this.config.brokerEnv.dailyLossLimit)
+          ) {
+            const systemLogRepo = this.repositoryFactory.getSystemLogRepo();
+            await systemLogRepo.create({
+              level: "ERROR",
+              component: "LiveTradingOrchestrator",
+              message: "Daily loss limit breached",
+              metadata: {
+                currentDailyPnL: this.config.brokerEnv.currentDailyPnL,
+                dailyLossLimit: this.config.brokerEnv.dailyLossLimit,
+                realizedPnL: portfolio.realizedPnL,
+                unrealizedPnL: portfolio.unrealizedPnL,
+                breachAmount:
+                  Math.abs(this.config.brokerEnv.currentDailyPnL) -
+                  this.config.brokerEnv.dailyLossLimit,
+              },
+            });
+            logger.error(
+              `🚨 DAILY LOSS LIMIT BREACHED: ${this.config.brokerEnv.currentDailyPnL.toFixed(2)} <= -${this.config.brokerEnv.dailyLossLimit.toFixed(2)}`
+            );
+          }
         } catch (error) {
           logger.warn(
             "⚠️  Failed to refresh portfolio snapshot for risk caps:",
