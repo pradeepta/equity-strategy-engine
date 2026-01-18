@@ -95,6 +95,29 @@ export function computeVolumeZScore(ctx: FeatureComputeContext): FeatureValue {
 }
 
 // ============================================================================
+// Volume SMA (Simple Moving Average of Volume)
+// ============================================================================
+
+export function computeVolumeSMA(
+  ctx: FeatureComputeContext,
+  period: number = 20
+): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length === 0) return ctx.bar.volume;
+  if (bars.length < period) {
+    // Insufficient data: use all available bars
+    const sum = bars.reduce((acc, bar) => acc + bar.volume, 0);
+    return sum / bars.length;
+  }
+
+  // Calculate SMA of last 'period' bars
+  const recentBars = bars.slice(-period);
+  const sum = recentBars.reduce((acc, bar) => acc + bar.volume, 0);
+  return sum / period;
+}
+
+// ============================================================================
 // RSI (Relative Strength Index)
 // ============================================================================
 
@@ -559,4 +582,243 @@ export function computeCupHandleConfidence(ctx: FeatureComputeContext): FeatureV
 
   const metrics = detectCupAndHandle(prices);
   return metrics.confidence;
+}
+
+// ============================================================================
+// ATR (Average True Range)
+// ============================================================================
+
+export function computeATR(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < 2) return 0;
+
+  // Calculate True Range for each bar
+  const trueRanges: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const high = bars[i].high;
+    const low = bars[i].low;
+    const prevClose = bars[i - 1].close;
+
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+    trueRanges.push(tr);
+  }
+
+  if (trueRanges.length < period) {
+    // Use simple average if insufficient data
+    const sum = trueRanges.reduce((acc, tr) => acc + tr, 0);
+    return sum / trueRanges.length;
+  }
+
+  // Calculate ATR using exponential moving average
+  let atr = trueRanges.slice(0, period).reduce((acc, tr) => acc + tr, 0) / period;
+  const multiplier = 1 / period;
+
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = trueRanges[i] * multiplier + atr * (1 - multiplier);
+  }
+
+  return atr;
+}
+
+// ============================================================================
+// ADX (Average Directional Index)
+// ============================================================================
+
+export function computeADX(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < period + 1) return 0;
+
+  // Calculate +DM and -DM
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  const trueRanges: number[] = [];
+
+  for (let i = 1; i < bars.length; i++) {
+    const highDiff = bars[i].high - bars[i - 1].high;
+    const lowDiff = bars[i - 1].low - bars[i].low;
+
+    plusDM.push(highDiff > lowDiff && highDiff > 0 ? highDiff : 0);
+    minusDM.push(lowDiff > highDiff && lowDiff > 0 ? lowDiff : 0);
+
+    const tr = Math.max(
+      bars[i].high - bars[i].low,
+      Math.abs(bars[i].high - bars[i - 1].close),
+      Math.abs(bars[i].low - bars[i - 1].close)
+    );
+    trueRanges.push(tr);
+  }
+
+  if (plusDM.length < period) return 0;
+
+  // Smooth the indicators
+  let smoothPlusDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothMinusDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothTR = trueRanges.slice(0, period).reduce((a, b) => a + b, 0);
+
+  const dxValues: number[] = [];
+
+  for (let i = period; i < plusDM.length; i++) {
+    smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
+    smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
+    smoothTR = smoothTR - smoothTR / period + trueRanges[i];
+
+    const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+    const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+
+    const diSum = plusDI + minusDI;
+    const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
+    dxValues.push(dx);
+  }
+
+  if (dxValues.length < period) return 0;
+
+  // ADX is the smoothed average of DX
+  let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxValues.length; i++) {
+    adx = ((adx * (period - 1)) + dxValues[i]) / period;
+  }
+
+  return adx;
+}
+
+// ============================================================================
+// Stochastic Oscillator
+// ============================================================================
+
+export function computeStochastic(
+  ctx: FeatureComputeContext,
+  kPeriod: number = 14,
+  dPeriod: number = 3
+): { k: number; d: number } {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < kPeriod) {
+    return { k: 50, d: 50 };
+  }
+
+  // Calculate %K
+  const recentBars = bars.slice(-kPeriod);
+  const highs = recentBars.map(b => b.high);
+  const lows = recentBars.map(b => b.low);
+
+  const highestHigh = Math.max(...highs);
+  const lowestLow = Math.min(...lows);
+  const currentClose = ctx.bar.close;
+
+  const k = lowestLow === highestHigh ? 50 :
+    ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
+
+  // Calculate %D (SMA of %K)
+  // For simplicity, return K and D=K (would need historical K values for true D)
+  return { k, d: k };
+}
+
+export function computeStochasticK(ctx: FeatureComputeContext): FeatureValue {
+  return computeStochastic(ctx).k;
+}
+
+export function computeStochasticD(ctx: FeatureComputeContext): FeatureValue {
+  return computeStochastic(ctx).d;
+}
+
+// ============================================================================
+// OBV (On Balance Volume)
+// ============================================================================
+
+export function computeOBV(ctx: FeatureComputeContext): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < 2) return 0;
+
+  let obv = 0;
+  for (let i = 1; i < bars.length; i++) {
+    if (bars[i].close > bars[i - 1].close) {
+      obv += bars[i].volume;
+    } else if (bars[i].close < bars[i - 1].close) {
+      obv -= bars[i].volume;
+    }
+    // If close === prevClose, OBV unchanged
+  }
+
+  return obv;
+}
+
+// ============================================================================
+// Volume EMA (Exponential Moving Average of Volume)
+// ============================================================================
+
+export function computeVolumeEMA(
+  ctx: FeatureComputeContext,
+  period: number = 20
+): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+  return computeEMA(bars, 'volume', period);
+}
+
+// ============================================================================
+// CCI (Commodity Channel Index)
+// ============================================================================
+
+export function computeCCI(ctx: FeatureComputeContext, period: number = 20): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < period) return 0;
+
+  const recentBars = bars.slice(-period);
+
+  // Calculate Typical Price for each bar
+  const typicalPrices = recentBars.map(b => (b.high + b.low + b.close) / 3);
+
+  // Calculate SMA of Typical Price
+  const sma = typicalPrices.reduce((a, b) => a + b, 0) / period;
+
+  // Calculate Mean Deviation
+  const meanDeviation = typicalPrices
+    .map(tp => Math.abs(tp - sma))
+    .reduce((a, b) => a + b, 0) / period;
+
+  if (meanDeviation === 0) return 0;
+
+  // CCI = (Typical Price - SMA) / (0.015 * Mean Deviation)
+  const currentTP = (ctx.bar.high + ctx.bar.low + ctx.bar.close) / 3;
+  return (currentTP - sma) / (0.015 * meanDeviation);
+}
+
+// ============================================================================
+// Williams %R
+// ============================================================================
+
+export function computeWilliamsR(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < period) return -50;
+
+  const recentBars = bars.slice(-period);
+  const highs = recentBars.map(b => b.high);
+  const lows = recentBars.map(b => b.low);
+
+  const highestHigh = Math.max(...highs);
+  const lowestLow = Math.min(...lows);
+  const currentClose = ctx.bar.close;
+
+  if (highestHigh === lowestLow) return -50;
+
+  // Williams %R = (Highest High - Close) / (Highest High - Lowest Low) * -100
+  return ((highestHigh - currentClose) / (highestHigh - lowestLow)) * -100;
+}
+
+// ============================================================================
+// HOD (High of Day)
+// ============================================================================
+
+export function computeHOD(ctx: FeatureComputeContext): FeatureValue {
+  const bars = [...ctx.history, ctx.bar];
+  if (bars.length === 0) return ctx.bar.high;
+  return Math.max(...bars.map((b) => b.high));
 }

@@ -6,7 +6,10 @@ import {
   computeVWAP,
   computeEMA,
   computeLOD,
+  computeHOD,
   computeVolumeZScore,
+  computeVolumeSMA,
+  computeVolumeEMA,
   computeRSI,
   computeBBUpper,
   computeBBMiddle,
@@ -22,6 +25,13 @@ import {
   computeFiftyTwoWeekHigh,
   computeFiftyTwoWeekLow,
   computeCupHandleConfidence,
+  computeATR,
+  computeADX,
+  computeStochasticK,
+  computeStochasticD,
+  computeOBV,
+  computeCCI,
+  computeWilliamsR,
 } from './indicators';
 import { computeAbsorption, computeDelta } from './microstructure';
 
@@ -188,6 +198,14 @@ export function createStandardRegistry(): FeatureRegistry {
     compute: computeVolumeZScore,
   });
 
+  // Volume SMA (Simple Moving Average of Volume)
+  registry.registerFeature('volume_sma', {
+    name: 'volume_sma',
+    type: 'indicator',
+    dependencies: ['volume'],
+    compute: (ctx: FeatureComputeContext) => computeVolumeSMA(ctx, 20),
+  });
+
   // Microstructure: Delta (stub)
   registry.registerFeature('delta', {
     name: 'delta',
@@ -333,6 +351,78 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: computeCupHandleConfidence,
+  });
+
+  // HOD (High of Day)
+  registry.registerFeature('hod', {
+    name: 'hod',
+    type: 'indicator',
+    dependencies: [],
+    compute: computeHOD,
+  });
+
+  // Volume EMA
+  registry.registerFeature('volume_ema', {
+    name: 'volume_ema',
+    type: 'indicator',
+    dependencies: ['volume'],
+    compute: (ctx: FeatureComputeContext) => computeVolumeEMA(ctx, 20),
+  });
+
+  // ATR (Average True Range)
+  registry.registerFeature('atr', {
+    name: 'atr',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeATR(ctx, 14),
+  });
+
+  // ADX (Average Directional Index)
+  registry.registerFeature('adx', {
+    name: 'adx',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeADX(ctx, 14),
+  });
+
+  // Stochastic K
+  registry.registerFeature('stochastic_k', {
+    name: 'stochastic_k',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: computeStochasticK,
+  });
+
+  // Stochastic D
+  registry.registerFeature('stochastic_d', {
+    name: 'stochastic_d',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: computeStochasticD,
+  });
+
+  // OBV (On Balance Volume)
+  registry.registerFeature('obv', {
+    name: 'obv',
+    type: 'indicator',
+    dependencies: ['close', 'volume'],
+    compute: computeOBV,
+  });
+
+  // CCI (Commodity Channel Index)
+  registry.registerFeature('cci', {
+    name: 'cci',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeCCI(ctx, 20),
+  });
+
+  // Williams %R
+  registry.registerFeature('williams_r', {
+    name: 'williams_r',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeWilliamsR(ctx, 14),
   });
 
   return registry;

@@ -809,11 +809,32 @@ features:
 - bb_upper, bb_middle, bb_lower (Bollinger Bands)
 - vwap (Volume Weighted Average Price)
 
-**Microstructure**:
-- delta, absorption, volume_zscore
-- lod (low of day)
+**Momentum & Oscillators**:
+- stochastic_k, stochastic_d (Stochastic Oscillator 14-period)
+- cci (Commodity Channel Index 20-period)
+- williams_r (Williams %R 14-period)
+
+**Volatility & Range**:
+- atr (Average True Range 14-period)
+
+**Trend Strength**:
+- adx (Average Directional Index 14-period)
+
+**Volume Indicators**:
+- volume_zscore (Z-score of volume vs historical average)
+- volume_sma (20-period Simple Moving Average of volume)
+- volume_ema (20-period Exponential Moving Average of volume)
+- obv (On Balance Volume)
+
+**Price Levels**:
+- lod, hod (Low/High of Day)
 - fifty_two_week_high, fifty_two_week_low
-- cup_handle_confidence
+
+**Pattern Recognition**:
+- cup_handle_confidence (Cup & Handle pattern score 0-100)
+
+**Microstructure**:
+- delta, absorption
 
 **Example** (use exact feature names):
 \`\`\`yaml
@@ -821,7 +842,10 @@ features:
   - name: rsi          # 14-period RSI
   - name: ema20        # 20-period EMA
   - name: ema50        # 50-period EMA
-  - name: volume_zscore
+  - name: atr          # 14-period ATR
+  - name: adx          # 14-period ADX
+  - name: volume_sma   # 20-period volume SMA
+  - name: stochastic_k # Stochastic %K
 \`\`\``,
 
     rules: `### rules Section

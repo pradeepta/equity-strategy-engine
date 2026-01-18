@@ -7,6 +7,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { getRepositoryFactory } from './database/RepositoryFactory';
 import 'dotenv/config';
 
 // Create PostgreSQL connection pool
@@ -28,7 +29,7 @@ const PORT = process.env.PORTFOLIO_API_PORT || 3002;
 // Enable CORS for web client
 const setCORSHeaders = (res: ServerResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 };
 
@@ -36,6 +37,24 @@ const setCORSHeaders = (res: ServerResponse) => {
 const sendJSON = (res: ServerResponse, data: any, status: number = 200) => {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+};
+
+// Helper to parse request body
+const parseBody = (req: IncomingMessage): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(new Error('Invalid JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
 };
 
 // Calculate P&L from orders
@@ -420,6 +439,63 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/close')) {
+      // POST /api/portfolio/strategies/:id/close
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/close
+      const body = await parseBody(req);
+      const reason = body.reason || 'Closed via UI';
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+      const execHistoryRepo = factory.getExecutionHistoryRepo();
+
+      try {
+        // Get strategy
+        const strategy = await strategyRepo.findById(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          await factory.disconnect();
+          return;
+        }
+
+        if (strategy.status === 'CLOSED') {
+          sendJSON(res, { error: 'Strategy is already closed' }, 400);
+          await factory.disconnect();
+          return;
+        }
+
+        // Close strategy
+        await strategyRepo.close(strategyId, reason);
+
+        // Log deactivation
+        await execHistoryRepo.logDeactivation(strategyId, reason);
+
+        console.log(`[portfolio-api] Closed strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`);
+
+        sendJSON(res, {
+          success: true,
+          message: 'Strategy closed successfully',
+          strategy: {
+            id: strategyId,
+            symbol: strategy.symbol,
+            name: strategy.name,
+            closedAt: new Date().toISOString(),
+            closeReason: reason,
+          },
+        });
+
+        await factory.disconnect();
+      } catch (error: any) {
+        console.error('[portfolio-api] Error closing strategy:', error);
+        sendJSON(res, { error: error.message || 'Failed to close strategy' }, 500);
+        await factory.disconnect();
+      }
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {

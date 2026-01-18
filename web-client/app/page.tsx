@@ -462,6 +462,12 @@ function Dashboard() {
   const [showStrategyModal, setShowStrategyModal] = useState(false);
   const [selectedAuditLog, setSelectedAuditLog] = useState<any>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [closeReason, setCloseReason] = useState('');
+  const [isClosing, setIsClosing] = useState(false);
+
+  // Notification state
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -484,6 +490,54 @@ function Dashboard() {
     const interval = setInterval(fetchData, 10000); // Refresh every 10s
     return () => clearInterval(interval);
   }, []);
+
+  // Close strategy handler
+  const handleCloseStrategy = async () => {
+    if (!selectedStrategy || !closeReason.trim()) {
+      setNotification({ type: 'error', message: 'Please provide a reason for closing the strategy' });
+      return;
+    }
+
+    setIsClosing(true);
+    try {
+      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: closeReason }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to close strategy');
+      }
+
+      // Success - show notification and refresh data
+      setNotification({ type: 'success', message: `Strategy "${selectedStrategy.name}" closed successfully` });
+      setShowCloseModal(false);
+      setShowStrategyModal(false);
+      setCloseReason('');
+
+      // Refresh portfolio data
+      const refreshResponse = await fetch('http://localhost:3002/api/portfolio/overview');
+      if (refreshResponse.ok) {
+        const refreshData = await refreshResponse.json();
+        setPortfolioData(refreshData);
+      }
+    } catch (error: any) {
+      setNotification({ type: 'error', message: error.message || 'Failed to close strategy' });
+    } finally {
+      setIsClosing(false);
+    }
+  };
+
+  // Auto-dismiss notification after 5 seconds
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
 
   if (loading && !portfolioData) {
     return (
@@ -863,6 +917,20 @@ function Dashboard() {
                 </div>
               )}
             </div>
+
+            {/* Modal Actions Footer */}
+            {selectedStrategy.status === 'ACTIVE' && (
+              <div className="modal-footer">
+                <button
+                  className="close-strategy-button"
+                  onClick={() => {
+                    setShowCloseModal(true);
+                  }}
+                >
+                  Close Strategy
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1005,6 +1073,68 @@ function Dashboard() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Close Strategy Confirmation Modal */}
+      {showCloseModal && selectedStrategy && (
+        <div className="modal-overlay" onClick={() => setShowCloseModal(false)}>
+          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Close Strategy</h2>
+              <button className="modal-close" onClick={() => setShowCloseModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <p style={{ marginBottom: '16px', color: '#737373' }}>
+                  You are about to close <strong>{selectedStrategy.name}</strong> ({selectedStrategy.symbol}).
+                  This action will stop all trading activity for this strategy.
+                </p>
+                <div className="modal-field">
+                  <div className="modal-label">Reason for closing *</div>
+                  <textarea
+                    className="close-reason-input"
+                    placeholder="Enter reason (e.g., Market conditions unfavorable, Risk limit reached, etc.)"
+                    value={closeReason}
+                    onChange={(e) => setCloseReason(e.target.value)}
+                    rows={3}
+                    disabled={isClosing}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="modal-button cancel-button"
+                onClick={() => {
+                  setShowCloseModal(false);
+                  setCloseReason('');
+                }}
+                disabled={isClosing}
+              >
+                Cancel
+              </button>
+              <button
+                className="modal-button confirm-close-button"
+                onClick={handleCloseStrategy}
+                disabled={isClosing || !closeReason.trim()}
+              >
+                {isClosing ? 'Closing...' : 'Close Strategy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Banner */}
+      {notification && (
+        <div className={`notification ${notification.type}`}>
+          <span>{notification.message}</span>
+          <button className="notification-close" onClick={() => setNotification(null)}>
+            ×
+          </button>
         </div>
       )}
     </div>
