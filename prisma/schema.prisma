@@ -558,3 +558,38 @@ enum OrderEventType {
   ORPHANED
   MISSING
 }
+
+// ============================================================================
+// STRATEGY AUDIT LOG
+// ============================================================================
+
+model StrategyAuditLog {
+  id              String            @id @default(cuid())
+  strategyId      String
+  eventType       StrategyEventType
+  oldStatus       StrategyStatus?
+  newStatus       StrategyStatus?
+  changedBy       String?           // userId or 'system' or 'evaluator'
+  changeReason    String?           @db.Text
+  metadata        Json?             // Additional context (e.g., swap details, evaluation results)
+  createdAt       DateTime          @default(now())
+
+  @@index([strategyId, createdAt])
+  @@index([eventType])
+  @@index([changedBy])
+  @@map("strategy_audit_log")
+}
+
+enum StrategyEventType {
+  CREATED
+  ACTIVATED
+  CLOSED
+  ARCHIVED
+  FAILED
+  YAML_UPDATED
+  ROLLED_BACK
+  SWAPPED_IN      // Strategy was swapped in (became active)
+  SWAPPED_OUT     // Strategy was swapped out (became closed)
+  DELETED
+  STATUS_CHANGED  // Generic status change
+}

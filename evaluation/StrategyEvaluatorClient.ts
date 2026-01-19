@@ -5,6 +5,7 @@
 
 import * as YAML from "yaml";
 import { EvaluationRequest, EvaluationResponse } from "./types";
+import { getMarketHoursInfo, calculateTradingTime } from "../utils/marketHours";
 
 export class StrategyEvaluatorClient {
   private endpoint: string;
@@ -324,12 +325,40 @@ export class StrategyEvaluatorClient {
   }
 
   private buildEvaluationPrompt(request: EvaluationRequest): string {
+    // Calculate market hours context
+    const marketInfo = getMarketHoursInfo();
+    const tradingTime = calculateTradingTime(
+      request.performance.barsActive,
+      request.currentStrategy.timeframe
+    );
+
     return [
       "You are a trading strategy evaluator.",
       "Return ONLY valid JSON with this schema:",
       '{ "recommendation": "keep|swap|close", "confidence": number, "reason": string, "suggestedStrategy"?: { "yamlContent": string, "name": string, "reasoning": string } }',
       'If recommendation is "swap", include suggestedStrategy.',
       "No extra text outside JSON.",
+      "",
+      "CRITICAL: MARKET HOURS CONTEXT",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `Current Time: ${marketInfo.currentTimeET} ET (${marketInfo.currentDayOfWeek})`,
+      `Market Status: ${marketInfo.description}`,
+      `Market Hours: ${marketInfo.marketOpen} - ${marketInfo.marketClose}, Monday-Friday`,
+      "",
+      "STRATEGY ACTIVITY ANALYSIS:",
+      `Total Bars: ${tradingTime.totalBars} bars (${request.currentStrategy.timeframe} timeframe)`,
+      `Bars Per Trading Day: ${tradingTime.barsPerDay} bars`,
+      `Estimated Trading Days: ${tradingTime.estimatedTradingDays.toFixed(1)} days`,
+      `Estimated Market Hours: ${tradingTime.estimatedTradingHours.toFixed(1)} hours`,
+      `Total Calendar Time: ${tradingTime.totalCalendarHours.toFixed(1)} hours (includes weekends/nights)`,
+      "",
+      "⚠️ IMPORTANT: When evaluating strategy staleness, ONLY consider MARKET HOURS:",
+      `- A strategy with ${tradingTime.totalBars} bars has been active for ${tradingTime.estimatedTradingHours.toFixed(1)} hours of actual trading time`,
+      `- This equals ${tradingTime.estimatedTradingDays.toFixed(1)} trading days (NOT calendar days)`,
+      "- Breakout strategies typically need 1-3 trading days (78-234 bars @ 5m) to materialize",
+      "- Mean reversion strategies typically need 0.5-2 trading days (39-156 bars @ 5m)",
+      `- DO NOT close a strategy just because it includes weekend/overnight hours in bar count`,
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "",
       "SUPPORTED INDICATORS (you MUST only use these in suggested strategies):",
       "",
