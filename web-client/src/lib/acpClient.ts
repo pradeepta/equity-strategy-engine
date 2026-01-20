@@ -11,7 +11,10 @@ const STOCKS_MCP_SERVER = {
   name: "stocks-mcp",
   type: "stdio",
   command: "node",
-  args: ["/Users/pradeeptadash/stocks/dist/mcp-server.js"],
+  args: [
+    process.env.NEXT_PUBLIC_MCP_SERVER_PATH ||
+      "/Users/atulpurohit/workspace/personal/equity-strategy-engine/dist/mcp-server.js",
+  ],
   env: [],
 };
 

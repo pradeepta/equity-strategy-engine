@@ -25,7 +25,7 @@ export function handleWebSocketConnection(
     ? reconnectToSession(sessionId, ws)
     : createNewSession(sessionId, ws, agentCmd, persona);
 
-  ws.on("message", (data) => {
+  ws.on("message", (data: Buffer) => {
     const raw = data.toString();
     // console.log(
     //   `[gateway][client->ws] session=${session.id}: ${raw.slice(0, 2000)}`
@@ -33,7 +33,7 @@ export function handleWebSocketConnection(
     void handleMessage(session, raw);
   });
   ws.on("close", () => handleClose(session, sessionId));
-  ws.on("error", (err) => handleError(sessionId, err));
+  ws.on("error", (err: Error) => handleError(sessionId, err));
 }
 
 function filterSupportedMcpServers(

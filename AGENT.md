@@ -24,7 +24,9 @@ This document provides a comprehensive overview of all services, their responsib
 ## System Overview
 
 ### Purpose
+
 Production-ready algorithmic trading system enabling:
+
 - YAML-based strategy definition with 30+ technical indicators
 - Type-safe compilation to intermediate representation (IR)
 - Multi-strategy concurrent execution (N strategies simultaneously)
@@ -33,6 +35,7 @@ Production-ready algorithmic trading system enabling:
 - Full audit trail with PostgreSQL persistence
 
 ### High-Level Architecture
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │              Application Layer                           │
@@ -83,6 +86,7 @@ Production-ready algorithmic trading system enabling:
 **Purpose:** Main entry point coordinating all trading system components.
 
 **Responsibilities:**
+
 - Initialize database connection and repositories
 - Connect to broker (TWS or Alpaca based on env config)
 - Fetch and display initial portfolio snapshot
@@ -93,6 +97,7 @@ Production-ready algorithmic trading system enabling:
 - Graceful shutdown with order cancellation
 
 **Key Methods:**
+
 ```typescript
 async start(): Promise<void>
   // Initialize all services, connect to broker, start main loop
@@ -112,6 +117,7 @@ private async reconcileWithBroker(): Promise<void>
 ```
 
 **Dependencies:**
+
 - RepositoryFactory (database access)
 - BaseBrokerAdapter (order submission)
 - MultiStrategyManager (strategy coordination)
@@ -120,11 +126,13 @@ private async reconcileWithBroker(): Promise<void>
 - BrokerReconciliationService (state sync)
 
 **Configuration:**
+
 - `MAX_CONCURRENT_STRATEGIES` - Max strategies running simultaneously
 - `STRATEGY_EVAL_ENABLED` - Enable AI evaluation
 - `ALLOW_LIVE_ORDERS` - Global kill switch
 
 **Startup Flow:**
+
 ```
 1. Load environment variables
 2. Create RepositoryFactory with DB connection
@@ -145,6 +153,7 @@ private async reconcileWithBroker(): Promise<void>
 **Purpose:** Manages multiple strategy instances running concurrently.
 
 **Responsibilities:**
+
 - Load strategies from database by ID
 - Create and maintain StrategyInstance for each active strategy
 - Create dedicated TwsMarketDataClient per symbol
@@ -153,6 +162,7 @@ private async reconcileWithBroker(): Promise<void>
 - Track active instances by symbol
 
 **Key Methods:**
+
 ```typescript
 async loadStrategy(strategyId: number): Promise<void>
   // 1. Fetch strategy YAML from database
@@ -182,6 +192,7 @@ getActiveStrategies(): StrategyInstance[]
 ```
 
 **Data Structures:**
+
 ```typescript
 private instances: Map<string, StrategyInstance>
   // symbol → instance
@@ -191,6 +202,7 @@ private marketDataClients: Map<string, TwsMarketDataClient>
 ```
 
 **Strategy Instance Lifecycle:**
+
 ```
 LOAD → COMPILE → INITIALIZE → ACTIVE → REMOVE
   ↑                                       ↓
@@ -206,6 +218,7 @@ LOAD → COMPILE → INITIALIZE → ACTIVE → REMOVE
 **Purpose:** Orchestrate strategy evaluation and replacement.
 
 **Responsibilities:**
+
 - Evaluate strategy appropriateness at regular intervals (every N bars)
 - Call StrategyEvaluatorClient for AI-powered recommendations
 - Cancel open orders from old strategy before swap
@@ -214,6 +227,7 @@ LOAD → COMPILE → INITIALIZE → ACTIVE → REMOVE
 - Log all swaps to execution history
 
 **Key Methods:**
+
 ```typescript
 async evaluateStrategy(instance: StrategyInstance): Promise<void>
   // 1. Check if evaluation interval reached
@@ -235,6 +249,7 @@ private async cancelOrders(symbol: string): Promise<void>
 ```
 
 **Evaluation Flow:**
+
 ```
 Every N bars:
   ↓
@@ -258,6 +273,7 @@ DistributedLockService.releaseLock(symbol)
 ```
 
 **Configuration:**
+
 - `STRATEGY_EVAL_ENABLED` - Enable evaluation
 - `STRATEGY_EVAL_INTERVAL_BARS` - Bars between evaluations
 - `STRATEGY_EVAL_WS_ENDPOINT` - Evaluator service endpoint
@@ -271,6 +287,7 @@ DistributedLockService.releaseLock(symbol)
 **Purpose:** Detect new/pending strategies from database.
 
 **Responsibilities:**
+
 - Poll database at regular intervals
 - Query for strategies with status `PENDING`
 - Trigger loading of new strategies via MultiStrategyManager
@@ -278,6 +295,7 @@ DistributedLockService.releaseLock(symbol)
 - Handle errors and retry
 
 **Key Methods:**
+
 ```typescript
 start(): void
   // Start polling loop
@@ -295,6 +313,7 @@ private async detectNewStrategies(): Promise<void>
 ```
 
 **Polling Logic:**
+
 ```typescript
 while (isRunning) {
   const pending = await strategyRepo.findByStatus('PENDING')
@@ -311,6 +330,7 @@ while (isRunning) {
 ```
 
 **Configuration:**
+
 - `STRATEGY_WATCH_INTERVAL_MS` - Poll interval (default: 5000ms)
 
 ---
@@ -322,6 +342,7 @@ while (isRunning) {
 **Purpose:** Encapsulate single strategy runtime.
 
 **Responsibilities:**
+
 - Compile YAML to IR on initialization
 - Manage StrategyEngine lifecycle
 - Track bar history for evaluation
@@ -330,6 +351,7 @@ while (isRunning) {
 - Handle order cancellation
 
 **Key Methods:**
+
 ```typescript
 async initialize(): Promise<void>
   // 1. Compile YAML using StrategyCompiler
@@ -352,6 +374,7 @@ async cancelOrders(orderIds: number[]): Promise<void>
 ```
 
 **Data Structures:**
+
 ```typescript
 class StrategyInstance {
   private strategyId: number
@@ -365,6 +388,7 @@ class StrategyInstance {
 ```
 
 **Lifecycle:**
+
 ```
 CREATE → INITIALIZE (compile) → ACTIVE (process bars) → CANCEL → DESTROY
 ```
@@ -380,6 +404,7 @@ CREATE → INITIALIZE (compile) → ACTIVE (process bars) → CANCEL → DESTROY
 **Purpose:** Convert YAML DSL to type-safe intermediate representation (IR).
 
 **Compilation Stages:**
+
 1. **Parse YAML** to JavaScript object
 2. **Validate schema** against [spec/schema.ts](spec/schema.ts)
 3. **Validate feature registry** - ensure all features exist
@@ -391,6 +416,7 @@ CREATE → INITIALIZE (compile) → ACTIVE (process bars) → CANCEL → DESTROY
 9. **Generate IR** - final intermediate representation
 
 **Key Classes:**
+
 ```typescript
 class StrategyCompiler {
   compileFromYAML(yamlContent: string): CompiledIR
@@ -418,6 +444,7 @@ class CompilationError extends Error {
 ```
 
 **Example YAML:**
+
 ```yaml
 strategy:
   name: "EMA Crossover"
@@ -458,6 +485,7 @@ orders:
 ```
 
 **Generated IR Structure:**
+
 ```typescript
 interface CompiledIR {
   strategyName: string
@@ -472,6 +500,7 @@ interface CompiledIR {
 ```
 
 **Error Handling:**
+
 - Throws `CompilationError` with descriptive messages
 - Preserves location information for debugging
 - Validates all expressions before runtime
@@ -485,6 +514,7 @@ interface CompiledIR {
 **Purpose:** Execute strategy as finite state machine (FSM).
 
 **Responsibilities:**
+
 - Maintain runtime state (current state, bar count, features)
 - Compute features for each bar
 - Evaluate state transitions based on conditions
@@ -492,6 +522,7 @@ interface CompiledIR {
 - Track order fulfillment and state updates
 
 **Key Methods:**
+
 ```typescript
 processBar(bar: Bar): Promise<void>
   // 1. Update bar history
@@ -514,6 +545,7 @@ private executeAction(action: Action): Promise<void>
 ```
 
 **Runtime State:**
+
 ```typescript
 interface RuntimeEnv {
   state: {
@@ -528,12 +560,14 @@ interface RuntimeEnv {
 ```
 
 **Feature Computation:**
+
 - Features are computed in dependency order (topological sort)
 - Only features used in current state are recomputed (optimization)
 - Builtin features: open, high, low, close, volume, price
 - Custom features: EMA, RSI, BB, MACD, SMA, ATR, etc.
 
 **Transition Evaluation:**
+
 ```typescript
 for (const transition of currentState.transitions) {
   const conditionMet = evaluateExpression(transition.condition, env)
@@ -560,9 +594,11 @@ for (const transition of currentState.transitions) {
 **Available Features (30+):**
 
 **Price Features:**
+
 - `open`, `high`, `low`, `close`, `volume`, `price`
 
 **Moving Averages:**
+
 - `SMA` - Simple Moving Average
 - `EMA` - Exponential Moving Average
 - `WMA` - Weighted Moving Average
@@ -571,6 +607,7 @@ for (const transition of currentState.transitions) {
 - `VWAP` - Volume Weighted Average Price
 
 **Momentum Indicators:**
+
 - `RSI` - Relative Strength Index
 - `MACD` - Moving Average Convergence Divergence
 - `Stochastic` - Stochastic Oscillator
@@ -578,27 +615,32 @@ for (const transition of currentState.transitions) {
 - `MOM` - Momentum
 
 **Volatility Indicators:**
+
 - `ATR` - Average True Range
 - `BB` - Bollinger Bands (upper, middle, lower)
 - `Keltner` - Keltner Channels
 - `DonchianChannel` - Donchian Channels
 
 **Volume Indicators:**
+
 - `OBV` - On Balance Volume
 - `AD` - Accumulation/Distribution
 - `CMF` - Chaikin Money Flow
 - `VROC` - Volume Rate of Change
 
 **Microstructure:**
+
 - `Delta` - Bid-ask delta
 - `Absorption` - Volume absorption
 
 **Statistical:**
+
 - `StandardDeviation` - Standard deviation of price
 - `Variance` - Price variance
 - `ZScore` - Z-score normalization
 
 **Registration Pattern:**
+
 ```typescript
 interface FeatureDefinition {
   name: string
@@ -623,6 +665,7 @@ class FeatureRegistry {
 ```
 
 **Example Feature Implementation:**
+
 ```typescript
 function computeEMA(args: any[], bars: Bar[]): number {
   const [source, period] = args
@@ -658,6 +701,7 @@ registry.registerFeature({
 **Purpose:** Define uniform interface for all broker implementations.
 
 **Abstract Methods:**
+
 ```typescript
 abstract class BaseBrokerAdapter {
   abstract submitOrderPlan(plan: OrderPlan, env: RuntimeEnv): Promise<Order[]>
@@ -681,6 +725,7 @@ abstract class BaseBrokerAdapter {
 ```
 
 **Safety Methods:**
+
 ```typescript
 protected enforceOrderConstraints(plan: OrderPlan, env: RuntimeEnv): void
   // Check:
@@ -698,6 +743,7 @@ protected expandSplitBracket(plan: OrderPlan): Order[]
 ```
 
 **Order Constraints:**
+
 ```typescript
 const constraints = {
   maxOrderQuantity: 1000,
@@ -716,6 +762,7 @@ const constraints = {
 **Purpose:** Connect to TWS/IB Gateway for paper/live trading.
 
 **Capabilities:**
+
 - Socket connection to TWS at 127.0.0.1:7497 (paper) or 7496 (live)
 - Bracket order submission (entry + take-profit + stop-loss)
 - Order status tracking via callbacks
@@ -723,6 +770,7 @@ const constraints = {
 - Rejection and error handling
 
 **Key Methods:**
+
 ```typescript
 async connect(): Promise<void>
   // 1. Create socket connection
@@ -753,6 +801,7 @@ private handleOrderStatus(orderId: number, status: string): void
 ```
 
 **Order Flow:**
+
 ```
 1. Receive OrderPlan from StrategyEngine
 2. enforceOrderConstraints()
@@ -777,6 +826,7 @@ private handleOrderStatus(orderId: number, status: string): void
 ```
 
 **Status Tracking:**
+
 ```typescript
 TWS Status → Internal Status
   Submitted → OPEN
@@ -787,6 +837,7 @@ TWS Status → Internal Status
 ```
 
 **Configuration:**
+
 - `TWS_HOST` - TWS host (default: 127.0.0.1)
 - `TWS_PORT` - TWS port (7497 paper, 7496 live)
 - `TWS_CLIENT_ID` - Client ID (default: 1)
@@ -800,6 +851,7 @@ TWS Status → Internal Status
 **Purpose:** Fetch real-time bars from TWS.
 
 **Key Methods:**
+
 ```typescript
 async fetchLatestBar(symbol: string, timeframe: Timeframe): Promise<Bar | null>
   // 1. Request real-time bars from TWS
@@ -811,6 +863,7 @@ private handleBarUpdate(reqId: number, bar: TwsBar): void
 ```
 
 **Bar Structure:**
+
 ```typescript
 interface Bar {
   timestamp: number
@@ -823,6 +876,7 @@ interface Bar {
 ```
 
 **Timeframe Support:**
+
 - `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`
 
 ---
@@ -834,6 +888,7 @@ interface Bar {
 **Purpose:** Fetch portfolio snapshot from TWS.
 
 **Key Methods:**
+
 ```typescript
 async fetchPortfolio(): Promise<PortfolioSnapshot>
   // 1. Request account summary
@@ -843,6 +898,7 @@ async fetchPortfolio(): Promise<PortfolioSnapshot>
 ```
 
 **Portfolio Structure:**
+
 ```typescript
 interface PortfolioSnapshot {
   accountValue: number
@@ -875,12 +931,14 @@ interface Position {
 **Pattern:** Singleton + Factory
 
 **Provided Repositories:**
+
 - `StrategyRepository` - Strategy CRUD and versioning
 - `OrderRepository` - Order management and fills
 - `ExecutionHistoryRepository` - Lifecycle event logging
 - `SystemLogRepository` - Audit logging
 
 **Key Methods:**
+
 ```typescript
 class RepositoryFactory {
   constructor(databaseUrl: string, poolSize?: number)
@@ -896,6 +954,7 @@ class RepositoryFactory {
 ```
 
 **Connection Management:**
+
 ```typescript
 const factory = new RepositoryFactory(process.env.DATABASE_URL, 10)
 const strategyRepo = factory.getStrategyRepository()
@@ -915,6 +974,7 @@ await factory.disconnect()
 **Purpose:** Manage strategy persistence and versioning.
 
 **Key Methods:**
+
 ```typescript
 async create(data: StrategyCreateInput): Promise<Strategy>
   // Create new strategy with status PENDING
@@ -945,6 +1005,7 @@ async rollbackToVersion(strategyId: number, versionNumber: number): Promise<Stra
 ```
 
 **Strategy Statuses:**
+
 ```typescript
 enum StrategyStatus {
   PENDING = 'PENDING',    // Waiting to be loaded
@@ -964,6 +1025,7 @@ enum StrategyStatus {
 **Purpose:** Manage order persistence and broker ID mapping.
 
 **Key Methods:**
+
 ```typescript
 async create(data: OrderCreateInput): Promise<Order>
   // Create order with broker ID mapping
@@ -988,6 +1050,7 @@ async recordFill(orderId: number, fill: FillInfo): Promise<OrderFill>
 ```
 
 **Order Statuses:**
+
 ```typescript
 enum OrderStatus {
   PENDING = 'PENDING',      // Not yet submitted
@@ -1009,6 +1072,7 @@ enum OrderStatus {
 **Purpose:** Log strategy lifecycle events for audit trail.
 
 **Key Methods:**
+
 ```typescript
 async logEvent(event: ExecutionEventInput): Promise<ExecutionEvent>
   // Log event with metadata
@@ -1021,6 +1085,7 @@ async getEventsByType(eventType: ExecutionEventType): Promise<ExecutionEvent[]>
 ```
 
 **Event Types:**
+
 ```typescript
 enum ExecutionEventType {
   STRATEGY_ACTIVATED = 'STRATEGY_ACTIVATED',
@@ -1059,6 +1124,7 @@ enum ExecutionEventType {
 | `system_logs` | Audit logs | id, level, message, component, metadata, timestamp |
 
 **Relationships:**
+
 ```
 users 1─────N accounts
 users 1─────N strategies
@@ -1080,6 +1146,7 @@ orders 1─────N order_fills
 **Purpose:** Prevent concurrent strategy swaps on same symbol using PostgreSQL advisory locks.
 
 **Key Methods:**
+
 ```typescript
 async acquireLock(key: string, timeoutMs: number = 30000): Promise<boolean>
   // Try to acquire lock with timeout
@@ -1093,6 +1160,7 @@ async withLock<T>(key: string, callback: () => Promise<T>): Promise<T>
 ```
 
 **Implementation:**
+
 ```typescript
 async acquireLock(key: string, timeoutMs: number): Promise<boolean> {
   const lockId = this.hashKey(key)  // Convert string to integer
@@ -1123,6 +1191,7 @@ async releaseLock(key: string): Promise<void> {
 ```
 
 **Usage Example:**
+
 ```typescript
 const lockService = new DistributedLockService(prisma)
 
@@ -1143,6 +1212,7 @@ await lockService.withLock('SPY', async () => {
 ```
 
 **Properties:**
+
 - **FIFO fairness** - First request gets lock first
 - **Timeout support** - Prevents indefinite waiting
 - **Automatic cleanup** - Locks released on connection close
@@ -1156,6 +1226,7 @@ await lockService.withLock('SPY', async () => {
 **Purpose:** Queue operations with retry logic and idempotency.
 
 **Key Methods:**
+
 ```typescript
 async enqueue(operation: OperationInput): Promise<Operation>
   // Add operation to queue with idempotency key
@@ -1171,6 +1242,7 @@ async getStatus(operationId: number): Promise<OperationStatus>
 ```
 
 **Operation Structure:**
+
 ```typescript
 interface Operation {
   id: number
@@ -1195,6 +1267,7 @@ enum OperationStatus {
 ```
 
 **Retry Logic:**
+
 ```typescript
 async processOperation(operationId: number): Promise<void> {
   const operation = await this.operationRepo.findById(operationId)
@@ -1218,6 +1291,7 @@ async processOperation(operationId: number): Promise<void> {
 ```
 
 **Idempotency:**
+
 - Operations have unique `operationId`
 - Duplicate submissions return existing operation
 - Prevents duplicate processing
@@ -1231,6 +1305,7 @@ async processOperation(operationId: number): Promise<void> {
 **Purpose:** Detect and fix state mismatches between database and broker.
 
 **Key Methods:**
+
 ```typescript
 async reconcile(symbol?: string): Promise<ReconciliationReport>
   // Compare DB orders with broker orders
@@ -1254,6 +1329,7 @@ private async updateMissingOrder(order: Order): Promise<void>
 ```
 
 **Reconciliation Flow:**
+
 ```
 1. Fetch open orders from broker
 2. Fetch open orders from database
@@ -1276,6 +1352,7 @@ private async updateMissingOrder(order: Order): Promise<void>
 ```
 
 **Report Structure:**
+
 ```typescript
 interface ReconciliationReport {
   timestamp: Date
@@ -1294,6 +1371,7 @@ interface ReconciliationAction {
 ```
 
 **Trigger:**
+
 - Periodic (every 5 minutes in LiveTradingOrchestrator)
 - On-demand via API
 - After strategy swap
@@ -1307,6 +1385,7 @@ interface ReconciliationAction {
 **Purpose:** Notify about order events.
 
 **Key Methods:**
+
 ```typescript
 notifyOrderFilled(order: Order, fill: OrderFill): void
   // Alert on order fill
@@ -1322,6 +1401,7 @@ notifyReconciliation(report: ReconciliationReport): void
 ```
 
 **Alert Channels:**
+
 - Console logging
 - Database logging
 - Email (configurable)
@@ -1329,6 +1409,7 @@ notifyReconciliation(report: ReconciliationReport): void
 - SMS (configurable)
 
 **Configuration:**
+
 ```typescript
 interface AlertConfig {
   enableConsole: boolean
@@ -1349,6 +1430,7 @@ interface AlertConfig {
 **Purpose:** Centralized logging with multiple transports.
 
 **Features:**
+
 - **Console transport** - Colored output for development
 - **Prisma transport** - Database logging for audit trail
 - **Component tagging** - Track which component logged
@@ -1356,6 +1438,7 @@ interface AlertConfig {
 - **Multiple levels** - error, warn, info, debug
 
 **Usage:**
+
 ```typescript
 import { logger } from './logging/logger'
 
@@ -1365,6 +1448,7 @@ logger.debug('[ComponentName] Debug info', { state: 'details' })
 ```
 
 **Configuration:**
+
 ```typescript
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -1389,6 +1473,7 @@ const logger = winston.createLogger({
 ```
 
 **Prisma Transport:**
+
 - Logs to `system_logs` table
 - Preserves structure for querying
 - Immutable audit trail
@@ -1404,10 +1489,12 @@ const logger = winston.createLogger({
 **Purpose:** Request AI-powered strategy evaluations.
 
 **Modes:**
+
 1. **Stub mode** (default) - Returns deterministic recommendations for testing
 2. **WebSocket mode** - Connects to remote evaluation service
 
 **Key Methods:**
+
 ```typescript
 async evaluate(request: EvaluationRequest): Promise<EvaluationResponse>
   // Request strategy evaluation
@@ -1421,6 +1508,7 @@ async disconnect(): Promise<void>
 ```
 
 **Evaluation Request:**
+
 ```typescript
 interface EvaluationRequest {
   strategyId: number
@@ -1441,6 +1529,7 @@ interface EvaluationRequest {
 ```
 
 **Evaluation Response:**
+
 ```typescript
 interface EvaluationResponse {
   recommendation: 'keep' | 'swap'
@@ -1456,16 +1545,19 @@ interface EvaluationResponse {
 ```
 
 **Stub Mode Behavior:**
+
 - Returns `keep` for strategies with positive P&L
 - Returns `swap` for strategies with > 5% drawdown
 - Provides mock reasoning
 
 **WebSocket Mode:**
+
 - Connects to remote AI service
 - Sends JSON-RPC requests
 - Receives recommendations from AI agent
 
 **Configuration:**
+
 - `STRATEGY_EVAL_ENABLED` - Enable evaluations
 - `STRATEGY_EVAL_WS_ENDPOINT` - WebSocket URL for remote service
 
@@ -1478,6 +1570,7 @@ interface EvaluationResponse {
 **Purpose:** WebSocket server for live AI agent sessions.
 
 **Components:**
+
 - `src/index.ts` - Main server entry point
 - `src/wsHandler.ts` - WebSocket connection handler
 - `src/agentHandler.ts` - Agent spawning and communication
@@ -1485,6 +1578,7 @@ interface EvaluationResponse {
 - `src/config.ts` - Configuration
 
 **Features:**
+
 - **Session management** - Create, restore, disconnect sessions
 - **Reconnection support** - Resume sessions after disconnect
 - **MCP integration** - Exposes trading tools to AI agents
@@ -1492,6 +1586,7 @@ interface EvaluationResponse {
 - **Agent spawning** - Launch AI agents on demand
 
 **WebSocket Protocol:**
+
 ```json
 // Client → Server: Create session
 {
@@ -1545,30 +1640,36 @@ interface EvaluationResponse {
 **Endpoints:**
 
 **GET /portfolio**
+
 - Fetch portfolio P&L breakdown
 - Returns: `PortfolioSnapshot`
 
 **GET /strategies**
+
 - List active strategies with metrics
 - Query params: `status`, `userId`
 - Returns: `Strategy[]`
 
 **GET /orders**
+
 - List recent orders
 - Query params: `symbol`, `status`, `strategyId`, `limit`
 - Returns: `Order[]`
 
 **GET /performance**
+
 - Get performance metrics
 - Query params: `strategyId`, `timeframe`
 - Returns: `PerformanceMetrics`
 
 **GET /logs**
+
 - Fetch system logs
 - Query params: `level`, `component`, `limit`, `offset`
 - Returns: `SystemLog[]`
 
 **Implementation:**
+
 ```typescript
 import express from 'express'
 import { RepositoryFactory } from './database/RepositoryFactory'
@@ -1614,15 +1715,18 @@ app.listen(process.env.PORTFOLIO_API_PORT || 3002)
 **Endpoints:**
 
 **POST /mcp**
+
 - Execute MCP tool
 - Body: JSON-RPC request
 - Returns: JSON-RPC response
 
 **GET /mcp/sse**
+
 - Server-Sent Events stream for tool outputs
 - Returns: SSE stream
 
 **Available MCP Tools:**
+
 - `compile_strategy` - Compile YAML to IR
 - `validate_strategy` - Validate YAML schema
 - `backtest_strategy` - Run strategy against historical data
@@ -1633,6 +1737,7 @@ app.listen(process.env.PORTFOLIO_API_PORT || 3002)
 - `close_strategy` - Close active strategy
 
 **Usage Example:**
+
 ```bash
 curl -X POST http://localhost:3001/mcp \
   -H "Content-Type: application/json" \
@@ -1659,12 +1764,14 @@ The web-client is a Next.js 14 single-page application serving as the primary us
 **File:** [web-client/app/page.tsx](web-client/app/page.tsx)
 
 **Purpose:** Unified dashboard providing:
+
 - Real-time portfolio monitoring and strategy management
 - AI-powered advisor chat interface
 - Comprehensive audit trail and system logging
 - Strategy performance analytics
 
 **Technology Stack:**
+
 - **Framework:** Next.js 14.2.8 with App Router
 - **UI Library:** React 18.3.1
 - **Language:** TypeScript 5.3.3
@@ -1678,6 +1785,7 @@ The web-client is a Next.js 14 single-page application serving as the primary us
 ### Architecture
 
 **Component Structure:**
+
 ```
 HomePage (app/page.tsx - 1143 lines)
   ├── Tab Navigation System
@@ -1694,6 +1802,7 @@ HomePage (app/page.tsx - 1143 lines)
 ```
 
 **Service Integration:**
+
 ```
 Web Client
   ├─ Portfolio API Server (HTTP)
@@ -1720,6 +1829,7 @@ Web Client
 **File:** [web-client/app/page.tsx](web-client/app/page.tsx)
 
 **State Management:**
+
 ```typescript
 // Chat state
 const [messages, setMessages] = useState<Message[]>([])
@@ -1747,6 +1857,7 @@ const [statusFilter, setStatusFilter] = useState('all')
 ```
 
 **Tab System:**
+
 ```typescript
 const tabs = [
   { id: 'chat', name: 'Chat', icon: '💬' },
@@ -1757,6 +1868,7 @@ const tabs = [
 ```
 
 **Data Fetching Pattern:**
+
 ```typescript
 // Portfolio data (10s polling)
 useEffect(() => {
@@ -1779,6 +1891,7 @@ useEffect(() => {
 **Purpose:** Real-time conversation with AI advisor (Claude via ACP protocol)
 
 **Key Features:**
+
 - Message streaming with chunk merging
 - Image attachment via drag-and-drop or file picker
 - Auto-scrolling with manual override
@@ -1787,6 +1900,7 @@ useEffect(() => {
 - Keyboard shortcuts
 
 **Message Flow:**
+
 ```
 User Input
   ↓
@@ -1804,6 +1918,7 @@ UI Render (React Markdown)
 ```
 
 **Implementation Details:**
+
 ```typescript
 const handleSend = async () => {
   if (!input.trim() && attachedImages.length === 0) return
@@ -1859,6 +1974,7 @@ const handleSend = async () => {
 **Sections:**
 
 **A. Summary Cards:**
+
 ```typescript
 <div className="metrics-grid">
   <MetricCard
@@ -1882,23 +1998,27 @@ const handleSend = async () => {
 ```
 
 **B. Current Positions Table:**
+
 - Symbol, quantity, average cost, current price, P&L, P&L %
 - Live updates every 10 seconds
 - Sortable columns
 - Color-coded P&L (green/red)
 
 **C. Strategy Performance Table:**
+
 - Strategy name, symbol, status, P&L, Sharpe ratio, max drawdown
 - Filterable by symbol and status
 - Clickable rows open detail modal
 - Close strategy action
 
 **D. Recent Trades Table:**
+
 - Timestamp, symbol, side, quantity, price, P&L
 - Last 20 trades displayed
 - Scrollable container
 
 **E. Strategy Detail Modal:**
+
 ```typescript
 <Modal show={showModal} onClose={() => setShowModal(false)}>
   <StrategyDetails strategy={selectedStrategy}>
@@ -1928,6 +2048,7 @@ const handleSend = async () => {
 ```
 
 **Close Strategy Flow:**
+
 ```
 User clicks "Close Strategy"
   ↓
@@ -1955,6 +2076,7 @@ Refresh portfolio data
 **Purpose:** Order audit trail with complete event tracking
 
 **Features:**
+
 - Event filtering (type, symbol, strategy)
 - Summary statistics dashboard
 - Event breakdown by type
@@ -1962,6 +2084,7 @@ Refresh portfolio data
 - Real-time updates
 
 **Event Types:**
+
 ```typescript
 enum AuditEventType {
   ORDER_SUBMITTED = 'ORDER_SUBMITTED',
@@ -1975,6 +2098,7 @@ enum AuditEventType {
 ```
 
 **Data Structure:**
+
 ```typescript
 interface AuditLog {
   id: number
@@ -1996,6 +2120,7 @@ interface AuditLog {
 ```
 
 **Statistics Dashboard:**
+
 ```typescript
 <div className="audit-stats">
   <StatCard label="Total Events" value={auditLogs.length} />
@@ -2024,6 +2149,7 @@ interface AuditLog {
 **Purpose:** Application logs with filtering and search
 
 **Features:**
+
 - Multi-level filtering (ERROR, WARN, INFO, DEBUG)
 - Component filtering
 - Full-text search
@@ -2034,6 +2160,7 @@ interface AuditLog {
 - Auto-refresh toggle
 
 **Data Structure:**
+
 ```typescript
 interface SystemLog {
   id: number
@@ -2047,6 +2174,7 @@ interface SystemLog {
 ```
 
 **Filter Implementation:**
+
 ```typescript
 const filteredLogs = logs.filter(log => {
   // Level filter
@@ -2065,6 +2193,7 @@ const filteredLogs = logs.filter(log => {
 ```
 
 **Statistics Display:**
+
 ```typescript
 <div className="log-stats">
   <StatCard label="Total Logs" value={logs.length} />
@@ -2096,6 +2225,7 @@ const filteredLogs = logs.filter(log => {
 **Purpose:** WebSocket client for Agent Control Protocol communication
 
 **Responsibilities:**
+
 - Establish WebSocket connection to ACP Gateway
 - Manage session lifecycle
 - Send messages with optional image attachments
@@ -2104,6 +2234,7 @@ const filteredLogs = logs.filter(log => {
 - Auto-reconnection on disconnect
 
 **Key Methods:**
+
 ```typescript
 class AcpClient {
   private ws: WebSocket | null = null
@@ -2137,6 +2268,7 @@ class AcpClient {
 ```
 
 **Session Management:**
+
 ```typescript
 // Create session
 const sessionId = await acpClient.createSession()
@@ -2151,6 +2283,7 @@ if (savedSessionId) {
 ```
 
 **Message Protocol (JSON-RPC 2.0):**
+
 ```typescript
 // Client → Server: Create session
 {
@@ -2159,7 +2292,7 @@ if (savedSessionId) {
   "params": {
     "persona": "blackrock_advisor",
     "mcpUrl": "http://127.0.0.1:3001/mcp",
-    "cwd": "/Users/pradeeptadash/sandbox"
+    "cwd": "/Users/atulpurohit/workspace/personal/sandbox/"
   },
   "id": 1
 }
@@ -2259,6 +2392,7 @@ if (savedSessionId) {
 #### Component Patterns
 
 **Status Badge:**
+
 ```css
 .badge {
   display: inline-block;
@@ -2276,6 +2410,7 @@ if (savedSessionId) {
 ```
 
 **Modal:**
+
 ```css
 .modal-overlay {
   position: fixed;
@@ -2311,6 +2446,7 @@ if (savedSessionId) {
 ```
 
 **Table:**
+
 ```css
 .table-container {
   overflow-x: auto;
@@ -2347,6 +2483,7 @@ tr:hover {
 ### Configuration
 
 **Environment Variables:**
+
 ```bash
 # ACP Gateway WebSocket
 NEXT_PUBLIC_ACP_URL=ws://localhost:8787/acp
@@ -2362,6 +2499,7 @@ DATABASE_URL=postgresql://pradeeptadash@localhost:5432/trading_db
 ```
 
 **Next.js Configuration:**
+
 ```javascript
 // next.config.js
 module.exports = {
@@ -2375,6 +2513,7 @@ module.exports = {
 ### Deployment
 
 **Development:**
+
 ```bash
 cd web-client
 npm install
@@ -2383,6 +2522,7 @@ npm run dev
 ```
 
 **Production:**
+
 ```bash
 npm run build
 npm start
@@ -2390,12 +2530,14 @@ npm start
 ```
 
 **Prerequisites:**
+
 - Node.js 18+ (for Next.js 14)
 - Portfolio API Server running on port 3002
 - ACP Gateway running on port 8787 (optional, for chat)
 - MCP Server running on port 3001 (optional, for agent tools)
 
 **Environment Setup:**
+
 1. Copy `.env.example` to `.env`
 2. Update environment variables
 3. Run `npm install`
@@ -2406,17 +2548,20 @@ npm start
 ### Performance Characteristics
 
 **Initial Load:**
+
 - Bundle size: ~500KB (gzipped)
 - First contentful paint: <1s
 - Time to interactive: <2s
 
 **Runtime Performance:**
+
 - React rendering: 60 FPS
 - Dashboard refresh: 10s interval (configurable)
 - Logs refresh: 5s interval (configurable)
 - WebSocket latency: <50ms
 
 **Optimization Techniques:**
+
 - React.memo for expensive components
 - useCallback for event handlers
 - useMemo for computed values
@@ -2435,16 +2580,19 @@ All CLI tools are located in [cli/](cli/) directory.
 **Purpose:** Add new strategy to database from YAML file.
 
 **Usage:**
+
 ```bash
 npm run strategy:add -- --user=user123 --file=./strategies/my-strategy.yaml --account=acc_1
 ```
 
 **Arguments:**
+
 - `--user` - User ID (required)
 - `--file` - Path to YAML file (required)
 - `--account` - Account ID (optional)
 
 **Process:**
+
 1. Read YAML file
 2. Validate schema
 3. Compile to verify syntax
@@ -2458,6 +2606,7 @@ npm run strategy:add -- --user=user123 --file=./strategies/my-strategy.yaml --ac
 **Purpose:** List strategies by status, user, or symbol.
 
 **Usage:**
+
 ```bash
 npm run strategy:list -- --user=user123 --status=ACTIVE
 npm run strategy:list -- --symbol=SPY
@@ -2465,11 +2614,13 @@ npm run strategy:list  # List all
 ```
 
 **Arguments:**
+
 - `--user` - Filter by user ID
 - `--status` - Filter by status (PENDING, ACTIVE, PAUSED, CLOSED)
 - `--symbol` - Filter by symbol
 
 **Output:**
+
 ```
 ID  Symbol  Status  Created             Last Modified
 123 SPY     ACTIVE  2024-01-15 10:30    2024-01-15 14:22
@@ -2483,15 +2634,18 @@ ID  Symbol  Status  Created             Last Modified
 **Purpose:** Close active strategy with reason.
 
 **Usage:**
+
 ```bash
 npm run strategy:close -- --id=123 --reason="Not profitable"
 ```
 
 **Arguments:**
+
 - `--id` - Strategy ID (required)
 - `--reason` - Closure reason (required)
 
 **Process:**
+
 1. Fetch strategy by ID
 2. Cancel all open orders
 3. Update status to `CLOSED`
@@ -2505,15 +2659,18 @@ npm run strategy:close -- --id=123 --reason="Not profitable"
 **Purpose:** Revert strategy to previous version.
 
 **Usage:**
+
 ```bash
 npm run strategy:rollback -- --id=123 --version=2
 ```
 
 **Arguments:**
+
 - `--id` - Strategy ID (required)
 - `--version` - Version number to restore (required)
 
 **Process:**
+
 1. Fetch strategy by ID
 2. Fetch version history
 3. Find specified version
@@ -2527,15 +2684,18 @@ npm run strategy:rollback -- --id=123 --version=2
 **Purpose:** Export strategy to YAML file.
 
 **Usage:**
+
 ```bash
 npm run strategy:export -- --id=123 --output=./backup.yaml
 ```
 
 **Arguments:**
+
 - `--id` - Strategy ID (required)
 - `--output` - Output file path (required)
 
 **Process:**
+
 1. Fetch strategy by ID
 2. Extract YAML content
 3. Write to file
@@ -2759,18 +2919,21 @@ LiveTradingOrchestrator
 ## Performance Characteristics
 
 ### Compilation Performance
+
 - **YAML parsing:** ~1ms per strategy
 - **Schema validation:** ~5ms per strategy
 - **IR generation:** ~10ms per strategy
 - **Feature plan (topological sort):** O(N + E) where N = features, E = dependencies
 
 ### Runtime Performance
+
 - **Bar processing:** ~2-5ms per bar per strategy
 - **Feature computation:** ~1ms for 10 features
 - **Transition evaluation:** ~0.5ms per transition
 - **Database queries:** ~5-10ms per query (with indexes)
 
 ### Scalability
+
 - **Max concurrent strategies:** Configurable (default: 5)
 - **Max bar history:** 1000 bars per strategy
 - **Database connection pool:** 10 connections (configurable)
