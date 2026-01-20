@@ -10,6 +10,7 @@ import { StrategyRepository } from './repositories/StrategyRepository';
 import { OrderRepository } from './repositories/OrderRepository';
 import { ExecutionHistoryRepository } from './repositories/ExecutionHistoryRepository';
 import { SystemLogRepository } from './repositories/SystemLogRepository';
+import { OperationQueueService } from '../live/queue/OperationQueueService';
 
 export class RepositoryFactory {
   private prisma: PrismaClient;
@@ -17,6 +18,7 @@ export class RepositoryFactory {
   private orderRepo?: OrderRepository;
   private execHistoryRepo?: ExecutionHistoryRepository;
   private systemLogRepo?: SystemLogRepository;
+  private operationQueueService?: OperationQueueService;
   private pool?: Pool;
 
   constructor(prisma?: PrismaClient) {
@@ -77,6 +79,16 @@ export class RepositoryFactory {
       this.systemLogRepo = new SystemLogRepository(this.prisma);
     }
     return this.systemLogRepo;
+  }
+
+  /**
+   * Get Operation Queue Service instance (singleton per factory)
+   */
+  getOperationQueueService(): OperationQueueService {
+    if (!this.operationQueueService) {
+      this.operationQueueService = new OperationQueueService(this.prisma);
+    }
+    return this.operationQueueService;
   }
 
   /**
@@ -146,4 +158,8 @@ export function getExecutionHistoryRepo(): ExecutionHistoryRepository {
 
 export function getSystemLogRepo(): SystemLogRepository {
   return getRepositoryFactory().getSystemLogRepo();
+}
+
+export function getOperationQueueService(): OperationQueueService {
+  return getRepositoryFactory().getOperationQueueService();
 }

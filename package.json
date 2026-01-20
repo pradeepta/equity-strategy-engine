@@ -31,6 +31,7 @@
     "strategy:close": "ts-node cli/close-strategy.ts",
     "strategy:rollback": "ts-node cli/rollback-strategy.ts",
     "strategy:export": "ts-node cli/export-strategy.ts",
+    "strategy:compile": "ts-node cli/test-compile.ts",
     "test": "jest",
     "test:tws": "ts-node test-tws.ts",
     "movers": "ts-node fetch-movers.ts",

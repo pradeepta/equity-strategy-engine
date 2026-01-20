@@ -71,6 +71,7 @@ This guide helps Claude Code sessions understand the codebase structure, convent
 - [cli/close-strategy.ts](cli/close-strategy.ts) - Close active strategy
 - [cli/rollback-strategy.ts](cli/rollback-strategy.ts) - Revert to previous version
 - [cli/export-strategy.ts](cli/export-strategy.ts) - Export strategy to YAML
+- [cli/test-compile.ts](cli/test-compile.ts) - Validate/compile YAML without deploying (NEW)
 
 ### Web Dashboard
 - [web-client/app/page.tsx](web-client/app/page.tsx) - Next.js dashboard homepage (1143 lines)
@@ -533,6 +534,83 @@ SELECT * FROM system_logs ORDER BY created_at DESC LIMIT 100;
 
 ---
 
+## Recent Fixes & Improvements (2026-01-20)
+
+### 1. Strategy Reopen Idempotency Fix
+
+**Problem:** When a strategy was closed and manually reopened, the evaluator could not close it again due to stale operation queue entries.
+
+**Root Cause:** The `operationId` for close operations (`close:${symbol}:${strategyId}`) was reused after reopen, causing the idempotency check to block legitimate re-close attempts.
+
+**Solution:** Added `invalidateCloseOperations()` method to [live/queue/OperationQueueService.ts](live/queue/OperationQueueService.ts#L348-L371) that marks completed CLOSE operations as CANCELLED when a strategy is reopened.
+
+**Files Modified:**
+- [live/queue/OperationQueueService.ts](live/queue/OperationQueueService.ts) - Added `invalidateCloseOperations()` method
+- [database/RepositoryFactory.ts](database/RepositoryFactory.ts) - Exposed OperationQueueService via factory
+- [portfolio-api-server.ts](portfolio-api-server.ts#L533-L553) - Call invalidation on reopen
+
+**Impact:** Evaluator can now properly close strategies that have been manually reopened, fixing a critical operational bug.
+
+### 2. Strategy Compilation Validator
+
+**New Feature:** Added `npm run strategy:compile` command to validate YAML strategies before deployment.
+
+**Usage:**
+```bash
+# Validate a YAML file
+npm run strategy:compile -- path/to/strategy.yaml
+
+# Validate inline YAML
+npm run strategy:compile -- "meta: ..."
+```
+
+**Implementation:** [cli/test-compile.ts](cli/test-compile.ts)
+
+**Output:**
+- ✅ Compilation successful - Shows compiled IR and feature plan
+- ❌ Compilation failed - Shows exact error message and stack trace
+
+**Use Case:** Debug strategy compilation errors without deploying to database.
+
+### 3. Feature Declaration Validation
+
+**Critical Requirement:** The compiler strictly validates that all features used in expressions are explicitly declared in the `features` section.
+
+**Common Error:**
+```yaml
+features:
+  - name: macd              # ❌ WRONG - declares 'macd'
+rules:
+  arm: "macd_histogram > 0"  # ❌ ERROR - uses 'macd_histogram' (not declared)
+```
+
+**Correct Usage:**
+```yaml
+features:
+  - name: macd_histogram    # ✅ CORRECT - declares exact feature used
+rules:
+  arm: "macd_histogram > 0"  # ✅ OK - matches declaration
+```
+
+**Important Distinctions:**
+- `macd` and `macd_histogram` are **DIFFERENT features**
+- `macd` returns the MACD line only
+- `macd_histogram` returns the histogram (MACD - Signal)
+- Feature names are **case-sensitive** (rsi ≠ RSI)
+
+**AI Agent Updates:**
+Both agent prompts updated to warn about this requirement:
+- [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts#L237-L254) - Chat agent (blackrock_advisor)
+- [evaluation/StrategyEvaluatorClient.ts](evaluation/StrategyEvaluatorClient.ts#L412-L446) - Evaluator agent
+
+**Examples of Common Mistakes:**
+- Declaring `macd` but using `macd_histogram`, `macd_signal` → COMPILATION ERROR
+- Declaring `rsi` as `RSI` (wrong case) → COMPILATION ERROR
+- Forgetting to declare builtin features like `close`, `volume` → COMPILATION ERROR
+- Using `volume_sma` but declaring only `volume` → COMPILATION ERROR
+
+---
+
 ## Troubleshooting Common Issues
 
 ### Issue: Strategy not loading from database
@@ -551,10 +629,44 @@ SELECT * FROM system_logs ORDER BY created_at DESC LIMIT 100;
 
 ### Issue: Compilation errors
 **Solution:**
-1. Validate YAML syntax with online validator
-2. Check feature names against [features/registry.ts](features/registry.ts)
-3. Review expression syntax in [compiler/expr.ts](compiler/expr.ts)
-4. Enable debug logging in [compiler/compile.ts](compiler/compile.ts)
+1. **Use the compile validator:** `npm run strategy:compile -- your-strategy.yaml`
+2. Validate YAML syntax with online validator
+3. Check feature names against [features/registry.ts](features/registry.ts)
+4. Review expression syntax in [compiler/expr.ts](compiler/expr.ts)
+5. Enable debug logging in [compiler/compile.ts](compiler/compile.ts)
+
+### Issue: "Undefined identifiers in expression" error
+**Example Error:**
+```
+Expression parse/type error: "macd_histogram > 0" -> Undefined identifiers in expression: macd_histogram
+```
+
+**Root Cause:** Feature used in expression not declared in `features` section, or name mismatch.
+
+**Solution:**
+1. **Check feature declaration** - Ensure the EXACT feature name is declared:
+   ```yaml
+   features:
+     - name: macd_histogram    # ✅ Must match exactly
+   rules:
+     arm: "macd_histogram > 0"  # ✅ Now valid
+   ```
+
+2. **Common mistakes:**
+   - Declaring `macd` but using `macd_histogram` (they're different features!)
+   - Wrong case: `RSI` vs `rsi` (case-sensitive)
+   - Forgetting to declare builtins: `close`, `volume`, `high`, `low`
+   - Using `volume_sma` but declaring only `volume`
+
+3. **Verify with compiler:**
+   ```bash
+   npm run strategy:compile -- your-strategy.yaml
+   ```
+
+4. **Feature variants to watch for:**
+   - MACD: `macd` (line), `macd_signal`, `macd_histogram` (all separate)
+   - Volume: `volume` (raw), `volume_sma`, `volume_ema`, `volume_zscore` (all separate)
+   - SMA: `sma50`, `sma150`, `sma200` (all separate, specify period in name)
 
 ### Issue: Database connection errors
 **Solution:**
@@ -569,6 +681,29 @@ SELECT * FROM system_logs ORDER BY created_at DESC LIMIT 100;
 2. Check evaluation interval has elapsed
 3. Review [evaluation/StrategyEvaluatorClient.ts](evaluation/StrategyEvaluatorClient.ts) logs
 4. Ensure distributed lock is available
+
+### Issue: Evaluator cannot close reopened strategy
+**Symptom:** Logs show "Operation close:SYMBOL:strategyId already exists with status: COMPLETED" but strategy remains ACTIVE.
+
+**Root Cause:** Strategy was previously closed, then manually reopened. The old COMPLETED close operation blocks new close attempts due to idempotency.
+
+**Solution (Fixed as of 2026-01-20):**
+The system now automatically invalidates old close operations when you reopen a strategy via:
+- Web dashboard (Reopen button)
+- API: `POST /api/portfolio/strategies/{id}/reopen`
+
+**Manual workaround (if needed):**
+```sql
+-- Check stale operations
+SELECT * FROM operation_queue WHERE "strategyId" = 'strategy_id_here' AND status = 'COMPLETED';
+
+-- Invalidate manually (if automatic fix didn't work)
+UPDATE operation_queue
+SET status = 'CANCELLED', "errorMessage" = 'Invalidated due to manual reopen'
+WHERE "strategyId" = 'strategy_id_here'
+  AND "operationType" = 'CLOSE_STRATEGY'
+  AND status = 'COMPLETED';
+```
 
 ---
 
@@ -1098,6 +1233,10 @@ npm run strategy:list -- --status=ACTIVE
 
 # Close strategy
 npm run strategy:close -- --id=123 --reason="Not profitable"
+
+# Test compile strategy (NEW - validate YAML without deploying)
+npm run strategy:compile -- ./strategies/my-strategy.yaml
+npm run strategy:compile -- test-soxl.yaml
 
 # Start API server
 npm run portfolio:api:dev

@@ -23,9 +23,9 @@ export function spawnAgent(session: Session): void {
     for (const line of lines) {
       const payload = line.trimEnd();
       if (payload) {
-        console.log(
-          `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
-        );
+        // console.log(
+        //   `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
+        // );
       }
       maybeHandleSessionNew(session, payload);
       forwardToClient(session, payload);
@@ -73,9 +73,9 @@ function forwardToClient(session: Session, message: string): void {
     // Not JSON or parsing error, just forward
   }
 
-  console.log(
-    `[gateway][ws->client] session=${session.id}: ${message.slice(0, 2000)}`
-  );
+  // console.log(
+  //   `[gateway][ws->client] session=${session.id}: ${message.slice(0, 2000)}`
+  // );
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     session.ws.send(message);
   } else {

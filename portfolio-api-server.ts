@@ -530,6 +530,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
       const execHistoryRepo = factory.getExecutionHistoryRepo();
+      const operationQueue = factory.getOperationQueueService();
 
       try {
         // Get strategy
@@ -547,6 +548,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         // Reopen strategy (sets to PENDING, orchestrator will pick it up)
         await strategyRepo.reopen(strategyId, reason, 'user');
+
+        // Invalidate completed CLOSE operations to allow evaluator to close again if needed
+        await operationQueue.invalidateCloseOperations(strategyId);
 
         // Log activation
         await execHistoryRepo.logActivation(strategyId);

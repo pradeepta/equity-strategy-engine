@@ -27,9 +27,9 @@ export function handleWebSocketConnection(
 
   ws.on("message", (data) => {
     const raw = data.toString();
-    console.log(
-      `[gateway][client->ws] session=${session.id}: ${raw.slice(0, 2000)}`
-    );
+    // console.log(
+    //   `[gateway][client->ws] session=${session.id}: ${raw.slice(0, 2000)}`
+    // );
     void handleMessage(session, raw);
   });
   ws.on("close", () => handleClose(session, sessionId));
