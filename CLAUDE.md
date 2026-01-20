@@ -795,6 +795,90 @@ return { recommendation: 'swap', confidence: 0.85, suggestedStrategy: { ... } };
 - Failed validations result in 'close' recommendation instead of broken swap
 - System becomes more autonomous with fewer human interventions needed
 
+### 5. Shared Invariants Block (2026-01-20)
+
+**Problem:** Chat agent (blackrock_advisor) and evaluator agent had inconsistent reasoning about:
+- Close vs touch semantics (when rules trigger)
+- Entry zone fill intent (rise into vs fall into)
+- Risk calculation methodology
+- R:R calculation with zone-aware worst-case fills
+- Confidence calibration standards
+
+**Root Cause:** Each agent had its own instructions, leading to divergent interpretations of the same strategy parameters.
+
+**Solution:** Created **SHARED_INVARIANTS** block used by both agents:
+
+**Files Modified:**
+- [ai-gateway-live/src/config.ts:34-83](ai-gateway-live/src/config.ts#L34-L83) - Defined SHARED_INVARIANTS, spread into blackrock_advisor prompt
+- [evaluation/StrategyEvaluatorClient.ts:12-61](evaluation/StrategyEvaluatorClient.ts#L12-L61) - Duplicated SHARED_INVARIANTS (with sync comment), spread into evaluator prompt
+
+**Shared Invariants Cover:**
+
+**A) Close vs Touch (rule semantics)**
+- Rules using `close` only trigger on bar close (not intrabar high/low)
+- Precise wording: "closed above/below X" vs "touched/hit X"
+
+**B) EntryZone semantics (engine fill intent)**
+- BUY: entryZone fills when price RISES into zone from BELOW
+  - Current < eL: simple wait (rise into zone)
+  - Current > eH: two-step wait (dip below eH, then rise back)
+- SELL: entryZone fills when price FALLS into zone from ABOVE
+  - Current > eH: simple wait (fall into zone)
+  - Current < eL: two-step wait (rally above eL, then fall back)
+- "Waiting" is NOT an error unless timeout/invalidation makes path unrealistic
+
+**C) Worst-case risk ($) must respect maxRiskPerTrade (HARD GATE)**
+```typescript
+// Use WORST fill in zone
+if (side === 'buy') {
+  worst_entry = eH;
+  riskWorstPerShare = eH - S;
+  dollarRiskWorst = riskWorstPerShare * Q;
+} else { // sell
+  worst_entry = eL;
+  riskWorstPerShare = S - eL;
+  dollarRiskWorst = riskWorstPerShare * Q;
+}
+
+// HARD GATES:
+// - If riskWorstPerShare <= 0 → stop on wrong side → INVALID
+// - If dollarRiskWorst > maxRiskPerTrade → MUST NOT DEPLOY/KEEP
+```
+
+**D) Zone-aware worst-case R:R (HARD GATE for any '1:4' claim)**
+```typescript
+// Use furthest target as final target
+T_final = (side === 'buy') ? max(targets[].price) : min(targets[].price);
+
+// Compute worst-case R:R
+if (side === 'buy') {
+  rrWorst_final = (T_final - eH) / (eH - S);
+} else { // sell
+  rrWorst_final = (eL - T_final) / (S - eL);
+}
+
+// HARD GATES:
+// - If numerator <= 0 → target not beyond worst fill → INVALID
+// - Only claim "1:4" if rrWorst_final >= 4.0
+```
+
+**E) Reasoning hygiene + confidence calibration**
+- Separate FACT (tool/bar-backed + computed) from INFERENCE
+- 90-99% confidence ONLY if key claims are FACT and math was computed
+- "If you did not compute it, do not claim it"
+
+**Expected Benefits:**
+- **Consistent reasoning**: Both agents use identical math and semantics
+- **No divergence**: Entry zone interpretation matches across agents
+- **Accurate R:R claims**: Both agents compute worst-case, not best-case
+- **Proper risk sizing**: Both agents respect maxRiskPerTrade hard gate
+- **Calibrated confidence**: Consistent standards for high-confidence claims
+
+**Maintenance:**
+- SHARED_INVARIANTS defined in both files with sync comments
+- **CRITICAL**: When updating one, must update the other to match
+- Consider extracting to shared module if divergence becomes an issue
+
 ---
 
 ## Troubleshooting Common Issues
