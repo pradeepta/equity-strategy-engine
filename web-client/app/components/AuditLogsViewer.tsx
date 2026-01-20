@@ -29,6 +29,11 @@ interface StrategyAuditLog {
   changeReason?: string;
   metadata?: any;
   createdAt: string;
+  strategy?: {
+    name: string;
+    symbol: string;
+    timeframe: string;
+  } | null;
 }
 
 export function AuditLogsViewer() {
@@ -52,6 +57,8 @@ export function AuditLogsViewer() {
   const [selectedStrategyAudit, setSelectedStrategyAudit] = useState<StrategyAuditLog | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [showStrategyModal, setShowStrategyModal] = useState(false);
+  const [strategyDetails, setStrategyDetails] = useState<any>(null);
+  const [loadingStrategyDetails, setLoadingStrategyDetails] = useState(false);
 
   const fetchAuditLogs = async () => {
     try {
@@ -81,6 +88,30 @@ export function AuditLogsViewer() {
     } catch (err: any) {
       console.error("Strategy audit fetch error:", err);
     }
+  };
+
+  const fetchStrategyDetails = async (strategyId: string) => {
+    setLoadingStrategyDetails(true);
+    try {
+      const response = await fetch(
+        `http://localhost:3002/api/portfolio/strategies/${strategyId}`
+      );
+      if (!response.ok) throw new Error("Failed to fetch strategy details");
+      const data = await response.json();
+      setStrategyDetails(data);
+    } catch (err: any) {
+      console.error("Strategy details fetch error:", err);
+      setStrategyDetails(null);
+    } finally {
+      setLoadingStrategyDetails(false);
+    }
+  };
+
+  const handleStrategyAuditClick = (log: StrategyAuditLog) => {
+    setSelectedStrategyAudit(log);
+    setShowStrategyModal(true);
+    setStrategyDetails(null); // Reset previous details
+    fetchStrategyDetails(log.strategyId);
   };
 
   useEffect(() => {
@@ -434,7 +465,7 @@ export function AuditLogsViewer() {
                   <th>Status Change</th>
                   <th>Changed By</th>
                   <th>Reason</th>
-                  <th>Strategy ID</th>
+                  <th>Strategy</th>
                 </tr>
               </thead>
               <tbody>
@@ -442,10 +473,7 @@ export function AuditLogsViewer() {
                   filteredStrategyAudits.map((log) => (
                     <tr
                       key={log.id}
-                      onClick={() => {
-                        setSelectedStrategyAudit(log);
-                        setShowStrategyModal(true);
-                      }}
+                      onClick={() => handleStrategyAuditClick(log)}
                       className="clickable-row"
                     >
                       <td className="time-cell">
@@ -489,10 +517,19 @@ export function AuditLogsViewer() {
                           "-"
                         )}
                       </td>
-                      <td className="audit-id-cell">
-                        <div className="id-badge" title={log.strategyId}>
-                          {log.strategyId.substring(0, 8)}
-                        </div>
+                      <td>
+                        {log.strategy ? (
+                          <div>
+                            <div style={{ fontWeight: 500 }}>{log.strategy.name}</div>
+                            <div style={{ fontSize: "0.85em", color: "#666" }}>
+                              {log.strategy.symbol} • {log.strategy.timeframe}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="id-badge" title={log.strategyId}>
+                            {log.strategyId.substring(0, 8)}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -718,18 +755,68 @@ export function AuditLogsViewer() {
                 </div>
               </div>
 
-              {/* Strategy ID */}
+              {/* Strategy Details */}
               <div className="modal-section">
-                <h3 className="modal-section-title">Strategy</h3>
-                <div className="modal-row">
+                <h3 className="modal-section-title">Strategy Details</h3>
+                {loadingStrategyDetails ? (
+                  <div className="modal-value" style={{ color: "#666" }}>Loading strategy details...</div>
+                ) : strategyDetails ? (
+                  <div className="modal-row">
+                    <div className="modal-field">
+                      <div className="modal-label">Name</div>
+                      <div className="modal-value">{strategyDetails.strategy.name}</div>
+                    </div>
+                    <div className="modal-field">
+                      <div className="modal-label">Symbol</div>
+                      <div className="modal-value">{strategyDetails.strategy.symbol}</div>
+                    </div>
+                    <div className="modal-field">
+                      <div className="modal-label">Timeframe</div>
+                      <div className="modal-value">{strategyDetails.strategy.timeframe}</div>
+                    </div>
+                    <div className="modal-field">
+                      <div className="modal-label">Status</div>
+                      <div className="modal-value">
+                        <span className={`status-badge ${strategyDetails.strategy.status.toLowerCase()}`}>
+                          {strategyDetails.strategy.status}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : selectedStrategyAudit.strategy ? (
+                  <div className="modal-row">
+                    <div className="modal-field">
+                      <div className="modal-label">Name</div>
+                      <div className="modal-value">{selectedStrategyAudit.strategy.name}</div>
+                    </div>
+                    <div className="modal-field">
+                      <div className="modal-label">Symbol</div>
+                      <div className="modal-value">{selectedStrategyAudit.strategy.symbol}</div>
+                    </div>
+                    <div className="modal-field">
+                      <div className="modal-label">Timeframe</div>
+                      <div className="modal-value">{selectedStrategyAudit.strategy.timeframe}</div>
+                    </div>
+                  </div>
+                ) : (
                   <div className="modal-field">
                     <div className="modal-label">Strategy ID</div>
                     <div className="modal-value" style={{ fontFamily: "monospace", fontSize: "13px" }}>
                       {selectedStrategyAudit.strategyId}
                     </div>
                   </div>
-                </div>
+                )}
               </div>
+
+              {/* YAML Content */}
+              {strategyDetails && strategyDetails.strategy.yamlContent && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Strategy YAML</h3>
+                  <pre className="yaml-content">
+                    <code>{strategyDetails.strategy.yamlContent}</code>
+                  </pre>
+                </div>
+              )}
 
               {/* Status Change */}
               {(selectedStrategyAudit.oldStatus || selectedStrategyAudit.newStatus) && (

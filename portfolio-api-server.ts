@@ -439,6 +439,31 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen')) {
+      // GET /api/portfolio/strategies/:id - Get single strategy details
+      if (req.method !== 'GET') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        const strategy = await strategyRepo.findByIdWithRelations(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        sendJSON(res, { strategy });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching strategy details:', error);
+        sendJSON(res, { error: error.message || 'Failed to fetch strategy details' }, 500);
+      }
     } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/close')) {
       // POST /api/portfolio/strategies/:id/close
       if (req.method !== 'POST') {
@@ -460,13 +485,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         if (!strategy) {
           sendJSON(res, { error: 'Strategy not found' }, 404);
-          await factory.disconnect();
           return;
         }
 
         if (strategy.status === 'CLOSED') {
           sendJSON(res, { error: 'Strategy is already closed' }, 400);
-          await factory.disconnect();
           return;
         }
 
@@ -489,12 +512,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             closeReason: reason,
           },
         });
-
-        await factory.disconnect();
       } catch (error: any) {
         console.error('[portfolio-api] Error closing strategy:', error);
         sendJSON(res, { error: error.message || 'Failed to close strategy' }, 500);
-        await factory.disconnect();
       }
     } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/reopen')) {
       // POST /api/portfolio/strategies/:id/reopen
@@ -517,13 +537,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         if (!strategy) {
           sendJSON(res, { error: 'Strategy not found' }, 404);
-          await factory.disconnect();
           return;
         }
 
         if (strategy.status !== 'CLOSED') {
           sendJSON(res, { error: 'Only CLOSED strategies can be reopened' }, 400);
-          await factory.disconnect();
           return;
         }
 
@@ -546,12 +564,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             reopenedAt: new Date().toISOString(),
           },
         });
-
-        await factory.disconnect();
       } catch (error: any) {
         console.error('[portfolio-api] Error reopening strategy:', error);
         sendJSON(res, { error: error.message || 'Failed to reopen strategy' }, 500);
-        await factory.disconnect();
       }
     } else if (pathname === '/api/portfolio/strategy-audit') {
       // GET /api/portfolio/strategy-audit?limit=100
@@ -561,18 +576,40 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const strategyRepo = factory.getStrategyRepo();
 
       try {
+        // Fetch audit logs
         const auditLogs = await strategyRepo.getAllAuditLogs(limit);
 
-        sendJSON(res, {
-          auditLogs,
-          count: auditLogs.length,
+        // Fetch strategy details for each unique strategyId
+        const uniqueStrategyIds = [...new Set(auditLogs.map((log: any) => log.strategyId))];
+        const strategies = await Promise.all(
+          uniqueStrategyIds.map((id: string) => strategyRepo.findById(id))
+        );
+
+        // Create a map of strategyId -> strategy
+        const strategyMap = new Map();
+        strategies.forEach((strategy: any) => {
+          if (strategy) {
+            strategyMap.set(strategy.id, {
+              name: strategy.name,
+              symbol: strategy.symbol,
+              timeframe: strategy.timeframe,
+            });
+          }
         });
 
-        await factory.disconnect();
+        // Enrich audit logs with strategy info
+        const enrichedLogs = auditLogs.map((log: any) => ({
+          ...log,
+          strategy: strategyMap.get(log.strategyId) || null,
+        }));
+
+        sendJSON(res, {
+          auditLogs: enrichedLogs,
+          count: enrichedLogs.length,
+        });
       } catch (error: any) {
         console.error('[portfolio-api] Error fetching strategy audit logs:', error);
         sendJSON(res, { error: error.message || 'Failed to fetch strategy audit logs' }, 500);
-        await factory.disconnect();
       }
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
