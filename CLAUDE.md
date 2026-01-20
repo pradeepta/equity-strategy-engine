@@ -95,11 +95,25 @@ Database access is abstracted through repositories:
 ```typescript
 class StrategyRepository {
   async create(data: StrategyCreateInput): Promise<Strategy>
+  async createWithVersion(data: StrategyCreateInput): Promise<Strategy>  // Recommended
   async findById(id: number): Promise<Strategy | null>
   async findByStatus(status: StrategyStatus): Promise<Strategy[]>
-  async update(id: number, data: StrategyUpdateInput): Promise<Strategy>
+  async activate(strategyId: string): Promise<Strategy>  // PENDING/DRAFT → ACTIVE
+  async close(strategyId: string, reason?: string): Promise<Strategy>  // ACTIVE → CLOSED
+  async reopen(strategyId: string, reason?: string): Promise<Strategy>  // CLOSED → PENDING (NEW)
+  async markFailed(strategyId: string, error: string): Promise<Strategy>
+  async updateYaml(strategyId: string, yamlContent: string, changeReason: string): Promise<Strategy>
+  async rollbackToVersion(strategyId: string, versionNumber: number): Promise<Strategy>
+  async getVersionHistory(strategyId: string): Promise<StrategyVersion[]>
+  async getAuditLog(strategyId: string, limit?: number): Promise<StrategyAuditLog[]>
 }
 ```
+
+**Key Methods**:
+- `reopen()` - Transitions CLOSED → PENDING, clears closedAt/closeReason, creates audit log. Orchestrator automatically picks up and activates.
+- All lifecycle methods create audit log entries for traceability
+- `createWithVersion()` creates initial version record (recommended over plain `create()`)
+- Version history enables rollback to previous YAML configurations
 
 ### 3. Strategy Pattern (Broker Adapters)
 Broker-specific logic is isolated in adapter implementations:
@@ -609,7 +623,8 @@ The web-client is a **Next.js 14** single-page application providing a comprehen
 - Strategy performance table with filtering
 - Recent trades table
 - Strategy detail modal with performance metrics
-- Close strategy functionality
+- Close strategy functionality (ACTIVE → CLOSED)
+- Reopen strategy functionality (CLOSED → PENDING, orchestrator auto-picks up)
 - Notification system
 - Auto-refresh every 10 seconds
 
@@ -654,7 +669,8 @@ web-client/
 **Portfolio API (HTTP Polling):**
 - Base URL: `http://localhost:3002`
 - `GET /api/portfolio/overview` - Portfolio data, strategies, trades
-- `POST /api/portfolio/strategies/{id}/close` - Close strategy
+- `POST /api/portfolio/strategies/{id}/close` - Close strategy (ACTIVE → CLOSED)
+- `POST /api/portfolio/strategies/{id}/reopen` - Reopen strategy (CLOSED → PENDING)
 - `GET /api/logs` - System logs with filters
 - `GET /api/logs/stats` - Log statistics
 - Auto-refresh: 10s for portfolio, 5s for logs
@@ -775,7 +791,7 @@ The MCP server exposes the following tools for AI agents to interact with the tr
 - **`analyze_strategy_performance`** - Calculate performance metrics from backtest results
   - Only useful if backtest was run, but backtest results are unreliable
 
-### Market Context Tools (NEW)
+### Market Context Tools
 - **`get_portfolio_overview`** - Get historical portfolio data from database (P&L, positions, active strategies, recent trades)
   - Data source: Database (historical fills and orders)
   - Returns: realizedPnL, currentPositions (with avgPrice), activeStrategies, recentTrades, orderStats
@@ -801,6 +817,32 @@ The MCP server exposes the following tools for AI agents to interact with the tr
   - Data source: Database
   - Use this to check for conflicts before deploying (avoid duplicate symbols)
   - Returns: strategies array with id, name, symbol, timeframe, status, yamlContent
+
+### Sector Analysis Tools (NEW)
+- **`get_sector_info`** - Get sector/industry classification for a symbol
+  - Data source: TWS contract details API
+  - Parameters: symbol (required)
+  - Returns: industry, category, subcategory
+  - Use this to understand what sector a stock belongs to
+  - Requires: TWS/IB Gateway running
+
+- **`get_sector_peers`** - Get peer stocks in the same sector
+  - Data source: TWS contract details + sector mapping
+  - Parameters: symbol (required), limit (default: 10)
+  - Returns: Array of peer symbols in same sector
+  - Use this to find alternative stocks in same industry
+  - Requires: TWS/IB Gateway running
+
+- **`get_portfolio_sector_concentration`** ⭐ - Analyze portfolio sector diversification
+  - **Use this before deploying new strategies to assess concentration risk**
+  - Data source: TWS portfolio + sector classification
+  - Parameters: force_refresh (default: false)
+  - Returns:
+    - sectorExposure: Array of sectors with marketValue, percentage, positions
+    - diversificationScore: Number of sectors represented
+    - topSector: Largest sector exposure with details
+  - Warns if >30% concentration in single sector
+  - Requires: TWS/IB Gateway running
 
 ### Deployment Tools
 - **`deploy_strategy`** - Deploy strategy to live trading system
@@ -849,17 +891,21 @@ const schema = await get_dsl_schema({ section: 'full' })
 // - Active strategy conflicts
 // - Risk management (position sizes, stop losses)
 
-// CRITICAL: DSL Expression Syntax Limitations
-// ❌ NO array indexing: Can't use macd.histogram[1] or rsi[0]
-// ❌ NO dot notation: Use 'macd_histogram' not 'macd.histogram'
-// ❌ NO previous bar access: Can't compare current vs previous values directly
-// ✅ Use CURRENT indicator values: rsi < 30, macd_histogram > 0
-// ✅ Use thresholds and comparisons: close > bb_lower, volume > volume_sma
+// DSL Expression Syntax Features:
+// ✅ Array indexing SUPPORTED: Use feature[1] for previous bar, feature[2] for 2 bars ago, etc.
+// ✅ Dot notation SUPPORTED: macd.histogram auto-converts to macd_histogram internally
+// ✅ Combined syntax: macd.histogram[1] OR macd_histogram[1] (both work)
+// ✅ Crossover detection: macd_histogram > 0 && macd_histogram[1] <= 0
+// ✅ Momentum comparison: close[0] > close[1] (current > previous)
+// ✅ Multi-bar patterns: rsi[0] > rsi[1] && rsi[1] > rsi[2]
+// ✅ History limit: 100 bars stored, index 0=current to 99=oldest
 
-// Supported Features:
+// Supported Indicators:
 // - Basic: close, open, high, low, volume
 // - Moving Averages: ema20, ema50, sma50, sma150, sma200
 // - Oscillators: rsi, macd, macd_signal, macd_histogram, stochastic_k, stochastic_d
+// - Momentum: macd_histogram_rising, macd_histogram_falling, macd_bullish_crossover, macd_bearish_crossover
+// - Momentum: rsi_rising, rsi_falling, price_rising, price_falling, green_bar, red_bar
 // - Volatility: bb_upper, bb_middle, bb_lower, atr
 // - Volume: volume_sma, volume_ema, volume_zscore, obv
 // - Others: vwap, adx, cci, williams_r, hod, lod
@@ -906,6 +952,132 @@ const deployment = await deploy_strategy({ yaml_content: yamlContent })
 The **BlackRock advisor agent** (`blackrock_advisor` persona) is configured in [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts) with the above workflow built into its system prompt. When users interact with this agent in the web dashboard, it will automatically follow the 5-step workflow for strategy deployments.
 
 **See detailed workflow example:** [docs/agent-workflow-example.md](docs/agent-workflow-example.md)
+
+---
+
+## AI Agent Architecture
+
+The system implements a **two-tier AI agent architecture** for adaptive trading strategy management:
+
+### 1. Chat Agent (Strategy Creation)
+**Primary Role**: Create high-quality strategies upfront at deployment time
+
+**Location**: [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts) - `blackrock_advisor` persona
+
+**Capabilities**:
+- **Multi-Bar Trend Analysis**: Analyzes 20+ bars to identify trend direction (bullish/bearish/sideways)
+- **Entry Zone Feasibility Validation**: Ensures entry zones align with trend direction
+- **Portfolio Context Awareness**: Checks sector concentration, buying power, position conflicts
+- **Risk Management**: Position sizing relative to account value, volatility-adjusted stops
+
+**Workflow** (5 steps):
+1. **Gather Live Context**: `get_live_portfolio_snapshot()`, `get_portfolio_sector_concentration()`, `get_market_data()`, `get_active_strategies()`
+2. **Analyze & Recommend**:
+   - **CRITICAL: Multi-Bar Trend Analysis** - Compare current price to 10, 20, 50 bars ago
+   - **CRITICAL: Entry Zone Feasibility Check** - Validate alignment with trend:
+     - Bullish trend + BUY zone above = ✅ Momentum continuation
+     - Bearish trend + BUY zone above = ❌ MISALIGNED (MSFT case study in prompt)
+     - Bearish trend + BUY zone below = ✅ Mean reversion
+3. **Create Strategy**: Design YAML with proper indicators and risk parameters
+4. **Validate**: `validate_strategy()` for syntax compliance
+5. **Deploy**: `deploy_strategy()` creates PENDING strategy
+
+**Enhanced Prompt Features** (as of 2026-01):
+- Explicit trend analysis requirements (20 bars minimum)
+- Entry zone validation decision matrix
+- MSFT case study showing wrong momentum breakout example
+- Remediation steps for misaligned strategies
+
+**Expected Impact**:
+- Catch 70-80% of obvious mistakes upfront (trend misalignment, over-concentration, etc.)
+- Reduce evaluator swap rate from ~40% to ~20-30%
+- Most swaps should be legitimate mid-session regime changes
+
+### 2. Evaluator Agent (Runtime Monitoring)
+**Primary Role**: Monitor and swap/close strategies mid-session that stop working
+
+**Location**: [evaluation/StrategyEvaluatorClient.ts](evaluation/StrategyEvaluatorClient.ts)
+
+**Capabilities**:
+- **Runtime Performance Analysis**: Observes actual strategy behavior over hours/days
+- **Regime Change Detection**: Identifies when market conditions shift mid-session
+- **Execution Pattern Analysis**: Detects repeated order rejections or failed entries
+- **Adaptive Swapping**: Proposes replacement strategies based on current conditions
+
+**When Evaluator Triggers** (every N bars, configurable):
+1. Strategy has zero orders placed for extended period
+2. Win rate declining significantly
+3. Stop loss breached repeatedly
+4. Market volatility spike changes conditions
+5. Entry zone no longer reachable due to trend shift
+
+**Evaluator Advantages Over Chat Agent**:
+- Has runtime data (2+ days of actual trading)
+- Sees failed execution patterns
+- Observes regime changes chat agent couldn't predict
+- Can analyze performance metrics unavailable at time=0
+
+**MCP Tool Access**:
+- `validate_strategy()` - Verify replacement strategy syntax
+- Access to same market data tools as chat agent
+- Can propose swaps or closure recommendations
+
+**System Prompt**: [evaluation/StrategyEvaluatorClient.ts:250-540](evaluation/StrategyEvaluatorClient.ts#L250-L540)
+- Includes DSL syntax validation guidance
+- Entry zone evaluation logic
+- Full indicator list
+- Instructions to use `validate_strategy()` before recommending changes
+
+### Division of Responsibilities
+
+**Chat Agent**: Prevent mistakes **before** deployment
+- Trend analysis at time=0
+- Entry zone feasibility validation
+- Portfolio risk assessment
+- Strategy type selection (momentum vs mean reversion)
+
+**Evaluator Agent**: React to problems **during** execution
+- Intraday regime changes (market shifts from bullish to bearish)
+- News catalysts (surprise Fed announcements, earnings)
+- Failed execution patterns (broker rejections)
+- Performance deterioration over time
+
+### Example Scenario: MSFT Strategy
+
+**Before Chat Enhancement**:
+1. User: "Create MSFT momentum breakout"
+2. Chat: Creates BUY [461, 462] without trend analysis
+3. Deploys strategy (price at 459.87, trending down)
+4. **2 days later**: Evaluator detects zero orders, recommends mean reversion swap
+5. Result: 2 days wasted, evaluator fixes chat mistake
+
+**After Chat Enhancement**:
+1. User: "Create MSFT momentum breakout"
+2. Chat: Calls `get_market_data()`, analyzes 20 bars
+3. Chat: Detects bearish trend (-0.56%), price at 459.87
+4. Chat: Sees proposed BUY [461, 462] is above current (misalignment)
+5. Chat: **Warns user**, recommends mean reversion BUY [455, 458] instead
+6. Deploys better strategy from the start
+7. Result: No wasted time, evaluator handles legitimate mid-session changes only
+
+### Configuration Files
+
+**Chat Agent Prompt**: [ai-gateway-live/src/config.ts:32-94](ai-gateway-live/src/config.ts#L32-L94)
+- PERSONA_PROMPTS.blackrock_advisor
+- 5-step deployment workflow
+- Multi-bar trend analysis requirements
+- Entry zone feasibility matrix
+- MSFT case study
+
+**Evaluator Prompt**: [evaluation/StrategyEvaluatorClient.ts:250-540](evaluation/StrategyEvaluatorClient.ts#L250-L540)
+- buildEvaluationPrompt() method
+- DSL syntax validation instructions
+- Entry zone semantics for BUY/SELL orders
+- Full indicator reference
+
+**MCP Server Config**:
+- Chat agent: [web-client/src/lib/acpClient.ts:15](web-client/src/lib/acpClient.ts#L15) - `env: []` array format
+- Evaluator: [evaluation/StrategyEvaluatorClient.ts:197](evaluation/StrategyEvaluatorClient.ts#L197) - `env: []` array format (fixed 2026-01)
 
 ---
 
