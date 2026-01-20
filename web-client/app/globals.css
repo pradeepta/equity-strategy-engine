@@ -895,7 +895,24 @@ main {
   background: #b91c1c;
 }
 
-.close-reason-input {
+.reopen-strategy-button {
+  padding: 10px 20px;
+  background: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.reopen-strategy-button:hover {
+  background: #15803d;
+}
+
+.close-reason-input,
+.reopen-reason-input {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid #ebe6dd;
@@ -944,6 +961,15 @@ main {
 
 .confirm-close-button:hover:not(:disabled) {
   background: #b91c1c;
+}
+
+.confirm-reopen-button {
+  background: #16a34a;
+  color: white;
+}
+
+.confirm-reopen-button:hover:not(:disabled) {
+  background: #15803d;
 }
 
 .modal-button:disabled {

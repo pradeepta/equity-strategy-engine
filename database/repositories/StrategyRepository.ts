@@ -288,6 +288,43 @@ export class StrategyRepository {
   }
 
   /**
+   * Reopen closed strategy (CLOSED -> PENDING)
+   */
+  async reopen(strategyId: string, reason?: string, changedBy: string = 'user'): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      if (strategy.status !== 'CLOSED') {
+        throw new Error('Only CLOSED strategies can be reopened');
+      }
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'STATUS_CHANGED',
+          oldStatus: strategy.status,
+          newStatus: 'PENDING',
+          changedBy,
+          changeReason: reason || 'Strategy reopened via UI',
+        },
+      });
+
+      // Update strategy to PENDING (orchestrator will pick it up)
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'PENDING',
+          closedAt: null,
+          closeReason: null,
+        },
+      });
+    });
+  }
+
+  /**
    * Archive strategy (any status -> ARCHIVED)
    */
   async archive(strategyId: string, reason?: string, changedBy: string = 'system'): Promise<Strategy> {

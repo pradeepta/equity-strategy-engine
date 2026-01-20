@@ -60,8 +60,10 @@ This guide helps Claude Code sessions understand the codebase structure, convent
 - [logging/logger.ts](logging/logger.ts) - Winston + Prisma logging
 
 ### AI Integration
-- [evaluation/StrategyEvaluatorClient.ts](evaluation/StrategyEvaluatorClient.ts) - Strategy evaluation client
-- [ai-gateway-live/src/index.ts](ai-gateway-live/src/index.ts) - WebSocket server for AI agents
+- [evaluation/StrategyEvaluatorClient.ts](evaluation/StrategyEvaluatorClient.ts) - Strategy evaluation client (WebSocket-based)
+- [ai-gateway-live/src/index.ts](ai-gateway-live/src/index.ts) - ACP Gateway WebSocket server for AI agents
+- [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts) - Agent persona prompts and configuration
+- [broker/twsSectorData.ts](broker/twsSectorData.ts) - TWS sector/industry classification client
 
 ### CLI Tools
 - [cli/add-strategy.ts](cli/add-strategy.ts) - Add strategy from YAML file

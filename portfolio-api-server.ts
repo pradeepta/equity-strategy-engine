@@ -496,6 +496,63 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sendJSON(res, { error: error.message || 'Failed to close strategy' }, 500);
         await factory.disconnect();
       }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/reopen')) {
+      // POST /api/portfolio/strategies/:id/reopen
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/reopen
+      const body = await parseBody(req);
+      const reason = body.reason || 'Reopened via UI';
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+      const execHistoryRepo = factory.getExecutionHistoryRepo();
+
+      try {
+        // Get strategy
+        const strategy = await strategyRepo.findById(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          await factory.disconnect();
+          return;
+        }
+
+        if (strategy.status !== 'CLOSED') {
+          sendJSON(res, { error: 'Only CLOSED strategies can be reopened' }, 400);
+          await factory.disconnect();
+          return;
+        }
+
+        // Reopen strategy (sets to PENDING, orchestrator will pick it up)
+        await strategyRepo.reopen(strategyId, reason, 'user');
+
+        // Log activation
+        await execHistoryRepo.logActivation(strategyId);
+
+        console.log(`[portfolio-api] Reopened strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`);
+
+        sendJSON(res, {
+          success: true,
+          message: 'Strategy reopened successfully and set to PENDING. Orchestrator will activate it.',
+          strategy: {
+            id: strategyId,
+            symbol: strategy.symbol,
+            name: strategy.name,
+            status: 'PENDING',
+            reopenedAt: new Date().toISOString(),
+          },
+        });
+
+        await factory.disconnect();
+      } catch (error: any) {
+        console.error('[portfolio-api] Error reopening strategy:', error);
+        sendJSON(res, { error: error.message || 'Failed to reopen strategy' }, 500);
+        await factory.disconnect();
+      }
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {

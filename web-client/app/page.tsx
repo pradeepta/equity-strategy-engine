@@ -463,8 +463,11 @@ function Dashboard() {
   const [selectedAuditLog, setSelectedAuditLog] = useState<any>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showReopenModal, setShowReopenModal] = useState(false);
   const [closeReason, setCloseReason] = useState('');
+  const [reopenReason, setReopenReason] = useState('');
   const [isClosing, setIsClosing] = useState(false);
+  const [isReopening, setIsReopening] = useState(false);
 
   // Notification state
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -528,6 +531,46 @@ function Dashboard() {
       setNotification({ type: 'error', message: error.message || 'Failed to close strategy' });
     } finally {
       setIsClosing(false);
+    }
+  };
+
+  // Reopen strategy handler
+  const handleReopenStrategy = async () => {
+    if (!selectedStrategy || !reopenReason.trim()) {
+      setNotification({ type: 'error', message: 'Please provide a reason for reopening the strategy' });
+      return;
+    }
+
+    setIsReopening(true);
+    try {
+      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/reopen`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reopenReason }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to reopen strategy');
+      }
+
+      // Success - show notification and refresh data
+      setNotification({ type: 'success', message: `Strategy "${selectedStrategy.name}" reopened successfully. Status: PENDING` });
+      setShowReopenModal(false);
+      setShowStrategyModal(false);
+      setReopenReason('');
+
+      // Refresh portfolio data
+      const refreshResponse = await fetch('http://localhost:3002/api/portfolio/overview');
+      if (refreshResponse.ok) {
+        const refreshData = await refreshResponse.json();
+        setPortfolioData(refreshData);
+      }
+    } catch (error: any) {
+      setNotification({ type: 'error', message: error.message || 'Failed to reopen strategy' });
+    } finally {
+      setIsReopening(false);
     }
   };
 
@@ -931,6 +974,18 @@ function Dashboard() {
                 </button>
               </div>
             )}
+            {selectedStrategy.status === 'CLOSED' && (
+              <div className="modal-footer">
+                <button
+                  className="reopen-strategy-button"
+                  onClick={() => {
+                    setShowReopenModal(true);
+                  }}
+                >
+                  Reopen Strategy
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1122,6 +1177,58 @@ function Dashboard() {
                 disabled={isClosing || !closeReason.trim()}
               >
                 {isClosing ? 'Closing...' : 'Close Strategy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reopen Strategy Confirmation Modal */}
+      {showReopenModal && selectedStrategy && (
+        <div className="modal-overlay" onClick={() => setShowReopenModal(false)}>
+          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Reopen Strategy</h2>
+              <button className="modal-close" onClick={() => setShowReopenModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <p style={{ marginBottom: '16px', color: '#737373' }}>
+                  You are about to reopen <strong>{selectedStrategy.name}</strong> ({selectedStrategy.symbol}).
+                  The strategy will be set to PENDING status and the orchestrator will automatically activate it.
+                </p>
+                <div className="modal-field">
+                  <div className="modal-label">Reason for reopening *</div>
+                  <textarea
+                    className="reopen-reason-input"
+                    placeholder="Enter reason (e.g., Market conditions improved, Strategy adjustments made, etc.)"
+                    value={reopenReason}
+                    onChange={(e) => setReopenReason(e.target.value)}
+                    rows={3}
+                    disabled={isReopening}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="modal-button cancel-button"
+                onClick={() => {
+                  setShowReopenModal(false);
+                  setReopenReason('');
+                }}
+                disabled={isReopening}
+              >
+                Cancel
+              </button>
+              <button
+                className="modal-button confirm-reopen-button"
+                onClick={handleReopenStrategy}
+                disabled={isReopening || !reopenReason.trim()}
+              >
+                {isReopening ? 'Reopening...' : 'Reopen Strategy'}
               </button>
             </div>
           </div>
