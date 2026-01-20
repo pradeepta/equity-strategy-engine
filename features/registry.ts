@@ -5,6 +5,7 @@ import { FeatureDescriptor, FeatureComputeContext, FeatureValue } from '../spec/
 import {
   computeVWAP,
   computeEMA,
+  computeSMA,
   computeLOD,
   computeHOD,
   computeVolumeZScore,
@@ -173,7 +174,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 20),
+      computeEMA([...ctx.history, ctx.bar], 'close', 20),
   });
 
   // EMA50 (50-bar Exponential Moving Average)
@@ -182,7 +183,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 50),
+      computeEMA([...ctx.history, ctx.bar], 'close', 50),
   });
 
   // LOD (Low of Day)
@@ -378,7 +379,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 50), // Use EMA50 as SMA50 proxy
+      computeSMA([...ctx.history, ctx.bar], 50),
   });
 
   // SMA150 (150-day Simple Moving Average)

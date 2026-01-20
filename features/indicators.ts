@@ -1,35 +1,84 @@
 /**
  * Technical indicator implementations
+ *
+ * Uses the technicalindicators library for mathematically correct,
+ * industry-standard indicator calculations.
+ *
+ * @see https://github.com/anandanand84/technicalindicators
  */
 import { Bar, FeatureComputeContext, FeatureValue } from '../spec/types';
+import {
+  EMA as EMALib,
+  SMA as SMALib,
+  RSI as RSILib,
+  MACD as MACDLib,
+  BollingerBands as BollingerBandsLib,
+  ATR as ATRLib,
+  ADX as ADXLib,
+  Stochastic as StochasticLib,
+  CCI as CCILib,
+  WilliamsR as WilliamsRLib,
+  OBV as OBVLib,
+  VWAP as VWAPLib,
+} from 'technicalindicators';
+
+// ============================================================================
+// Helper Functions for Data Extraction
+// ============================================================================
+
+/**
+ * Extract values from bars array for a specific field
+ */
+function extractField(bars: Bar[], field: 'open' | 'high' | 'low' | 'close' | 'volume'): number[] {
+  return bars.map(b => b[field]);
+}
+
+/**
+ * Extract OHLC arrays from bars for indicators that need them
+ */
+function extractOHLC(bars: Bar[]): { high: number[], low: number[], close: number[] } {
+  return {
+    high: bars.map(b => b.high),
+    low: bars.map(b => b.low),
+    close: bars.map(b => b.close),
+  };
+}
+
+/**
+ * Extract OHLCV arrays from bars for volume-based indicators
+ */
+function extractOHLCV(bars: Bar[]): { high: number[], low: number[], close: number[], volume: number[] } {
+  return {
+    high: bars.map(b => b.high),
+    low: bars.map(b => b.low),
+    close: bars.map(b => b.close),
+    volume: bars.map(b => b.volume),
+  };
+}
 
 // ============================================================================
 // VWAP (Volume Weighted Average Price)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeVWAP(ctx: FeatureComputeContext): FeatureValue {
-  const bars = [
-    ...ctx.history,
-    ctx.bar,
-  ];
+  const bars = [...ctx.history, ctx.bar];
 
   if (bars.length === 0) return ctx.bar.close;
 
-  let cumulativeTypicalPrice = 0;
-  let cumulativeVolume = 0;
+  const { high, low, close, volume } = extractOHLCV(bars);
 
-  for (const bar of bars) {
-    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
-    cumulativeTypicalPrice += typicalPrice * bar.volume;
-    cumulativeVolume += bar.volume;
-  }
+  // Check for zero volume - library may have issues
+  const totalVolume = volume.reduce((a, b) => a + b, 0);
+  if (totalVolume === 0) return ctx.bar.close;
 
-  if (cumulativeVolume === 0) return ctx.bar.close;
-  return cumulativeTypicalPrice / cumulativeVolume;
+  const result = VWAPLib.calculate({ high, low, close, volume });
+  return result[result.length - 1] ?? ctx.bar.close;
 }
 
 // ============================================================================
 // EMA (Exponential Moving Average)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeEMA(
@@ -38,31 +87,20 @@ export function computeEMA(
   period: number
 ): FeatureValue {
   if (bars.length === 0) return 0;
-  if (bars.length < period) {
-    // Insufficient data: use SMA
-    const sum = bars.reduce((acc, bar) => acc + bar[field], 0);
-    return sum / bars.length;
+
+  const values = extractField(bars, field);
+
+  if (values.length < period) {
+    // Insufficient data: use simple average as fallback
+    return values.reduce((a, b) => a + b, 0) / values.length;
   }
 
-  const multiplier = 2 / (period + 1);
-  let ema = 0;
-
-  // First EMA is SMA of first 'period' values
-  for (let i = 0; i < period; i++) {
-    ema += bars[i][field];
-  }
-  ema /= period;
-
-  // Apply smoothing for remaining bars
-  for (let i = period; i < bars.length; i++) {
-    ema = bars[i][field] * multiplier + ema * (1 - multiplier);
-  }
-
-  return ema;
+  const result = EMALib.calculate({ period, values });
+  return result[result.length - 1] ?? 0;
 }
 
 // ============================================================================
-// LOD (Low of Day)
+// LOD (Low of Day) - Keep custom (trivial, no library equivalent)
 // ============================================================================
 
 export function computeLOD(ctx: FeatureComputeContext): FeatureValue {
@@ -72,7 +110,7 @@ export function computeLOD(ctx: FeatureComputeContext): FeatureValue {
 }
 
 // ============================================================================
-// Volume Z-Score
+// Volume Z-Score - Keep custom (statistical, not a standard TA indicator)
 // ============================================================================
 
 export function computeVolumeZScore(ctx: FeatureComputeContext): FeatureValue {
@@ -96,6 +134,7 @@ export function computeVolumeZScore(ctx: FeatureComputeContext): FeatureValue {
 
 // ============================================================================
 // Volume SMA (Simple Moving Average of Volume)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeVolumeSMA(
@@ -105,55 +144,39 @@ export function computeVolumeSMA(
   const bars = [...ctx.history, ctx.bar];
 
   if (bars.length === 0) return ctx.bar.volume;
-  if (bars.length < period) {
+
+  const values = extractField(bars, 'volume');
+
+  if (values.length < period) {
     // Insufficient data: use all available bars
-    const sum = bars.reduce((acc, bar) => acc + bar.volume, 0);
-    return sum / bars.length;
+    return values.reduce((a, b) => a + b, 0) / values.length;
   }
 
-  // Calculate SMA of last 'period' bars
-  const recentBars = bars.slice(-period);
-  const sum = recentBars.reduce((acc, bar) => acc + bar.volume, 0);
-  return sum / period;
+  const result = SMALib.calculate({ period, values });
+  return result[result.length - 1] ?? ctx.bar.volume;
 }
 
 // ============================================================================
 // RSI (Relative Strength Index)
+// Uses technicalindicators library - provides proper Wilder smoothing
 // ============================================================================
 
 export function computeRSI(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
   const bars = [...ctx.history, ctx.bar];
-  if (bars.length < period + 1) return 50; // Default to neutral if insufficient data
+  const values = extractField(bars, 'close');
 
-  let gains = 0;
-  let losses = 0;
+  if (values.length < period + 1) return 50; // Default to neutral if insufficient data
 
-  // Calculate gains and losses over the period
-  for (let i = bars.length - period; i < bars.length; i++) {
-    const change = bars[i].close - bars[i - 1].close;
-    if (change > 0) {
-      gains += change;
-    } else {
-      losses += Math.abs(change);
-    }
-  }
-
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-
-  if (avgLoss === 0) {
-    return avgGain === 0 ? 50 : 100;
-  }
-
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
+  const result = RSILib.calculate({ period, values });
+  return result[result.length - 1] ?? 50;
 }
 
 // ============================================================================
 // Bollinger Bands
+// Uses technicalindicators library
 // ============================================================================
 
-export interface BollingerBands {
+export interface BollingerBandsResult {
   upper: number;
   middle: number;
   lower: number;
@@ -163,9 +186,11 @@ export function computeBollingerBands(
   ctx: FeatureComputeContext,
   period: number = 20,
   stdDevMultiplier: number = 2
-): BollingerBands {
+): BollingerBandsResult {
   const bars = [...ctx.history, ctx.bar];
-  if (bars.length < period) {
+  const values = extractField(bars, 'close');
+
+  if (values.length < period) {
     return {
       upper: ctx.bar.close,
       middle: ctx.bar.close,
@@ -173,19 +198,17 @@ export function computeBollingerBands(
     };
   }
 
-  const closes = bars.slice(-period).map((b) => b.close);
+  const result = BollingerBandsLib.calculate({
+    period,
+    stdDev: stdDevMultiplier,
+    values,
+  });
 
-  // Calculate SMA (middle band)
-  const middle = closes.reduce((sum, close) => sum + close, 0) / period;
-
-  // Calculate standard deviation
-  const variance = closes.reduce((sum, close) => sum + Math.pow(close - middle, 2), 0) / period;
-  const stdDev = Math.sqrt(variance);
-
+  const last = result[result.length - 1];
   return {
-    upper: middle + stdDev * stdDevMultiplier,
-    middle,
-    lower: middle - stdDev * stdDevMultiplier,
+    upper: last?.upper ?? ctx.bar.close,
+    middle: last?.middle ?? ctx.bar.close,
+    lower: last?.lower ?? ctx.bar.close,
   };
 }
 
@@ -206,6 +229,7 @@ export function computeBBLower(ctx: FeatureComputeContext): FeatureValue {
 
 // ============================================================================
 // MACD (Moving Average Convergence Divergence)
+// Uses technicalindicators library - provides proper EMA signal line
 // ============================================================================
 
 export interface MACDResult {
@@ -216,10 +240,10 @@ export interface MACDResult {
 
 export function computeMACD(ctx: FeatureComputeContext): MACDResult {
   const bars = [...ctx.history, ctx.bar];
-  const closes = bars.map((b) => b.close);
+  const values = extractField(bars, 'close');
 
   // Need at least 26 bars for 26-EMA
-  if (closes.length < 26) {
+  if (values.length < 26) {
     return {
       macd: 0,
       signal: 0,
@@ -227,43 +251,20 @@ export function computeMACD(ctx: FeatureComputeContext): MACDResult {
     };
   }
 
-  // Calculate 12-EMA and 26-EMA
-  const ema12 = computeEMA(bars, 'close', 12) as number;
-  const ema26 = computeEMA(bars, 'close', 26) as number;
+  const result = MACDLib.calculate({
+    fastPeriod: 12,
+    slowPeriod: 26,
+    signalPeriod: 9,
+    SimpleMAOscillator: false,
+    SimpleMASignal: false,
+    values,
+  });
 
-  // MACD line = 12-EMA - 26-EMA
-  const macd = ema12 - ema26;
-
-  // Signal line = 9-EMA of MACD line
-  // For simplicity, approximate with recent MACD values
-  let signalSum = 0;
-  const signalPeriod = Math.min(9, closes.length - 26);
-
-  if (closes.length >= 35) {
-    // Can calculate proper signal line
-    for (let i = closes.length - signalPeriod; i < closes.length; i++) {
-      const tempBars = closes.slice(0, i + 1);
-      const tempEma12 = computeEMA(
-        bars.slice(0, i + 1),
-        'close',
-        12
-      ) as number;
-      const tempEma26 = computeEMA(
-        bars.slice(0, i + 1),
-        'close',
-        26
-      ) as number;
-      signalSum += tempEma12 - tempEma26;
-    }
-  }
-
-  const signal = signalPeriod > 0 ? signalSum / signalPeriod : macd;
-  const histogram = macd - signal;
-
+  const last = result[result.length - 1];
   return {
-    macd,
-    signal,
-    histogram,
+    macd: last?.MACD ?? 0,
+    signal: last?.signal ?? 0,
+    histogram: last?.histogram ?? 0,
   };
 }
 
@@ -282,6 +283,7 @@ export function computeMACDHistogram(ctx: FeatureComputeContext): FeatureValue {
 
 // ============================================================================
 // MACD Momentum Helpers (for detecting crossovers without array indexing)
+// Keep custom - domain-specific logic
 // ============================================================================
 
 /**
@@ -372,7 +374,7 @@ export function computeMACDBearishCrossover(ctx: FeatureComputeContext): Feature
 }
 
 // ============================================================================
-// RSI Momentum Helpers
+// RSI Momentum Helpers - Keep custom (domain-specific logic)
 // ============================================================================
 
 /**
@@ -416,7 +418,7 @@ export function computeRSIFalling(ctx: FeatureComputeContext): FeatureValue {
 }
 
 // ============================================================================
-// Price Action Helpers
+// Price Action Helpers - Keep custom (trivial, no library equivalent)
 // ============================================================================
 
 /**
@@ -456,7 +458,8 @@ export function computeRedBar(ctx: FeatureComputeContext): FeatureValue {
 }
 
 // ============================================================================
-// SEPA INDICATORS (Mark Minervini Growth Screener)
+// SMA (Simple Moving Average)
+// Uses technicalindicators library
 // ============================================================================
 
 /**
@@ -466,16 +469,17 @@ export function computeSMA(
   bars: Bar[],
   period: number
 ): number {
-  if (bars.length < period) {
+  if (bars.length === 0) return 0;
+
+  const values = extractField(bars, 'close');
+
+  if (values.length < period) {
     // Return SMA of available bars if less than period
-    if (bars.length === 0) return 0;
-    const closes = bars.map(b => b.close);
-    return closes.reduce((a, b) => a + b) / closes.length;
+    return values.reduce((a, b) => a + b, 0) / values.length;
   }
 
-  const closes = bars.slice(-period).map(b => b.close);
-  const sum = closes.reduce((a, b) => a + b, 0);
-  return sum / period;
+  const result = SMALib.calculate({ period, values });
+  return result[result.length - 1] ?? 0;
 }
 
 /**
@@ -496,6 +500,7 @@ export function computeSMA200(ctx: FeatureComputeContext): FeatureValue {
 
 /**
  * Check if SMA is rising (positive slope over lookback period)
+ * Keep custom - domain-specific logic
  */
 function isSMAGrowing(
   bars: Bar[],
@@ -543,6 +548,7 @@ export function computeSMA200Rising(ctx: FeatureComputeContext): FeatureValue {
 
 /**
  * 52-Week High - Maximum price in last 252 trading days
+ * Keep custom - trivial
  */
 export function computeFiftyTwoWeekHigh(ctx: FeatureComputeContext): FeatureValue {
   const bars = [...ctx.history, ctx.bar];
@@ -559,6 +565,7 @@ export function computeFiftyTwoWeekHigh(ctx: FeatureComputeContext): FeatureValu
 
 /**
  * 52-Week Low - Minimum price in last 252 trading days
+ * Keep custom - trivial
  */
 export function computeFiftyTwoWeekLow(ctx: FeatureComputeContext): FeatureValue {
   const bars = [...ctx.history, ctx.bar];
@@ -572,10 +579,10 @@ export function computeFiftyTwoWeekLow(ctx: FeatureComputeContext): FeatureValue
   return Math.min(...lows);
 }
 
-/**
- * Cup & Handle Pattern Detection
- * Returns confidence score (0-100)
- */
+// ============================================================================
+// Cup & Handle Pattern Detection - Keep custom (complex pattern logic)
+// ============================================================================
+
 function findLocalPeaks(prices: number[], window: number = 10): number[] {
   const peaks: number[] = [];
 
@@ -643,7 +650,14 @@ function detectCupAndHandle(prices: number[]): CupHandleMetrics {
 
   // Find the best cup structure
   let bestCupScore = 0;
-  let bestCupData: any = null;
+  let bestCupData: {
+    leftPeakIdx: number;
+    rightPeakIdx: number;
+    cupBottomIdx: number;
+    cupDepthPct: number;
+    cupWidth: number;
+    peakDiffPct: number;
+  } | null = null;
 
   for (let i = 0; i < peaks.length - 1; i++) {
     const leftPeakIdx = peaks[i];
@@ -761,6 +775,7 @@ export function computeCupHandleConfidence(ctx: FeatureComputeContext): FeatureV
 
 // ============================================================================
 // ATR (Average True Range)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeATR(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
@@ -768,40 +783,15 @@ export function computeATR(ctx: FeatureComputeContext, period: number = 14): Fea
 
   if (bars.length < 2) return 0;
 
-  // Calculate True Range for each bar
-  const trueRanges: number[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const high = bars[i].high;
-    const low = bars[i].low;
-    const prevClose = bars[i - 1].close;
+  const { high, low, close } = extractOHLC(bars);
 
-    const tr = Math.max(
-      high - low,
-      Math.abs(high - prevClose),
-      Math.abs(low - prevClose)
-    );
-    trueRanges.push(tr);
-  }
-
-  if (trueRanges.length < period) {
-    // Use simple average if insufficient data
-    const sum = trueRanges.reduce((acc, tr) => acc + tr, 0);
-    return sum / trueRanges.length;
-  }
-
-  // Calculate ATR using exponential moving average
-  let atr = trueRanges.slice(0, period).reduce((acc, tr) => acc + tr, 0) / period;
-  const multiplier = 1 / period;
-
-  for (let i = period; i < trueRanges.length; i++) {
-    atr = trueRanges[i] * multiplier + atr * (1 - multiplier);
-  }
-
-  return atr;
+  const result = ATRLib.calculate({ period, high, low, close });
+  return result[result.length - 1] ?? 0;
 }
 
 // ============================================================================
 // ADX (Average Directional Index)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeADX(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
@@ -809,61 +799,15 @@ export function computeADX(ctx: FeatureComputeContext, period: number = 14): Fea
 
   if (bars.length < period + 1) return 0;
 
-  // Calculate +DM and -DM
-  const plusDM: number[] = [];
-  const minusDM: number[] = [];
-  const trueRanges: number[] = [];
+  const { high, low, close } = extractOHLC(bars);
 
-  for (let i = 1; i < bars.length; i++) {
-    const highDiff = bars[i].high - bars[i - 1].high;
-    const lowDiff = bars[i - 1].low - bars[i].low;
-
-    plusDM.push(highDiff > lowDiff && highDiff > 0 ? highDiff : 0);
-    minusDM.push(lowDiff > highDiff && lowDiff > 0 ? lowDiff : 0);
-
-    const tr = Math.max(
-      bars[i].high - bars[i].low,
-      Math.abs(bars[i].high - bars[i - 1].close),
-      Math.abs(bars[i].low - bars[i - 1].close)
-    );
-    trueRanges.push(tr);
-  }
-
-  if (plusDM.length < period) return 0;
-
-  // Smooth the indicators
-  let smoothPlusDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
-  let smoothMinusDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
-  let smoothTR = trueRanges.slice(0, period).reduce((a, b) => a + b, 0);
-
-  const dxValues: number[] = [];
-
-  for (let i = period; i < plusDM.length; i++) {
-    smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
-    smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
-    smoothTR = smoothTR - smoothTR / period + trueRanges[i];
-
-    const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
-    const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
-
-    const diSum = plusDI + minusDI;
-    const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
-    dxValues.push(dx);
-  }
-
-  if (dxValues.length < period) return 0;
-
-  // ADX is the smoothed average of DX
-  let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < dxValues.length; i++) {
-    adx = ((adx * (period - 1)) + dxValues[i]) / period;
-  }
-
-  return adx;
+  const result = ADXLib.calculate({ period, high, low, close });
+  return result[result.length - 1]?.adx ?? 0;
 }
 
 // ============================================================================
 // Stochastic Oscillator
+// Uses technicalindicators library - provides proper %D calculation
 // ============================================================================
 
 export function computeStochastic(
@@ -877,21 +821,21 @@ export function computeStochastic(
     return { k: 50, d: 50 };
   }
 
-  // Calculate %K
-  const recentBars = bars.slice(-kPeriod);
-  const highs = recentBars.map(b => b.high);
-  const lows = recentBars.map(b => b.low);
+  const { high, low, close } = extractOHLC(bars);
 
-  const highestHigh = Math.max(...highs);
-  const lowestLow = Math.min(...lows);
-  const currentClose = ctx.bar.close;
+  const result = StochasticLib.calculate({
+    period: kPeriod,
+    signalPeriod: dPeriod,
+    high,
+    low,
+    close,
+  });
 
-  const k = lowestLow === highestHigh ? 50 :
-    ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
-
-  // Calculate %D (SMA of %K)
-  // For simplicity, return K and D=K (would need historical K values for true D)
-  return { k, d: k };
+  const last = result[result.length - 1];
+  return {
+    k: last?.k ?? 50,
+    d: last?.d ?? 50,
+  };
 }
 
 export function computeStochasticK(ctx: FeatureComputeContext): FeatureValue {
@@ -904,6 +848,7 @@ export function computeStochasticD(ctx: FeatureComputeContext): FeatureValue {
 
 // ============================================================================
 // OBV (On Balance Volume)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeOBV(ctx: FeatureComputeContext): FeatureValue {
@@ -911,21 +856,16 @@ export function computeOBV(ctx: FeatureComputeContext): FeatureValue {
 
   if (bars.length < 2) return 0;
 
-  let obv = 0;
-  for (let i = 1; i < bars.length; i++) {
-    if (bars[i].close > bars[i - 1].close) {
-      obv += bars[i].volume;
-    } else if (bars[i].close < bars[i - 1].close) {
-      obv -= bars[i].volume;
-    }
-    // If close === prevClose, OBV unchanged
-  }
+  const close = extractField(bars, 'close');
+  const volume = extractField(bars, 'volume');
 
-  return obv;
+  const result = OBVLib.calculate({ close, volume });
+  return result[result.length - 1] ?? 0;
 }
 
 // ============================================================================
 // Volume EMA (Exponential Moving Average of Volume)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeVolumeEMA(
@@ -938,6 +878,7 @@ export function computeVolumeEMA(
 
 // ============================================================================
 // CCI (Commodity Channel Index)
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeCCI(ctx: FeatureComputeContext, period: number = 20): FeatureValue {
@@ -945,28 +886,15 @@ export function computeCCI(ctx: FeatureComputeContext, period: number = 20): Fea
 
   if (bars.length < period) return 0;
 
-  const recentBars = bars.slice(-period);
+  const { high, low, close } = extractOHLC(bars);
 
-  // Calculate Typical Price for each bar
-  const typicalPrices = recentBars.map(b => (b.high + b.low + b.close) / 3);
-
-  // Calculate SMA of Typical Price
-  const sma = typicalPrices.reduce((a, b) => a + b, 0) / period;
-
-  // Calculate Mean Deviation
-  const meanDeviation = typicalPrices
-    .map(tp => Math.abs(tp - sma))
-    .reduce((a, b) => a + b, 0) / period;
-
-  if (meanDeviation === 0) return 0;
-
-  // CCI = (Typical Price - SMA) / (0.015 * Mean Deviation)
-  const currentTP = (ctx.bar.high + ctx.bar.low + ctx.bar.close) / 3;
-  return (currentTP - sma) / (0.015 * meanDeviation);
+  const result = CCILib.calculate({ period, high, low, close });
+  return result[result.length - 1] ?? 0;
 }
 
 // ============================================================================
 // Williams %R
+// Uses technicalindicators library
 // ============================================================================
 
 export function computeWilliamsR(ctx: FeatureComputeContext, period: number = 14): FeatureValue {
@@ -974,22 +902,14 @@ export function computeWilliamsR(ctx: FeatureComputeContext, period: number = 14
 
   if (bars.length < period) return -50;
 
-  const recentBars = bars.slice(-period);
-  const highs = recentBars.map(b => b.high);
-  const lows = recentBars.map(b => b.low);
+  const { high, low, close } = extractOHLC(bars);
 
-  const highestHigh = Math.max(...highs);
-  const lowestLow = Math.min(...lows);
-  const currentClose = ctx.bar.close;
-
-  if (highestHigh === lowestLow) return -50;
-
-  // Williams %R = (Highest High - Close) / (Highest High - Lowest Low) * -100
-  return ((highestHigh - currentClose) / (highestHigh - lowestLow)) * -100;
+  const result = WilliamsRLib.calculate({ period, high, low, close });
+  return result[result.length - 1] ?? -50;
 }
 
 // ============================================================================
-// HOD (High of Day)
+// HOD (High of Day) - Keep custom (trivial, no library equivalent)
 // ============================================================================
 
 export function computeHOD(ctx: FeatureComputeContext): FeatureValue {
