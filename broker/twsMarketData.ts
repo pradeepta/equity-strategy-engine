@@ -38,7 +38,6 @@ export class TwsMarketDataClient {
 
     const bars: Bar[] = [];
     let connected = false;
-    let dataComplete = false;
 
     // Wait for connection
     await new Promise<void>((resolve, reject) => {
@@ -163,18 +162,6 @@ export class TwsMarketDataClient {
       }
     );
 
-    client.on(
-      "historicalDataEnd",
-      (id: number, startDateStr: string, endDateStr: string) => {
-        console.log(
-          `Historical data complete for reqId ${id}: ${startDateStr} to ${endDateStr}`
-        );
-        if (id === reqId) {
-          dataComplete = true;
-        }
-      }
-    );
-
     // Request the data
     console.log(
       `Requesting ${days} days of ${timeframe} bars for ${symbol}...`
@@ -186,30 +173,27 @@ export class TwsMarketDataClient {
       duration,
       barSize,
       "TRADES", // whatToShow: TRADES, MIDPOINT, BID, ASK
-      1, // useRTH: 1 = regular trading hours only
+      0, // useRTH: 0 = include extended/overnight hours, 1 = regular trading hours only
       1, // formatDate: 1 = yyyymmdd{space}{space}hh:mm:dd
       false // keepUpToDate: false for historical data only
     );
 
-    // Wait for data to complete (with timeout)
+    // Wait for historicalDataEnd signal (proper IB protocol)
     await new Promise<void>((resolve) => {
-      // Check every 100ms if data is complete
-      const checkInterval = setInterval(() => {
-        if (dataComplete || bars.length > 0) {
-          clearInterval(checkInterval);
+      const timeout = setTimeout(() => {
+        console.log(`Timeout reached, using ${bars.length} bars`);
+        resolve();
+      }, 30000); // 30s timeout for large requests
+
+      client.once("historicalDataEnd", (id: number) => {
+        if (id === reqId) {
+          clearTimeout(timeout);
           console.log(
             `Data collection complete (${bars.length} bars received)`
           );
           resolve();
         }
-      }, 100);
-
-      // Timeout after 10 seconds and use whatever data we have
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        console.log(`Timeout reached, using ${bars.length} bars`);
-        resolve();
-      }, 10000);
+      });
     });
 
     // Disconnect
