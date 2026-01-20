@@ -553,6 +553,27 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sendJSON(res, { error: error.message || 'Failed to reopen strategy' }, 500);
         await factory.disconnect();
       }
+    } else if (pathname === '/api/portfolio/strategy-audit') {
+      // GET /api/portfolio/strategy-audit?limit=100
+      const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        const auditLogs = await strategyRepo.getAllAuditLogs(limit);
+
+        sendJSON(res, {
+          auditLogs,
+          count: auditLogs.length,
+        });
+
+        await factory.disconnect();
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching strategy audit logs:', error);
+        sendJSON(res, { error: error.message || 'Failed to fetch strategy audit logs' }, 500);
+        await factory.disconnect();
+      }
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -575,6 +596,7 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategies - Strategy performance metrics`);
   console.log(`  GET /api/portfolio/trades?limit=20 - Recent trades`);
   console.log(`  GET /api/portfolio/stats - Order statistics`);
+  console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
   console.log(`  GET /health - Health check`);

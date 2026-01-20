@@ -19,8 +19,21 @@ interface AuditLog {
   createdAt: string;
 }
 
+interface StrategyAuditLog {
+  id: string;
+  strategyId: string;
+  eventType: string;
+  oldStatus?: string;
+  newStatus?: string;
+  changedBy?: string;
+  changeReason?: string;
+  metadata?: any;
+  createdAt: string;
+}
+
 export function AuditLogsViewer() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [strategyAudits, setStrategyAudits] = useState<StrategyAuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -30,9 +43,15 @@ export function AuditLogsViewer() {
   const [symbolFilter, setSymbolFilter] = useState<string>("");
   const [strategyFilter, setStrategyFilter] = useState<string>("");
 
+  // Strategy audit filter states
+  const [strategyEventFilter, setStrategyEventFilter] = useState<string>("ALL");
+  const [strategyChangedByFilter, setStrategyChangedByFilter] = useState<string>("ALL");
+
   // Modal state
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [selectedStrategyAudit, setSelectedStrategyAudit] = useState<StrategyAuditLog | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [showStrategyModal, setShowStrategyModal] = useState(false);
 
   const fetchAuditLogs = async () => {
     try {
@@ -51,13 +70,30 @@ export function AuditLogsViewer() {
     }
   };
 
+  const fetchStrategyAudits = async () => {
+    try {
+      const response = await fetch(
+        "http://localhost:3002/api/portfolio/strategy-audit?limit=100"
+      );
+      if (!response.ok) throw new Error("Failed to fetch strategy audits");
+      const data = await response.json();
+      setStrategyAudits(data.auditLogs || []);
+    } catch (err: any) {
+      console.error("Strategy audit fetch error:", err);
+    }
+  };
+
   useEffect(() => {
     fetchAuditLogs();
+    fetchStrategyAudits();
   }, []);
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(fetchAuditLogs, 5000);
+    const interval = setInterval(() => {
+      fetchAuditLogs();
+      fetchStrategyAudits();
+    }, 5000);
     return () => clearInterval(interval);
   }, [autoRefresh]);
 
@@ -116,6 +152,25 @@ export function AuditLogsViewer() {
       !strategyFilter ||
       log.strategyName.toLowerCase().includes(strategyFilter.toLowerCase());
     return matchesEventType && matchesSymbol && matchesStrategy;
+  });
+
+  // Get unique values for strategy audit filters
+  const uniqueStrategyEvents = [
+    "ALL",
+    ...Array.from(new Set(strategyAudits.map((log) => log.eventType))),
+  ];
+  const uniqueChangedBy = [
+    "ALL",
+    ...Array.from(new Set(strategyAudits.map((log) => log.changedBy || "system"))),
+  ];
+
+  // Filter strategy audit logs
+  const filteredStrategyAudits = strategyAudits.filter((log) => {
+    const matchesEventType =
+      strategyEventFilter === "ALL" || log.eventType === strategyEventFilter;
+    const matchesChangedBy =
+      strategyChangedByFilter === "ALL" || (log.changedBy || "system") === strategyChangedByFilter;
+    return matchesEventType && matchesChangedBy;
   });
 
   return (
@@ -335,6 +390,125 @@ export function AuditLogsViewer() {
         </div>
       )}
 
+      {/* Strategy Audit Logs Section */}
+      <div className="dashboard-section dashboard-fixed-height">
+        <div className="dashboard-header">
+          <div className="dashboard-title-group">
+            <h2 className="dashboard-title">Strategy Lifecycle Audit</h2>
+            <div className="dashboard-subtitle">
+              Source: strategy_audit_log table ({strategyAudits.length} events)
+            </div>
+          </div>
+          <div className="dashboard-filters">
+            <select
+              value={strategyEventFilter}
+              onChange={(e) => setStrategyEventFilter(e.target.value)}
+              className="filter-select"
+            >
+              {uniqueStrategyEvents.map((type) => (
+                <option key={type} value={type}>
+                  {type === "ALL" ? "All Events" : type}
+                </option>
+              ))}
+            </select>
+            <select
+              value={strategyChangedByFilter}
+              onChange={(e) => setStrategyChangedByFilter(e.target.value)}
+              className="filter-select"
+            >
+              {uniqueChangedBy.map((by) => (
+                <option key={by} value={by}>
+                  {by === "ALL" ? "All Users" : by}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="dashboard-table-container">
+          <div className="dashboard-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Event</th>
+                  <th>Status Change</th>
+                  <th>Changed By</th>
+                  <th>Reason</th>
+                  <th>Strategy ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredStrategyAudits.length > 0 ? (
+                  filteredStrategyAudits.map((log) => (
+                    <tr
+                      key={log.id}
+                      onClick={() => {
+                        setSelectedStrategyAudit(log);
+                        setShowStrategyModal(true);
+                      }}
+                      className="clickable-row"
+                    >
+                      <td className="time-cell">
+                        {new Date(log.createdAt).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        })}
+                      </td>
+                      <td>
+                        <span
+                          className={`status-badge ${log.eventType.toLowerCase().replace(/_/g, '-')}`}
+                        >
+                          {log.eventType}
+                        </span>
+                      </td>
+                      <td>
+                        {log.oldStatus && log.newStatus ? (
+                          <span className="status-change">
+                            {log.oldStatus} → {log.newStatus}
+                          </span>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td>
+                        <span className="changed-by-badge">
+                          {log.changedBy || "system"}
+                        </span>
+                      </td>
+                      <td className="reason-cell">
+                        {log.changeReason ? (
+                          <span title={log.changeReason}>
+                            {log.changeReason.length > 60
+                              ? log.changeReason.substring(0, 60) + "..."
+                              : log.changeReason}
+                          </span>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td className="audit-id-cell">
+                        <div className="id-badge" title={log.strategyId}>
+                          {log.strategyId.substring(0, 8)}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="empty-row">
+                      No strategy audit logs found
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       {/* Modal for Log Details */}
       {showModal && selectedLog && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
@@ -491,6 +665,121 @@ export function AuditLogsViewer() {
                   <h3 className="modal-section-title">Metadata</h3>
                   <pre className="yaml-content">
                     <code>{JSON.stringify(selectedLog.metadata, null, 2)}</code>
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal for Strategy Audit Details */}
+      {showStrategyModal && selectedStrategyAudit && (
+        <div className="modal-overlay" onClick={() => setShowStrategyModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Strategy Audit Details</h2>
+              <button
+                className="modal-close"
+                onClick={() => setShowStrategyModal(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              {/* Basic Info */}
+              <div className="modal-section">
+                <h3 className="modal-section-title">Event Information</h3>
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Event Type</div>
+                    <div className="modal-value">
+                      <span
+                        className={`status-badge ${selectedStrategyAudit.eventType.toLowerCase().replace(/_/g, '-')}`}
+                      >
+                        {selectedStrategyAudit.eventType}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Changed By</div>
+                    <div className="modal-value">
+                      <span className="changed-by-badge">
+                        {selectedStrategyAudit.changedBy || "system"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="modal-field">
+                    <div className="modal-label">Timestamp</div>
+                    <div className="modal-value">
+                      {new Date(selectedStrategyAudit.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Strategy ID */}
+              <div className="modal-section">
+                <h3 className="modal-section-title">Strategy</h3>
+                <div className="modal-row">
+                  <div className="modal-field">
+                    <div className="modal-label">Strategy ID</div>
+                    <div className="modal-value" style={{ fontFamily: "monospace", fontSize: "13px" }}>
+                      {selectedStrategyAudit.strategyId}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Change */}
+              {(selectedStrategyAudit.oldStatus || selectedStrategyAudit.newStatus) && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Status Change</h3>
+                  <div className="modal-row">
+                    {selectedStrategyAudit.oldStatus && (
+                      <div className="modal-field">
+                        <div className="modal-label">Old Status</div>
+                        <div className="modal-value">
+                          <span
+                            className={`status-badge ${selectedStrategyAudit.oldStatus.toLowerCase()}`}
+                          >
+                            {selectedStrategyAudit.oldStatus}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {selectedStrategyAudit.newStatus && (
+                      <div className="modal-field">
+                        <div className="modal-label">New Status</div>
+                        <div className="modal-value">
+                          <span
+                            className={`status-badge ${selectedStrategyAudit.newStatus.toLowerCase()}`}
+                          >
+                            {selectedStrategyAudit.newStatus}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Change Reason */}
+              {selectedStrategyAudit.changeReason && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Change Reason</h3>
+                  <div className="modal-value">
+                    {selectedStrategyAudit.changeReason}
+                  </div>
+                </div>
+              )}
+
+              {/* Metadata */}
+              {selectedStrategyAudit.metadata && (
+                <div className="modal-section">
+                  <h3 className="modal-section-title">Metadata</h3>
+                  <pre className="yaml-content">
+                    <code>{JSON.stringify(selectedStrategyAudit.metadata, null, 2)}</code>
                   </pre>
                 </div>
               )}

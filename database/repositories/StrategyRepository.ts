@@ -225,21 +225,45 @@ export class StrategyRepository {
   /**
    * Activate strategy (DRAFT/PENDING -> ACTIVE)
    */
-  async activate(strategyId: string, changedBy: string = 'system'): Promise<Strategy> {
+  async activate(
+    strategyId: string,
+    changedBy: string = 'system',
+    options?: {
+      isSwap?: boolean;
+      replacedStrategyId?: string;
+      swapReason?: string;
+      evaluationScore?: number;
+    }
+  ): Promise<Strategy> {
     return this.prisma.$transaction(async (tx) => {
       const strategy = await tx.strategy.findUniqueOrThrow({
         where: { id: strategyId },
       });
 
+      // Determine event type and reason based on context
+      const eventType = options?.isSwap ? 'SWAPPED_IN' : 'ACTIVATED';
+      const changeReason = options?.isSwap
+        ? `Swapped in: ${options.swapReason || 'Replacing strategy'}`
+        : 'Strategy activated by orchestrator';
+
+      // Build metadata
+      const metadata: Record<string, unknown> | undefined = options?.isSwap
+        ? {
+            replacedStrategyId: options.replacedStrategyId,
+            evaluationScore: options.evaluationScore,
+          }
+        : undefined;
+
       // Create audit log entry
       await tx.strategyAuditLog.create({
         data: {
           strategyId,
-          eventType: 'ACTIVATED',
+          eventType,
           oldStatus: strategy.status,
           newStatus: 'ACTIVE',
           changedBy,
-          changeReason: 'Strategy activated by orchestrator',
+          changeReason,
+          metadata: metadata as Prisma.InputJsonValue | undefined,
         },
       });
 
@@ -257,21 +281,46 @@ export class StrategyRepository {
   /**
    * Close strategy (ACTIVE -> CLOSED)
    */
-  async close(strategyId: string, reason?: string, changedBy: string = 'system'): Promise<Strategy> {
+  async close(
+    strategyId: string,
+    reason?: string,
+    changedBy: string = 'system',
+    options?: {
+      isSwap?: boolean;
+      newStrategyId?: string;
+      evaluationScore?: number;
+    }
+  ): Promise<Strategy> {
     return this.prisma.$transaction(async (tx) => {
       const strategy = await tx.strategy.findUniqueOrThrow({
         where: { id: strategyId },
       });
 
+      // Determine event type based on context
+      const eventType = options?.isSwap ? 'SWAPPED_OUT' : 'CLOSED';
+      const changeReason = options?.isSwap
+        ? `Swapped out: ${reason || 'Replaced by better strategy'}`
+        : reason || 'Strategy closed';
+
+      // Build metadata
+      const metadata: Record<string, unknown> | undefined = options?.isSwap
+        ? {
+            swapReason: reason,
+            newStrategyId: options.newStrategyId,
+            evaluationScore: options.evaluationScore,
+          }
+        : undefined;
+
       // Create audit log entry
       await tx.strategyAuditLog.create({
         data: {
           strategyId,
-          eventType: 'CLOSED',
+          eventType,
           oldStatus: strategy.status,
           newStatus: 'CLOSED',
           changedBy,
-          changeReason: reason || 'Strategy closed',
+          changeReason,
+          metadata: metadata as Prisma.InputJsonValue | undefined,
         },
       });
 

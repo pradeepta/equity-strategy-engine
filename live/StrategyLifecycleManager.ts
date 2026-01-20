@@ -369,10 +369,19 @@ export class StrategyLifecycleManager {
       }
 
       // Activate new strategy only after runtime swap succeeds
-      await this.strategyRepo.activate(newStrategy.id);
+      await this.strategyRepo.activate(newStrategy.id, 'evaluator', {
+        isSwap: true,
+        replacedStrategyId: oldStrategyId,
+        swapReason: response.reason,
+        evaluationScore: response.confidence,
+      });
 
       // Close old strategy in database after successful swap
-      await this.strategyRepo.close(oldStrategyId, response.reason);
+      await this.strategyRepo.close(oldStrategyId, response.reason, 'evaluator', {
+        isSwap: true,
+        newStrategyId: newStrategy.id,
+        evaluationScore: response.confidence,
+      });
       await this.execHistoryRepo.logDeactivation(
         oldStrategyId,
         response.reason
