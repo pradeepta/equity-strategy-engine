@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import { WebSocket } from "ws";
-import type { Session, PermissionOption } from "./types.js";
 import { AUTO_APPROVE_PERMISSIONS } from "./config.js";
+import type { PermissionOption, Session } from "./types.js";
 
 export function spawnAgent(session: Session): void {
   if (session.child) {

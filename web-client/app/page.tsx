@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AcpClient } from "../src/lib/acpClient";
-import { LogsViewer } from "./components/LogsViewer";
 import { AuditLogsViewer } from "./components/AuditLogsViewer";
+import { LogsViewer } from "./components/LogsViewer";
 
 type ChatMessage = {
   role: "user" | "agent";
