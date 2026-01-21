@@ -879,6 +879,73 @@ if (side === 'buy') {
 - **CRITICAL**: When updating one, must update the other to match
 - Consider extracting to shared module if divergence becomes an issue
 
+### 6. Multiple Concurrent Strategies Per Symbol (2026-01-21)
+
+**New Capability:** The system now supports running multiple strategies on the same symbol concurrently.
+
+**Previous Behavior:**
+- Only ONE active strategy per symbol was allowed (e.g., only one NVDA strategy)
+- Database constraint: `@@unique([userId, symbol, status, deletedAt])`
+- Runtime check prevented loading duplicate symbols
+
+**New Behavior:**
+- **Multiple strategies can trade the same symbol simultaneously**
+- Example: Run NVDA-RSI, NVDA-MACD, and NVDA-BB all at once
+- Each strategy operates independently with isolated orders and state
+
+**Architecture Changes:**
+
+1. **Database Schema** ([prisma/schema.prisma](prisma/schema.prisma))
+   - Removed `@@unique([userId, symbol, status, deletedAt])` constraint
+   - Strategies are now uniquely identified by ID only
+
+2. **MultiStrategyManager** ([live/MultiStrategyManager.ts](live/MultiStrategyManager.ts))
+   - Changed from `Map<symbol, StrategyInstance>` to `Map<strategyId, StrategyInstance>`
+   - Added `symbolIndex: Map<symbol, Set<strategyId>>` for symbol-based lookups
+   - `processBar()` now distributes bars to ALL strategies for a symbol
+   - New method: `getStrategiesForSymbol(symbol)` returns array
+
+3. **Distributed Locking** ([live/LiveTradingOrchestrator.ts](live/LiveTradingOrchestrator.ts), [live/StrategyLifecycleManager.ts](live/StrategyLifecycleManager.ts))
+   - Lock keys changed from `symbol:${symbol}` to `strategy_swap:${strategyId}`
+   - Swapping one strategy no longer blocks swaps of other strategies on same symbol
+   - New methods: `lockStrategy()`, `unlockStrategy()`, `isStrategyLocked()`
+
+4. **Bar Distribution** ([live/LiveTradingOrchestrator.ts](live/LiveTradingOrchestrator.ts))
+   - Market data fetched once per symbol, distributed to all strategies
+   - Each strategy processes bars independently and maintains separate state
+
+**Use Cases:**
+```bash
+# Run three different strategies on NVDA simultaneously
+npm run strategy:add -- --file=strategies/nvda-rsi.yaml       # RSI mean reversion
+npm run strategy:add -- --file=strategies/nvda-macd.yaml      # MACD momentum
+npm run strategy:add -- --file=strategies/nvda-bb.yaml        # Bollinger breakout
+
+# Each strategy:
+# - Processes the same market bars
+# - Maintains independent FSM state
+# - Places independent orders
+# - Can be swapped/closed without affecting others
+```
+
+**Benefits:**
+- **Strategy diversification**: Test multiple approaches on same symbol
+- **Reduced correlation**: Different entry signals reduce simultaneous entries
+- **Parallel evaluation**: Evaluator can swap one underperforming strategy while others continue
+- **Better capital utilization**: Multiple strategies can capture different market regimes
+
+**Constraints:**
+- `maxConcurrentStrategies` still enforced (default: 10 total strategies across all symbols)
+- Each strategy respects `maxRiskPerTrade` independently
+- Consider overall symbol exposure when running multiple strategies
+
+**Testing:**
+- Database tests: `npm test -- __tests__/schema-multi-strategy.test.ts` (7 tests)
+- Integration tests: `npm test -- __tests__/integration-multi-strategy.test.ts` (6 tests)
+- All tests passing ✅
+
+**Migration:** Requires database migration `20260121025340_remove_symbol_unique_constraint`
+
 ---
 
 ## Troubleshooting Common Issues
@@ -1220,7 +1287,8 @@ The MCP server exposes the following tools for AI agents to interact with the tr
 
 - **`get_active_strategies`** - Get list of currently active strategies
   - Data source: Database
-  - Use this to check for conflicts before deploying (avoid duplicate symbols)
+  - Use this to understand current symbol allocation and strategy distribution
+  - **Note**: Multiple strategies can now run on the same symbol concurrently
   - Returns: strategies array with id, name, symbol, timeframe, status, yamlContent
 
 ### Sector Analysis Tools (NEW)
@@ -1279,10 +1347,11 @@ const marketData = await get_market_data({ symbol: "AAPL", timeframe: "5m", limi
 // - Check volatility
 // - Identify trends
 
-// Check for conflicts
+// Check current allocation
 const activeStrategies = await get_active_strategies()
-// - Ensure no duplicate symbols (unless user explicitly wants)
-// - Review timeframe distribution
+// - Review symbol distribution (multiple strategies per symbol are now allowed)
+// - Check timeframe diversity
+// - Assess overall risk exposure
 ```
 
 2. **Create Strategy** (with context-aware decisions):

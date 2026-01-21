@@ -58,10 +58,11 @@ A production-ready algorithmic trading system with database-backed strategy mana
 - **Multi-User Support**: Isolate strategies by user ID
 
 ### 🎯 Multi-Strategy Orchestration
-- **Concurrent Strategies**: Run up to N strategies simultaneously (configurable)
+- **Concurrent Strategies**: Run up to N strategies simultaneously (configurable, default: 10)
+- **Multiple Strategies Per Symbol**: Run multiple strategies on the same symbol (e.g., NVDA-RSI + NVDA-MACD + NVDA-BB)
 - **Per-Symbol Timeframes**: Mix 1m, 5m, 1h, 1d strategies in same instance
 - **Smart Polling**: Sleep interval adapts to shortest strategy timeframe
-- **Hot-Swapping**: Replace strategies without stopping orchestrator
+- **Hot-Swapping**: Replace individual strategies without affecting others on same symbol
 
 ### ⚙️ Live Trading Engine
 - **FSM-Based Runtime**: Finite State Machine manages complete trade lifecycle

@@ -134,7 +134,8 @@ model Strategy {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
-  @@unique([userId, symbol, status, deletedAt])  // One active strategy per symbol per user
+  // REMOVED: @@unique([userId, symbol, status, deletedAt])
+  // Multiple strategies per symbol are now allowed
   @@index([userId, status])
   @@index([symbol])
   @@index([status])

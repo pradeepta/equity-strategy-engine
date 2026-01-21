@@ -383,36 +383,38 @@ export class LiveTradingOrchestrator {
               strategiesNeedingBars
             );
 
-          // Process bars for each strategy
+          // Process bars for each symbol (distributes to all strategies)
           for (const [symbol, bars] of latestBars.entries()) {
-            const instance =
-              this.multiStrategyManager.getStrategyBySymbol(symbol);
-            if (!instance) continue;
-
-            // Mark bars as fetched
-            instance.markBarsFetched();
+            const strategies = this.multiStrategyManager.getStrategiesForSymbol(symbol);
+            if (strategies.length === 0) continue;
 
             // Process bars: warm up on historical bars, act only on latest
             if (bars.length === 0) {
               continue;
             }
 
-            if (bars.length === 1) {
-              await instance.processBar(bars[0]);
-            } else {
-              const warmupBars = bars.slice(0, -1);
-              const liveBar = bars[bars.length - 1];
+            // Process for each strategy on this symbol
+            for (const instance of strategies) {
+              // Mark bars as fetched
+              instance.markBarsFetched();
 
-              for (const bar of warmupBars) {
-                await instance.processBar(bar, { replay: true });
+              if (bars.length === 1) {
+                await instance.processBar(bars[0]);
+              } else {
+                const warmupBars = bars.slice(0, -1);
+                const liveBar = bars[bars.length - 1];
+
+                for (const bar of warmupBars) {
+                  await instance.processBar(bar, { replay: true });
+                }
+
+                await instance.processBar(liveBar);
               }
 
-              await instance.processBar(liveBar);
-            }
-
-            // Check if evaluation is due (every bar for now)
-            if (instance.shouldEvaluate(1)) {
-              await this.lifecycleManager.evaluateStrategy(instance);
+              // Check if evaluation is due (every bar for now)
+              if (instance.shouldEvaluate(1)) {
+                await this.lifecycleManager.evaluateStrategy(instance);
+              }
             }
           }
         }
@@ -453,13 +455,7 @@ export class LiveTradingOrchestrator {
         return;
       }
 
-      // Check if strategy for this symbol already exists
-      if (this.multiStrategyManager.getStrategyBySymbol(strategy.symbol)) {
-        logger.info(
-          `⚠️  Strategy for ${strategy.symbol} already loaded. Skipping.`
-        );
-        return;
-      }
+      // REMOVED: Symbol duplicate check - multiple strategies per symbol now allowed
 
       // Check max concurrent strategies
       if (
@@ -653,29 +649,46 @@ export class LiveTradingOrchestrator {
   }
 
   /**
-   * Lock a symbol during swap operation
-   * Now uses distributed PostgreSQL advisory locks
+   * Lock a strategy during swap operation
+   * Now uses strategy ID instead of symbol to allow independent swaps
+   * Uses distributed PostgreSQL advisory locks
    * Reduced timeout from 30s to 5s to fail fast on contention
    */
-  async lockSymbol(symbol: string): Promise<boolean> {
-    const lockKey = DistributedLockService.symbolLockKey(symbol);
-    return await this.lockService.acquireLock(lockKey, 5000); // 5 seconds instead of 30
+  async lockStrategy(strategyId: string): Promise<boolean> {
+    const lockKey = `strategy_swap:${strategyId}`;
+    return await this.lockService.acquireLock(lockKey, 5000);
   }
 
   /**
-   * Unlock a symbol after swap operation
+   * Unlock a strategy after swap operation
    */
-  async unlockSymbol(symbol: string): Promise<void> {
-    const lockKey = DistributedLockService.symbolLockKey(symbol);
+  async unlockStrategy(strategyId: string): Promise<void> {
+    const lockKey = `strategy_swap:${strategyId}`;
     await this.lockService.releaseLock(lockKey);
   }
 
   /**
-   * Check if a symbol is currently locked (non-blocking)
+   * Check if a strategy is currently locked (non-blocking)
    */
-  async isSymbolLocked(symbol: string): Promise<boolean> {
-    const lockKey = DistributedLockService.symbolLockKey(symbol);
+  async isStrategyLocked(strategyId: string): Promise<boolean> {
+    const lockKey = `strategy_swap:${strategyId}`;
     return await this.lockService.isLocked(lockKey);
+  }
+
+  // Deprecated: kept for backward compatibility
+  async lockSymbol(symbol: string): Promise<boolean> {
+    console.warn('lockSymbol is deprecated, use lockStrategy instead');
+    return this.lockStrategy(symbol);
+  }
+
+  async unlockSymbol(symbol: string): Promise<void> {
+    console.warn('unlockSymbol is deprecated, use unlockStrategy instead');
+    return this.unlockStrategy(symbol);
+  }
+
+  async isSymbolLocked(symbol: string): Promise<boolean> {
+    console.warn('isSymbolLocked is deprecated, use isStrategyLocked instead');
+    return this.isStrategyLocked(symbol);
   }
 
   /**

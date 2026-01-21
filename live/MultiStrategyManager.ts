@@ -1,7 +1,7 @@
 /**
  * Multi-Strategy Manager
  * Manages multiple StrategyInstance objects, coordinates bar distribution
- * Updated to work with database instead of filesystem
+ * Refactored to support multiple strategies per symbol using strategy ID as primary key
  */
 
 import { StrategyInstance } from './StrategyInstance';
@@ -11,15 +11,17 @@ import { Bar, BrokerEnvironment } from '../spec/types';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
 
 export class MultiStrategyManager {
-  private instances: Map<string, StrategyInstance>;  // symbol -> instance
+  private instances: Map<string, StrategyInstance>;  // strategyId -> instance
+  private symbolIndex: Map<string, Set<string>>;    // symbol -> Set<strategyId>
   private brokerAdapter: BaseBrokerAdapter;
   private brokerEnv: BrokerEnvironment;
-  private marketDataClients: Map<string, TwsMarketDataClient>;  // symbol -> client
+  private marketDataClients: Map<string, TwsMarketDataClient>;  // symbol -> client (shared across strategies)
   private clientIdCounter: number = 10;  // Start at 10 to avoid conflicts with main clients
   private strategyRepo: StrategyRepository;
 
   constructor(adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment, strategyRepo: StrategyRepository) {
     this.instances = new Map();
+    this.symbolIndex = new Map();
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
     this.marketDataClients = new Map();
@@ -39,12 +41,7 @@ export class MultiStrategyManager {
       throw new Error(`Strategy not found: ${strategyId}`);
     }
 
-    // Check for duplicate symbol
-    if (this.instances.has(strategy.symbol)) {
-      throw new Error(
-        `Strategy for ${strategy.symbol} already loaded. Remove existing first or use swapStrategyById().`
-      );
-    }
+    // REMOVED: Duplicate symbol check - now allowed
 
     // Create strategy instance
     const instance = new StrategyInstance(
@@ -60,15 +57,23 @@ export class MultiStrategyManager {
     // Initialize (compiles YAML, creates engine)
     await instance.initialize();
 
-    // Store instance
-    this.instances.set(strategy.symbol, instance);
+    // Store instance by strategy ID
+    this.instances.set(strategy.id, instance);
 
-    // Create market data client for this symbol
-    const clientId = this.clientIdCounter++;
-    const twsHost = process.env.TWS_HOST || '127.0.0.1';
-    const twsPort = parseInt(process.env.TWS_PORT || '7497');
-    const marketDataClient = new TwsMarketDataClient(twsHost, twsPort, clientId);
-    this.marketDataClients.set(instance.symbol, marketDataClient);
+    // Update symbol index
+    if (!this.symbolIndex.has(strategy.symbol)) {
+      this.symbolIndex.set(strategy.symbol, new Set());
+    }
+    this.symbolIndex.get(strategy.symbol)!.add(strategy.id);
+
+    // Create or reuse market data client for this symbol
+    if (!this.marketDataClients.has(strategy.symbol)) {
+      const clientId = this.clientIdCounter++;
+      const twsHost = process.env.TWS_HOST || '127.0.0.1';
+      const twsPort = parseInt(process.env.TWS_PORT || '7497');
+      const marketDataClient = new TwsMarketDataClient(twsHost, twsPort, clientId);
+      this.marketDataClients.set(strategy.symbol, marketDataClient);
+    }
 
     console.log(`✓ Loaded strategy: ${instance.strategyName} for ${instance.symbol} (ID: ${strategyId})`);
 
@@ -76,59 +81,75 @@ export class MultiStrategyManager {
   }
 
   /**
-   * Remove a strategy by symbol
+   * Remove a strategy by ID
    */
-  async removeStrategy(symbol: string): Promise<void> {
-    const instance = this.instances.get(symbol);
+  async removeStrategy(strategyId: string): Promise<void> {
+    const instance = this.instances.get(strategyId);
     if (!instance) {
-      console.warn(`Strategy for ${symbol} not found`);
+      console.warn(`Strategy ${strategyId} not found`);
       return;
     }
 
-    console.log(`Removing strategy for ${symbol}...`);
+    const symbol = instance.symbol;
+    console.log(`Removing strategy ${strategyId} for ${symbol}...`);
 
     // Shutdown strategy
     await instance.shutdown();
 
-    // Remove from map
-    this.instances.delete(symbol);
+    // Remove from instances map
+    this.instances.delete(strategyId);
 
-    // Remove market data client
-    this.marketDataClients.delete(symbol);
+    // Update symbol index
+    const strategyIds = this.symbolIndex.get(symbol);
+    if (strategyIds) {
+      strategyIds.delete(strategyId);
+      // If no more strategies for this symbol, remove market data client
+      if (strategyIds.size === 0) {
+        this.symbolIndex.delete(symbol);
+        this.marketDataClients.delete(symbol);
+      }
+    }
 
-    console.log(`✓ Removed strategy for ${symbol}`);
+    console.log(`✓ Removed strategy ${strategyId} for ${symbol}`);
   }
 
   /**
-   * Swap strategy for a symbol by ID (remove old, load new)
+   * Swap strategy by ID (remove old, load new)
+   * Now supports swapping one strategy while others on same symbol continue
    */
   async swapStrategyById(
-    symbol: string,
+    oldStrategyId: string,
     newStrategyId: string,
     options?: { skipOrderCancel?: boolean }
   ): Promise<void> {
-    console.log(`Swapping strategy for ${symbol}...`);
+    const oldInstance = this.instances.get(oldStrategyId);
+    if (!oldInstance) {
+      console.warn(`Old strategy ${oldStrategyId} not found, loading new strategy directly`);
+      await this.loadStrategy(newStrategyId);
+      return;
+    }
+
+    const symbol = oldInstance.symbol;
+    console.log(`Swapping strategy ${oldStrategyId} for ${symbol}...`);
 
     // Cancel orders on old strategy
-    const oldInstance = this.instances.get(symbol);
-    if (oldInstance) {
-      if (!options?.skipOrderCancel) {
-        // CRITICAL: Verify cancellation succeeded before proceeding with swap
-        const cancelResult = await oldInstance.cancelAllOrders();
+    if (!options?.skipOrderCancel) {
+      // CRITICAL: Verify cancellation succeeded before proceeding with swap
+      const cancelResult = await oldInstance.cancelAllOrders();
 
-        if (cancelResult.failed.length > 0) {
-          const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
-          const reasons = cancelResult.failed.map(f => f.reason).join('; ');
-          const errorMsg = `Cannot swap strategy for ${symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
-          console.error(errorMsg);
-          throw new Error(errorMsg);
-        }
-
-        console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for ${symbol}`);
+      if (cancelResult.failed.length > 0) {
+        const failedIds = cancelResult.failed.map(f => f.orderId).join(', ');
+        const reasons = cancelResult.failed.map(f => f.reason).join('; ');
+        const errorMsg = `Cannot swap strategy ${oldStrategyId} for ${symbol} - failed to cancel orders: ${failedIds}. Reasons: ${reasons}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
       }
 
-      await this.removeStrategy(symbol);
+      console.log(`✓ Cancelled ${cancelResult.succeeded.length} orders for strategy ${oldStrategyId}`);
     }
+
+    // Remove old strategy
+    await this.removeStrategy(oldStrategyId);
 
     // Load new strategy from database
     await this.loadStrategy(newStrategyId);
@@ -138,7 +159,7 @@ export class MultiStrategyManager {
     const latestBars = await this.fetchLatestBarsForSymbols([symbol]);
     const bars = latestBars.get(symbol);
     if (bars && bars.length > 0) {
-      const newInstance = this.instances.get(symbol);
+      const newInstance = this.instances.get(newStrategyId);
       if (newInstance) {
         newInstance.markBarsFetched();
         if (bars.length === 1) {
@@ -161,20 +182,36 @@ export class MultiStrategyManager {
       }
     }
 
-    console.log(`✓ Swapped strategy for ${symbol}`);
+    console.log(`✓ Swapped strategy ${oldStrategyId} -> ${newStrategyId} for ${symbol}`);
   }
 
   /**
    * Process bar for a specific symbol
+   * Now distributes to ALL strategies for that symbol
    */
-  async processBarForSymbol(symbol: string, bar: Bar): Promise<void> {
-    const instance = this.instances.get(symbol);
-    if (!instance) {
-      console.warn(`No strategy for ${symbol}`);
+  async processBar(symbol: string, bar: Bar): Promise<void> {
+    const strategies = this.getStrategiesForSymbol(symbol);
+    if (strategies.length === 0) {
+      console.warn(`No strategies for ${symbol}`);
       return;
     }
 
-    await instance.processBar(bar);
+    // Process bar for all strategies on this symbol
+    for (const instance of strategies) {
+      try {
+        await instance.processBar(bar);
+      } catch (error) {
+        console.error(`Error processing bar for strategy ${instance.strategyId} (${symbol}):`, error);
+      }
+    }
+  }
+
+  /**
+   * Deprecated: Use processBar() instead
+   * Kept for backward compatibility
+   */
+  async processBarForSymbol(symbol: string, bar: Bar): Promise<void> {
+    return this.processBar(symbol, bar);
   }
 
   /**
@@ -184,8 +221,11 @@ export class MultiStrategyManager {
   async fetchLatestBars(): Promise<Map<string, Bar[]>> {
     const results = new Map<string, Bar[]>();
 
+    // Get unique symbols from symbol index
+    const symbols = Array.from(this.symbolIndex.keys());
+
     // Fetch bars for each symbol concurrently
-    const promises = Array.from(this.instances.entries()).map(async ([symbol, instance]) => {
+    const promises = symbols.map(async (symbol) => {
       try {
         const client = this.marketDataClients.get(symbol);
         if (!client) {
@@ -193,8 +233,21 @@ export class MultiStrategyManager {
           return;
         }
 
+        // Get any instance for this symbol to get timeframe
+        const strategyIds = this.symbolIndex.get(symbol);
+        if (!strategyIds || strategyIds.size === 0) {
+          return;
+        }
+        const firstStrategyId = Array.from(strategyIds)[0];
+        const instance = this.instances.get(firstStrategyId);
+        if (!instance) {
+          return;
+        }
+
         const timeframe = instance.getTimeframe();
         const bars = await client.getHistoricalBars(symbol, 2, timeframe);
+
+        // Filter new bars for the first instance (all share same bars)
         const newBars = instance.filterNewBars(bars);
 
         results.set(symbol, newBars);
@@ -218,9 +271,9 @@ export class MultiStrategyManager {
     // Fetch bars for each symbol concurrently
     const promises = symbols.map(async (symbol) => {
       try {
-        const instance = this.instances.get(symbol);
-        if (!instance) {
-          console.warn(`No strategy instance for ${symbol}`);
+        const strategies = this.getStrategiesForSymbol(symbol);
+        if (strategies.length === 0) {
+          console.warn(`No strategy instances for ${symbol}`);
           return;
         }
 
@@ -230,9 +283,11 @@ export class MultiStrategyManager {
           return;
         }
 
-        const timeframe = instance.getTimeframe();
+        // Use first strategy to get timeframe and filter bars
+        const firstInstance = strategies[0];
+        const timeframe = firstInstance.getTimeframe();
         const bars = await client.getHistoricalBars(symbol, 2, timeframe);
-        const newBars = instance.filterNewBars(bars);
+        const newBars = firstInstance.filterNewBars(bars);
 
         results.set(symbol, newBars);
       } catch (error) {
@@ -253,10 +308,34 @@ export class MultiStrategyManager {
   }
 
   /**
-   * Get strategy by symbol
+   * Get strategies for a specific symbol
+   * Returns array of all strategies trading that symbol
+   */
+  getStrategiesForSymbol(symbol: string): StrategyInstance[] {
+    const strategyIds = this.symbolIndex.get(symbol);
+    if (!strategyIds || strategyIds.size === 0) {
+      return [];
+    }
+
+    return Array.from(strategyIds)
+      .map(id => this.instances.get(id))
+      .filter(instance => instance !== undefined) as StrategyInstance[];
+  }
+
+  /**
+   * Get strategy by ID
+   */
+  getStrategyById(strategyId: string): StrategyInstance | undefined {
+    return this.instances.get(strategyId);
+  }
+
+  /**
+   * Deprecated: Use getStrategiesForSymbol() instead
+   * Returns first strategy for symbol for backward compatibility
    */
   getStrategyBySymbol(symbol: string): StrategyInstance | undefined {
-    return this.instances.get(symbol);
+    const strategies = this.getStrategiesForSymbol(symbol);
+    return strategies.length > 0 ? strategies[0] : undefined;
   }
 
   /**
@@ -267,13 +346,21 @@ export class MultiStrategyManager {
   }
 
   /**
+   * Get count of strategies for a specific symbol
+   */
+  getActiveCountForSymbol(symbol: string): number {
+    const strategyIds = this.symbolIndex.get(symbol);
+    return strategyIds ? strategyIds.size : 0;
+  }
+
+  /**
    * Shutdown all strategies
    */
   async shutdownAll(): Promise<void> {
     console.log('Shutting down all strategies...');
 
-    const promises = Array.from(this.instances.keys()).map(symbol =>
-      this.removeStrategy(symbol)
+    const promises = Array.from(this.instances.keys()).map(strategyId =>
+      this.removeStrategy(strategyId)
     );
 
     await Promise.all(promises);
