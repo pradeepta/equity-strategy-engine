@@ -116,12 +116,12 @@ export class StrategyLifecycleManager {
           level: "ERROR",
           component: "StrategyEvaluator",
           message: `Evaluation failed for ${instance.symbol}`,
-          errorCode: "EVAL_ERROR",
           metadata: {
             symbol: instance.symbol,
             strategyId: instance.strategyId,
             strategyName: instance.strategyName,
             reason: response.reason,
+            errorCode: "EVAL_ERROR",
             confidence: response.confidence,
             recommendation: response.recommendation,
           },
@@ -207,15 +207,16 @@ export class StrategyLifecycleManager {
     };
 
     try {
-      // Lock the symbol to prevent concurrent operations (distributed lock)
+      // Lock the strategy to prevent concurrent operations (distributed lock)
       // Using 5-second timeout instead of 30 seconds to fail fast on contention
+      // Now uses strategy ID instead of symbol to allow parallel swaps
       if (this.orchestrator) {
-        const lockAcquired = await this.orchestrator.lockSymbol(
-          instance.symbol
+        const lockAcquired = await this.orchestrator.lockStrategy(
+          instance.strategyId
         );
         if (!lockAcquired) {
           console.warn(
-            `⚠️  Failed to acquire lock for ${instance.symbol}. Another swap is in progress.`
+            `⚠️  Failed to acquire lock for strategy ${instance.strategyId}. Another swap is in progress.`
           );
           // Don't throw - mark as failed and let retry queue handle it
           await failOperation(
@@ -453,9 +454,9 @@ export class StrategyLifecycleManager {
       });
       throw error;
     } finally {
-      // Always unlock the symbol, even if swap failed
+      // Always unlock the strategy, even if swap failed
       if (this.orchestrator) {
-        await this.orchestrator.unlockSymbol(instance.symbol);
+        await this.orchestrator.unlockStrategy(instance.strategyId);
       }
     }
   }
