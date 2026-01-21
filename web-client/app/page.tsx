@@ -469,6 +469,11 @@ function Dashboard() {
   const [isClosing, setIsClosing] = useState(false);
   const [isReopening, setIsReopening] = useState(false);
 
+  // Backtest states
+  const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [isBacktesting, setIsBacktesting] = useState(false);
+  const [backtestError, setBacktestError] = useState<string | null>(null);
+
   // Notification state
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -571,6 +576,38 @@ function Dashboard() {
       setNotification({ type: 'error', message: error.message || 'Failed to reopen strategy' });
     } finally {
       setIsReopening(false);
+    }
+  };
+
+  // Backtest handler
+  const handleRunBacktest = async () => {
+    if (!selectedStrategy) return;
+
+    setIsBacktesting(true);
+    setBacktestError(null);
+    setBacktestResult(null);
+
+    try {
+      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/backtest`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to run backtest');
+      }
+
+      const data = await response.json();
+      setBacktestResult(data.backtest);
+      setNotification({ type: 'success', message: 'Backtest completed successfully' });
+    } catch (error: any) {
+      setBacktestError(error.message || 'Failed to run backtest');
+      setNotification({ type: 'error', message: error.message || 'Failed to run backtest' });
+    } finally {
+      setIsBacktesting(false);
     }
   };
 
@@ -959,6 +996,161 @@ function Dashboard() {
                   </pre>
                 </div>
               )}
+
+              {/* Backtest Section */}
+              <div className="modal-section">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                  <h3 className="modal-section-title" style={{ margin: 0 }}>Backtest (Last 180 Bars)</h3>
+                  <button
+                    className="backtest-button"
+                    onClick={handleRunBacktest}
+                    disabled={isBacktesting}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: isBacktesting ? '#d4d4d4' : '#f55036',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      fontWeight: 600,
+                      cursor: isBacktesting ? 'not-allowed' : 'pointer',
+                      transition: 'background-color 0.2s',
+                    }}
+                  >
+                    {isBacktesting ? 'Running...' : 'Run Backtest'}
+                  </button>
+                </div>
+
+                {backtestError && (
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: '#fef2f2',
+                    border: '1px solid #fecaca',
+                    borderRadius: '6px',
+                    color: '#991b1b',
+                    fontSize: '14px',
+                  }}>
+                    {backtestError}
+                  </div>
+                )}
+
+                {backtestResult && (
+                  <div className="backtest-results">
+                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                      <div className="modal-field">
+                        <div className="modal-label">Bars Processed</div>
+                        <div className="modal-value">{backtestResult.barsProcessed}</div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Final State</div>
+                        <div className="modal-value">
+                          <span className={`status-badge ${backtestResult.finalState.toLowerCase()}`}>
+                            {backtestResult.finalState}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Price Change</div>
+                        <div className={`modal-value ${backtestResult.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
+                          {backtestResult.priceChangePercent >= 0 ? '+' : ''}{backtestResult.priceChangePercent.toFixed(2)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                      <div className="modal-field">
+                        <div className="modal-label">Total Trades</div>
+                        <div className="modal-value">{backtestResult.totalTrades}</div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Win Rate</div>
+                        <div className="modal-value">{backtestResult.winRate.toFixed(1)}%</div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Realized P&L</div>
+                        <div className={`modal-value ${backtestResult.realizedPnL >= 0 ? 'positive' : 'negative'}`}>
+                          ${backtestResult.realizedPnL.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                      <div className="modal-field">
+                        <div className="modal-label">Orders Placed</div>
+                        <div className="modal-value">{backtestResult.ordersPlaced}</div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Orders Filled</div>
+                        <div className="modal-value">{backtestResult.ordersFilled}</div>
+                      </div>
+                      <div className="modal-field">
+                        <div className="modal-label">Stop Loss Hits</div>
+                        <div className="modal-value" style={{ color: backtestResult.stopLossHits > 0 ? '#dc2626' : 'inherit' }}>
+                          {backtestResult.stopLossHits}
+                        </div>
+                      </div>
+                    </div>
+
+                    {backtestResult.invalidations > 0 && (
+                      <div style={{
+                        padding: '12px',
+                        backgroundColor: '#fef9c3',
+                        border: '1px solid #fde047',
+                        borderRadius: '6px',
+                        marginBottom: '16px',
+                      }}>
+                        <div style={{ fontWeight: 600, marginBottom: '8px', color: '#854d0e' }}>
+                          Invalidations: {backtestResult.invalidations}
+                        </div>
+                        <div style={{ fontSize: '13px', color: '#a16207' }}>
+                          {backtestResult.invalidationReasons.map((reason: string, idx: number) => (
+                            <div key={idx} style={{ marginBottom: '4px' }}>• {reason}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {backtestResult.stateTransitions.length > 0 && (
+                      <div>
+                        <div style={{ fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>
+                          State Transitions ({backtestResult.stateTransitions.length})
+                        </div>
+                        <div style={{
+                          maxHeight: '200px',
+                          overflowY: 'auto',
+                          border: '1px solid #ebe6dd',
+                          borderRadius: '6px',
+                          padding: '8px',
+                          fontSize: '13px',
+                        }}>
+                          {backtestResult.stateTransitions.map((transition: any, idx: number) => (
+                            <div key={idx} style={{
+                              padding: '6px',
+                              borderBottom: idx < backtestResult.stateTransitions.length - 1 ? '1px solid #f5f5f4' : 'none',
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <div>
+                                  <span style={{ fontWeight: 600 }}>Bar {transition.bar}:</span>{' '}
+                                  <span className={`status-badge ${transition.from.toLowerCase()}`} style={{ fontSize: '11px', padding: '2px 6px' }}>
+                                    {transition.from}
+                                  </span>
+                                  {' → '}
+                                  <span className={`status-badge ${transition.to.toLowerCase()}`} style={{ fontSize: '11px', padding: '2px 6px' }}>
+                                    {transition.to}
+                                  </span>
+                                </div>
+                                <div style={{ color: '#737373' }}>
+                                  ${transition.price.toFixed(2)}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Modal Actions Footer */}

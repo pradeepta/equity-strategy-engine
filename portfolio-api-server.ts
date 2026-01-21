@@ -8,6 +8,8 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { getRepositoryFactory } from './database/RepositoryFactory';
+import { TwsMarketDataClient } from './broker/twsMarketData';
+import { BacktestEngine } from './backtest/BacktestEngine';
 import 'dotenv/config';
 
 // Create PostgreSQL connection pool
@@ -439,7 +441,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen')) {
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/backtest')) {
       // GET /api/portfolio/strategies/:id - Get single strategy details
       if (req.method !== 'GET') {
         sendJSON(res, { error: 'Method not allowed' }, 405);
@@ -614,6 +616,82 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } catch (error: any) {
         console.error('[portfolio-api] Error fetching strategy audit logs:', error);
         sendJSON(res, { error: error.message || 'Failed to fetch strategy audit logs' }, 500);
+      }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/backtest')) {
+      // POST /api/portfolio/strategies/:id/backtest
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/backtest
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        // Get strategy
+        const strategy = await strategyRepo.findById(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        // Parse timeframe to determine bar count (default 180 bars)
+        const timeframe = strategy.timeframe || '5m';
+        const barCount = 180;
+
+        // Calculate days needed based on timeframe
+        let daysNeeded = 1;
+        if (timeframe.includes('m')) {
+          // Minutes: 180 bars * X minutes / (60 min/hr * 24 hr/day)
+          const minutes = parseInt(timeframe.replace('m', ''));
+          daysNeeded = Math.ceil((barCount * minutes) / (60 * 24)) + 1;
+        } else if (timeframe.includes('h')) {
+          // Hours
+          const hours = parseInt(timeframe.replace('h', ''));
+          daysNeeded = Math.ceil((barCount * hours) / 24) + 1;
+        } else if (timeframe === '1day' || timeframe === '1d') {
+          daysNeeded = barCount;
+        }
+
+        // Fetch historical bars from TWS
+        const twsHost = process.env.TWS_HOST || '127.0.0.1';
+        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+        const marketDataClient = new TwsMarketDataClient(twsHost, twsPort, 999); // Use unique client ID
+
+        console.log(`[backtest] Fetching ${barCount} bars (${daysNeeded} days) for ${strategy.symbol} @ ${timeframe}`);
+
+        const bars = await marketDataClient.getHistoricalBars(
+          strategy.symbol,
+          daysNeeded,
+          timeframe
+        );
+
+        if (bars.length === 0) {
+          sendJSON(res, { error: 'No historical data available' }, 500);
+          return;
+        }
+
+        // Take last 180 bars
+        const barsToTest = bars.slice(-barCount);
+
+        console.log(`[backtest] Running backtest with ${barsToTest.length} bars`);
+
+        // Run backtest
+        const backtestEngine = new BacktestEngine();
+        const result = await backtestEngine.runBacktestFromYAML(strategy.yamlContent, barsToTest);
+
+        console.log(`[backtest] Backtest complete: ${result.totalTrades} trades, P&L: ${result.realizedPnL.toFixed(2)}`);
+
+        sendJSON(res, {
+          success: true,
+          backtest: result,
+        });
+      } catch (error: any) {
+        console.error('[backtest] Error running backtest:', error);
+        sendJSON(res, { error: error.message || 'Failed to run backtest' }, 500);
       }
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
