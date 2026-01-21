@@ -12,6 +12,7 @@ import { EvaluationRequest, EvaluationResponse } from "../evaluation/types";
 import { StrategyRepository } from "../database/repositories/StrategyRepository";
 import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHistoryRepository";
 import { OrderRepository } from "../database/repositories/OrderRepository";
+import { SystemLogRepository } from "../database/repositories/SystemLogRepository";
 import { OperationQueueService } from "./queue/OperationQueueService";
 import * as YAML from "yaml";
 
@@ -22,6 +23,7 @@ export class StrategyLifecycleManager {
   private strategyRepo: StrategyRepository;
   private execHistoryRepo: ExecutionHistoryRepository;
   private orderRepo: OrderRepository;
+  private systemLogRepo: SystemLogRepository;
   private operationQueue: OperationQueueService;
   private orchestrator?: any; // Reference to orchestrator for locking
   private exitOrdersInFlight: Set<string> = new Set();
@@ -33,6 +35,7 @@ export class StrategyLifecycleManager {
     strategyRepo: StrategyRepository,
     execHistoryRepo: ExecutionHistoryRepository,
     orderRepo: OrderRepository,
+    systemLogRepo: SystemLogRepository,
     operationQueue: OperationQueueService
   ) {
     this.multiStrategyManager = manager;
@@ -41,6 +44,7 @@ export class StrategyLifecycleManager {
     this.strategyRepo = strategyRepo;
     this.execHistoryRepo = execHistoryRepo;
     this.orderRepo = orderRepo;
+    this.systemLogRepo = systemLogRepo;
     this.operationQueue = operationQueue;
   }
 
@@ -105,6 +109,24 @@ export class StrategyLifecycleManager {
       console.log(`   Recommendation: ${response.recommendation}`);
       console.log(`   Confidence: ${(response.confidence * 100).toFixed(0)}%`);
       console.log(`   Reason: ${response.reason}`);
+
+      // Log evaluation errors to database for UI display
+      if (response.reason.includes("Evaluation error")) {
+        await this.systemLogRepo.create({
+          level: "ERROR",
+          component: "StrategyEvaluator",
+          message: `Evaluation failed for ${instance.symbol}`,
+          errorCode: "EVAL_ERROR",
+          metadata: {
+            symbol: instance.symbol,
+            strategyId: instance.strategyId,
+            strategyName: instance.strategyName,
+            reason: response.reason,
+            confidence: response.confidence,
+            recommendation: response.recommendation,
+          },
+        });
+      }
 
       const evaluation = await this.execHistoryRepo.logEvaluation({
         strategyId: instance.strategyId,

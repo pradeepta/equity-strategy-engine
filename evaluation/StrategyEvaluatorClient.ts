@@ -81,6 +81,9 @@ export class StrategyEvaluatorClient {
     reject: (err: Error) => void;
     buffer: string;
   } | null = null;
+  private lastEvaluationError: { timestamp: number; message: string } | null = null;
+  private consecutiveErrors = 0;
+  private maxRetries = 2;
 
   constructor(endpoint: string, enabled: boolean = true) {
     this.endpoint = endpoint;
@@ -90,7 +93,22 @@ export class StrategyEvaluatorClient {
   }
 
   /**
-   * Evaluate strategy appropriateness
+   * Get last evaluation error for UI display
+   */
+  getLastError(): { timestamp: number; message: string } | null {
+    return this.lastEvaluationError;
+  }
+
+  /**
+   * Clear error state
+   */
+  clearError(): void {
+    this.lastEvaluationError = null;
+    this.consecutiveErrors = 0;
+  }
+
+  /**
+   * Evaluate strategy appropriateness with retry logic
    */
   async evaluate(
     request: EvaluationRequest,
@@ -108,26 +126,72 @@ export class StrategyEvaluatorClient {
     }
 
     const timeout = options.timeout || 50000;
+    let lastError: Error | null = null;
 
-    try {
-      if (this.stubMode) {
-        return await this.evaluateStub(request);
-      } else {
-        return await this.evaluateWebSocket(request, timeout);
+    // Retry logic: attempt evaluation up to maxRetries times
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        if (this.stubMode) {
+          const result = await this.evaluateStub(request);
+          // Success - clear error state
+          if (this.consecutiveErrors > 0) {
+            console.log(`✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`);
+          }
+          this.consecutiveErrors = 0;
+          this.lastEvaluationError = null;
+          return result;
+        } else {
+          const result = await this.evaluateWebSocket(request, timeout);
+          // Success - clear error state
+          if (this.consecutiveErrors > 0) {
+            console.log(`✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`);
+          }
+          this.consecutiveErrors = 0;
+          this.lastEvaluationError = null;
+          return result;
+        }
+      } catch (error: any) {
+        lastError = error;
+
+        if (attempt < this.maxRetries) {
+          console.warn(
+            `⚠️ Evaluation attempt ${attempt + 1}/${this.maxRetries + 1} failed: ${error.message}. Retrying...`
+          );
+
+          // Reconnect on WebSocket error
+          if (error.message.includes("WebSocket")) {
+            console.log("🔌 Attempting to reconnect WebSocket...");
+            this.sessionId = null;
+            this.ws = null;
+            this.connecting = null;
+          }
+
+          // Wait before retry (exponential backoff)
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
       }
-    } catch (error: any) {
-      console.warn(
-        `⚠️ Evaluation failed: ${error.message}. Continuing with current strategy.`
-      );
-      // Return 'keep' recommendation on failure
-      return {
-        timestamp: Date.now(),
-        symbol: request.currentStrategy.symbol,
-        recommendation: "keep",
-        confidence: 0.5,
-        reason: `Evaluation error: ${error.message}`,
-      };
     }
+
+    // All retries exhausted - record error and return 'keep' recommendation
+    this.consecutiveErrors++;
+    const errorMessage = lastError?.message || "Unknown evaluation error";
+    this.lastEvaluationError = {
+      timestamp: Date.now(),
+      message: errorMessage,
+    };
+
+    console.error(
+      `❌ Evaluation failed after ${this.maxRetries + 1} attempts: ${errorMessage}. Continuing with current strategy. (${this.consecutiveErrors} consecutive errors)`
+    );
+
+    // Return 'keep' recommendation on failure (non-fatal)
+    return {
+      timestamp: Date.now(),
+      symbol: request.currentStrategy.symbol,
+      recommendation: "keep",
+      confidence: 0.5,
+      reason: `Evaluation error (${this.consecutiveErrors} consecutive): ${errorMessage}`,
+    };
   }
 
   /**

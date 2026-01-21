@@ -477,6 +477,9 @@ function Dashboard() {
   // Notification state
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // Evaluation error state
+  const [evaluationErrors, setEvaluationErrors] = useState<any[]>([]);
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -496,6 +499,25 @@ function Dashboard() {
 
     fetchData();
     const interval = setInterval(fetchData, 10000); // Refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch evaluation errors separately
+  useEffect(() => {
+    const fetchEvaluationErrors = async () => {
+      try {
+        const response = await fetch('http://localhost:3002/api/logs?component=StrategyEvaluator&level=ERROR&limit=10');
+        if (response.ok) {
+          const data = await response.json();
+          setEvaluationErrors(data.logs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch evaluation errors:', err);
+      }
+    };
+
+    fetchEvaluationErrors();
+    const interval = setInterval(fetchEvaluationErrors, 15000); // Refresh every 15s
     return () => clearInterval(interval);
   }, []);
 
@@ -679,6 +701,40 @@ function Dashboard() {
 
   return (
     <div className="dashboard">
+      {/* Evaluation Error Banner */}
+      {evaluationErrors.length > 0 && (
+        <div style={{
+          background: '#fee',
+          border: '1px solid #fcc',
+          borderRadius: '8px',
+          padding: '16px',
+          marginBottom: '20px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+            <span style={{ fontSize: '20px', marginRight: '8px' }}>⚠️</span>
+            <strong style={{ fontSize: '16px', color: '#c00' }}>Strategy Evaluation Errors</strong>
+          </div>
+          {evaluationErrors.slice(0, 3).map((error: any, idx: number) => (
+            <div key={idx} style={{
+              fontSize: '14px',
+              color: '#666',
+              marginTop: '8px',
+              paddingLeft: '28px',
+            }}>
+              <strong>{error.metadata?.symbol || 'Unknown'}:</strong> {error.metadata?.reason || error.message}
+              <span style={{ color: '#999', marginLeft: '8px', fontSize: '12px' }}>
+                {new Date(error.createdAt).toLocaleTimeString()}
+              </span>
+            </div>
+          ))}
+          {evaluationErrors.length > 3 && (
+            <div style={{ fontSize: '12px', color: '#999', marginTop: '8px', paddingLeft: '28px' }}>
+              +{evaluationErrors.length - 3} more errors. Check System Logs tab for details.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* P&L Summary */}
       <div className="dashboard-section">
         <h2 className="dashboard-title">Portfolio Summary</h2>

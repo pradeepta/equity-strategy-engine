@@ -135,6 +135,7 @@ export class LiveTradingOrchestrator {
       strategyRepo,
       execHistoryRepo,
       orderRepo,
+      systemLogRepo,
       this.operationQueue
     );
 
@@ -767,5 +768,12 @@ export class LiveTradingOrchestrator {
     } catch (error) {
       logger.error("❌ Periodic reconciliation failed:", error as Error);
     }
+  }
+
+  /**
+   * Get evaluator client for error checking
+   */
+  getEvaluatorClient(): StrategyEvaluatorClient {
+    return this.evaluatorClient;
   }
 }
