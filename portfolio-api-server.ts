@@ -839,6 +839,30 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sendJSON(res, { error: error.message || 'Failed to add message' }, 500);
       }
 
+    } else if (pathname === '/api/chat/search' && req.method === 'GET') {
+      // GET /api/chat/search?q=search+query
+      const userId = process.env.USER_ID;
+      if (!userId) {
+        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        return;
+      }
+
+      const query = url.searchParams.get('q') || '';
+      if (!query) {
+        sendJSON(res, { error: 'Query parameter "q" is required' }, 400);
+        return;
+      }
+
+      const chatRepo = getChatRepo();
+
+      try {
+        const results = await chatRepo.searchSessions(userId, query);
+        sendJSON(res, { results, count: results.length });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error searching chat sessions:', error);
+        sendJSON(res, { error: error.message || 'Failed to search sessions' }, 500);
+      }
+
     } else if (pathname.match(/^\/api\/chat\/images\/.*/) && req.method === 'GET') {
       // GET /api/chat/images/:sessionId/:filename - Serve stored images
       const imagePath = pathname.replace('/api/chat/images/', '');
@@ -893,6 +917,7 @@ server.listen(PORT, () => {
   console.log(`    PUT  /api/chat/sessions/:id - Update session`);
   console.log(`    DEL  /api/chat/sessions/:id - Delete session`);
   console.log(`    POST /api/chat/sessions/:id/messages - Add message`);
+  console.log(`    GET  /api/chat/search?q=query - Search sessions`);
   console.log(`    GET  /api/chat/images/:path - Serve images`);
   console.log(`  GET /health - Health check`);
 });

@@ -64,6 +64,7 @@ export default function HomePage() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isViewingOldChat, setIsViewingOldChat] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
@@ -244,6 +245,43 @@ export default function HomePage() {
       console.error("[Chat] Failed to delete session:", error);
     }
   }, [currentChatSessionId, fetchChatSessions]);
+
+  const handleRenameSession = useCallback(async (chatSessionId: string, newTitle: string) => {
+    try {
+      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      });
+
+      // Refresh sidebar to show new title
+      fetchChatSessions();
+    } catch (error) {
+      console.error("[Chat] Failed to rename session:", error);
+    }
+  }, [fetchChatSessions]);
+
+  const handleSearch = useCallback(async (query: string) => {
+    setSearchQuery(query);
+    if (!query.trim()) {
+      // If empty query, fetch all sessions
+      fetchChatSessions();
+      return;
+    }
+
+    setIsLoadingHistory(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/search?q=${encodeURIComponent(query)}`);
+      if (response.ok) {
+        const data = await response.json();
+        setChatSessions(data.results);
+      }
+    } catch (error) {
+      console.error("[Chat] Failed to search sessions:", error);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, [fetchChatSessions]);
 
   // Load chat history on mount
   useEffect(() => {
@@ -499,7 +537,10 @@ export default function HomePage() {
           onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
           onSelectSession={loadChatSession}
           onDeleteSession={handleDeleteChat}
+          onRenameSession={handleRenameSession}
+          onSearch={handleSearch}
           isLoading={isLoadingHistory}
+          searchQuery={searchQuery}
         />
         <section className="chat-shell">
           {isViewingOldChat && (

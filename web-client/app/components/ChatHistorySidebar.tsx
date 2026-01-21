@@ -18,7 +18,10 @@ interface ChatHistorySidebarProps {
   onToggle: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  onRenameSession: (sessionId: string, newTitle: string) => void;
+  onSearch: (query: string) => void;
   isLoading: boolean;
+  searchQuery: string;
 }
 
 // Group sessions by date
@@ -58,10 +61,33 @@ export function ChatHistorySidebar({
   onToggle,
   onSelectSession,
   onDeleteSession,
+  onRenameSession,
+  onSearch,
   isLoading,
+  searchQuery,
 }: ChatHistorySidebarProps) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [editingSession, setEditingSession] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [localSearchQuery, setLocalSearchQuery] = useState(searchQuery);
   const groups = groupSessionsByDate(sessions);
+
+  const handleRenameSubmit = (sessionId: string) => {
+    if (editTitle.trim()) {
+      onRenameSession(sessionId, editTitle.trim());
+    }
+    setEditingSession(null);
+    setEditTitle("");
+  };
+
+  const handleSearchChange = (value: string) => {
+    setLocalSearchQuery(value);
+    // Debounce search
+    const timeoutId = setTimeout(() => {
+      onSearch(value);
+    }, 300);
+    return () => clearTimeout(timeoutId);
+  };
 
   return (
     <aside className={`chat-sidebar ${isOpen ? "" : "collapsed"}`}>
@@ -79,7 +105,29 @@ export function ChatHistorySidebar({
       </div>
 
       {isOpen && (
-        <div className="session-list">
+        <>
+          <div className="sidebar-search">
+            <input
+              type="text"
+              className="search-input"
+              placeholder="Search chats..."
+              value={localSearchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+            />
+            {localSearchQuery && (
+              <button
+                className="search-clear"
+                onClick={() => {
+                  setLocalSearchQuery("");
+                  onSearch("");
+                }}
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="session-list">
           {isLoading ? (
             <div className="sidebar-loading">Loading...</div>
           ) : sessions.length === 0 ? (
@@ -94,44 +142,87 @@ export function ChatHistorySidebar({
                     className={`session-item ${
                       session.id === currentSessionId ? "active" : ""
                     }`}
-                    onClick={() => onSelectSession(session.id)}
                   >
-                    <span className="session-title">{session.title}</span>
-                    {confirmDelete === session.id ? (
-                      <div
-                        className="session-confirm-delete"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          onClick={() => {
-                            onDeleteSession(session.id);
-                            setConfirmDelete(null);
+                    {editingSession === session.id ? (
+                      <div className="session-edit" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="text"
+                          className="session-edit-input"
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleRenameSubmit(session.id);
+                            } else if (e.key === "Escape") {
+                              setEditingSession(null);
+                              setEditTitle("");
+                            }
                           }}
-                        >
-                          Yes
-                        </button>
-                        <button onClick={() => setConfirmDelete(null)}>
-                          No
-                        </button>
+                          onBlur={() => handleRenameSubmit(session.id)}
+                          autoFocus
+                        />
                       </div>
                     ) : (
-                      <button
-                        className="session-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDelete(session.id);
-                        }}
-                        aria-label="Delete chat"
-                      >
-                        ×
-                      </button>
+                      <>
+                        <span
+                          className="session-title"
+                          onClick={() => onSelectSession(session.id)}
+                        >
+                          {session.title}
+                        </span>
+                        <div className="session-actions">
+                          {confirmDelete === session.id ? (
+                            <div
+                              className="session-confirm-delete"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                onClick={() => {
+                                  onDeleteSession(session.id);
+                                  setConfirmDelete(null);
+                                }}
+                              >
+                                Yes
+                              </button>
+                              <button onClick={() => setConfirmDelete(null)}>
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                className="session-rename"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingSession(session.id);
+                                  setEditTitle(session.title);
+                                }}
+                                aria-label="Rename chat"
+                              >
+                                ✎
+                              </button>
+                              <button
+                                className="session-delete"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDelete(session.id);
+                                }}
+                                aria-label="Delete chat"
+                              >
+                                ×
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 ))}
               </div>
             ))
           )}
-        </div>
+          </div>
+        </>
       )}
     </aside>
   );

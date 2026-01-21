@@ -1120,6 +1120,57 @@ main {
   color: #78350f;
 }
 
+.sidebar-search {
+  padding: 12px 16px;
+  border-bottom: 1px solid #ebe6dd;
+  position: relative;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 32px 8px 12px;
+  border: 1px solid #ebe6dd;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  background: white;
+  color: #1a1a1a;
+  transition: border-color 0.15s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #f55036;
+}
+
+.search-input::placeholder {
+  color: #737373;
+}
+
+.search-clear {
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: #737373;
+  font-size: 16px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.search-clear:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: #1a1a1a;
+}
+
 .session-list {
   flex: 1;
   overflow-y: auto;
@@ -1174,8 +1225,19 @@ main {
   color: #1a1a1a;
 }
 
-.session-delete {
+.session-actions {
+  display: flex;
+  gap: 4px;
   opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.session-item:hover .session-actions {
+  opacity: 1;
+}
+
+.session-rename,
+.session-delete {
   width: 24px;
   height: 24px;
   display: flex;
@@ -1186,18 +1248,39 @@ main {
   border-radius: 4px;
   cursor: pointer;
   color: #737373;
-  font-size: 16px;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  font-size: 14px;
+  transition: background 0.15s, color 0.15s;
   flex-shrink: 0;
 }
 
-.session-item:hover .session-delete {
-  opacity: 1;
+.session-rename:hover {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
 }
 
 .session-delete:hover {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+
+.session-edit {
+  flex: 1;
+  display: flex;
+}
+
+.session-edit-input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #f55036;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 14px;
+  background: white;
+  color: #1a1a1a;
+}
+
+.session-edit-input:focus {
+  outline: none;
 }
 
 .session-confirm-delete {
