@@ -1,16 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AcpClient } from "../src/lib/acpClient";
 import { AuditLogsViewer } from "./components/AuditLogsViewer";
 import { LogsViewer } from "./components/LogsViewer";
+import { ChatHistorySidebar, ChatSession } from "./components/ChatHistorySidebar";
+
+const API_BASE = "http://localhost:3002";
 
 type ChatMessage = {
   role: "user" | "agent";
   content: string;
   images?: { data: string; mimeType: string }[];
+  imageUrls?: string[];
 };
 
 const mergeChunk = (current: string, chunk: string) => {
@@ -53,6 +57,14 @@ export default function HomePage() {
     { data: string; mimeType: string }[]
   >([]);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Chat history state
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [currentChatSessionId, setCurrentChatSessionId] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isViewingOldChat, setIsViewingOldChat] = useState(false);
+
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -61,10 +73,15 @@ export default function HomePage() {
   const prevMessagesLengthRef = useRef(messages.length);
   const userJustSentMessageRef = useRef(false);
   const hasConnectedRef = useRef(false);
+  const currentChatSessionIdRef = useRef<string | null>(null);
+  const pendingAgentMessageRef = useRef<string>("");
 
   const client = useMemo(() => {
     return getClient(
       (chunk) => {
+        // Track the full agent message for saving
+        pendingAgentMessageRef.current = mergeChunk(pendingAgentMessageRef.current, chunk);
+
         setMessages((prev) => {
           const copy = [...prev];
           const last = copy[copy.length - 1];
@@ -75,12 +92,31 @@ export default function HomePage() {
           return [...copy, { role: "agent", content: chunk }];
         });
       },
-      () => {
+      async () => {
         setStatus("ready");
+
+        // Save the complete agent response to database
+        const sessionId = currentChatSessionIdRef.current;
+        const agentMessage = pendingAgentMessageRef.current;
+        if (sessionId && agentMessage) {
+          try {
+            await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/messages`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ role: "AGENT", content: agentMessage }),
+            });
+            // Refresh sessions to update lastMessageAt
+            fetchChatSessions();
+          } catch (error) {
+            console.error("[Chat] Failed to save agent message:", error);
+          }
+        }
+        pendingAgentMessageRef.current = "";
       },
       (error) => {
         setStatus("error");
         console.error(error);
+        pendingAgentMessageRef.current = "";
       },
       (id) => {
         setSessionId(id);
@@ -88,6 +124,137 @@ export default function HomePage() {
       }
     );
   }, []);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    currentChatSessionIdRef.current = currentChatSessionId;
+  }, [currentChatSessionId]);
+
+  // Chat history functions
+  const fetchChatSessions = useCallback(async () => {
+    setIsLoadingHistory(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/sessions`);
+      if (response.ok) {
+        const data = await response.json();
+        setChatSessions(data.sessions);
+      }
+    } catch (error) {
+      console.error("[Chat] Failed to fetch sessions:", error);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, []);
+
+  const createChatSession = useCallback(async (): Promise<string | null> => {
+    try {
+      const gatewaySessionId = localStorage.getItem("acp_gateway_session_id");
+      const agentSessionId = localStorage.getItem("acp_agent_session_id");
+
+      const response = await fetch(`${API_BASE}/api/chat/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gatewaySessionId, agentSessionId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        localStorage.setItem("chat_session_id", data.session.id);
+        setCurrentChatSessionId(data.session.id);
+        return data.session.id;
+      }
+    } catch (error) {
+      console.error("[Chat] Failed to create session:", error);
+    }
+    return null;
+  }, []);
+
+  const loadChatSession = useCallback(async (chatSessionId: string) => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/chat/sessions/${chatSessionId}?includeMessages=true`
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        // Convert DB messages to frontend format
+        const loadedMessages: ChatMessage[] = data.session.messages.map((msg: any) => ({
+          role: msg.role.toLowerCase() as "user" | "agent",
+          content: msg.content,
+          imageUrls: msg.imageUrls || [],
+        }));
+        setMessages(loadedMessages);
+        setCurrentChatSessionId(chatSessionId);
+        setIsViewingOldChat(true); // Mark as viewing old chat
+        localStorage.setItem("chat_session_id", chatSessionId);
+      }
+    } catch (error) {
+      console.error("[Chat] Failed to load session:", error);
+    }
+  }, []);
+
+  const saveMessage = useCallback(async (
+    chatSessionId: string,
+    role: "USER" | "AGENT",
+    content: string,
+    images?: { data: string; mimeType: string }[]
+  ) => {
+    try {
+      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, content, images }),
+      });
+    } catch (error) {
+      console.error("[Chat] Failed to save message:", error);
+    }
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    // Clear current state
+    setMessages([]);
+    setCurrentChatSessionId(null);
+    setIsViewingOldChat(false);
+    localStorage.removeItem("chat_session_id");
+
+    // Force new ACP session
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("acp_gateway_session_id");
+      localStorage.removeItem("acp_agent_session_id");
+      window.location.reload();
+    }
+  }, []);
+
+  const handleDeleteChat = useCallback(async (chatSessionId: string) => {
+    try {
+      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
+        method: "DELETE",
+      });
+
+      // If deleted current chat, start fresh
+      if (chatSessionId === currentChatSessionId) {
+        setMessages([]);
+        setCurrentChatSessionId(null);
+        localStorage.removeItem("chat_session_id");
+      }
+
+      // Refresh sidebar
+      fetchChatSessions();
+    } catch (error) {
+      console.error("[Chat] Failed to delete session:", error);
+    }
+  }, [currentChatSessionId, fetchChatSessions]);
+
+  // Load chat history on mount
+  useEffect(() => {
+    fetchChatSessions();
+
+    // Restore current session if exists
+    const storedChatSessionId = localStorage.getItem("chat_session_id");
+    if (storedChatSessionId) {
+      loadChatSession(storedChatSessionId);
+    }
+  }, [fetchChatSessions, loadChatSession]);
 
   useEffect(() => {
     if (!gatewayUrl) {
@@ -185,9 +352,27 @@ export default function HomePage() {
     )}px`;
   }, [input]);
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     const text = input.trim();
     if (!text && attachedImages.length === 0) return;
+
+    // If viewing old chat, don't allow sending
+    if (isViewingOldChat) {
+      console.warn("[Chat] Cannot send message while viewing old chat");
+      return;
+    }
+
+    // Ensure we have a chat session
+    let sessionId = currentChatSessionId;
+    if (!sessionId) {
+      sessionId = await createChatSession();
+      if (!sessionId) {
+        console.error("[Chat] Failed to create chat session");
+        return;
+      }
+      setIsViewingOldChat(false); // Mark as active session
+    }
+
     userJustSentMessageRef.current = true;
     setMessages((prev) => [
       ...prev,
@@ -195,8 +380,31 @@ export default function HomePage() {
     ]);
     setInput("");
     setStatus("streaming");
-    client.sendPrompt(text, attachedImages);
+
+    // Save user message to DB
+    await saveMessage(sessionId, "USER", text, attachedImages);
+
+    // Update session title if first message
+    if (messages.length === 0) {
+      const title = text.slice(0, 50) + (text.length > 50 ? "..." : "");
+      try {
+        await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        fetchChatSessions(); // Refresh sidebar
+      } catch (error) {
+        console.error("[Chat] Failed to update session title:", error);
+      }
+    }
+
+    // Store images reference and clear
+    const userImages = attachedImages;
     setAttachedImages([]);
+
+    // Send to ACP
+    client.sendPrompt(text, userImages);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -243,16 +451,6 @@ export default function HomePage() {
     setAttachedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleNewSession = () => {
-    if (typeof window !== "undefined") {
-      // Clear session cookies
-      window.localStorage.removeItem("acp_gateway_session_id");
-      window.localStorage.removeItem("acp_agent_session_id");
-      // Reload the page
-      window.location.reload();
-    }
-  };
-
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -293,136 +491,166 @@ export default function HomePage() {
       </header>
 
       {activeTab === "chat" && (
-      <section className="chat-shell">
-        <div className="messages" ref={messagesContainerRef}>
-          {messages.length === 0 && (
-            <div className="empty-state">Start a conversation…</div>
+      <div className="chat-with-sidebar">
+        <ChatHistorySidebar
+          sessions={chatSessions}
+          currentSessionId={currentChatSessionId}
+          isOpen={isSidebarOpen}
+          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+          onSelectSession={loadChatSession}
+          onDeleteSession={handleDeleteChat}
+          isLoading={isLoadingHistory}
+        />
+        <section className="chat-shell">
+          {isViewingOldChat && (
+            <div className="chat-view-only-banner">
+              <strong>Viewing past conversation.</strong> This is read-only. Click "New Session" in the navbar to start a new conversation.
+            </div>
           )}
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`message ${msg.role}`}>
-              {msg.images && msg.images.length > 0 && (
-                <div className="message-images">
-                  {msg.images.map((img, imageIdx) => (
-                    <img
-                      key={imageIdx}
-                      src={`data:${img.mimeType};base64,${img.data}`}
-                      alt="Attachment"
-                    />
+          <div className="messages" ref={messagesContainerRef}>
+            {messages.length === 0 && (
+              <div className="empty-state">Start a conversation…</div>
+            )}
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`message ${msg.role}`}>
+                {msg.images && msg.images.length > 0 && (
+                  <div className="message-images">
+                    {msg.images.map((img, imageIdx) => (
+                      <img
+                        key={imageIdx}
+                        src={`data:${img.mimeType};base64,${img.data}`}
+                        alt="Attachment"
+                      />
+                    ))}
+                  </div>
+                )}
+                {msg.imageUrls && msg.imageUrls.length > 0 && (
+                  <div className="message-images">
+                    {msg.imageUrls.map((url, imageIdx) => (
+                      <img
+                        key={imageIdx}
+                        src={`${API_BASE}${url}`}
+                        alt="Attachment"
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="message-content">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            ))}
+            {status === "streaming" && messages[messages.length - 1]?.role === "user" && (
+              <div className="message agent typing-indicator">
+                <div className="typing-dots">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {showScrollButton && (
+            <button className="scroll-button" onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })}>
+              Jump to latest
+            </button>
+          )}
+
+          <div className="composer">
+            <div
+              className={`composer-inner ${
+                isDragging ? "composer-dragging" : ""
+              }`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {attachedImages.length > 0 && (
+                <div className="composer-images">
+                  {attachedImages.map((img, imageIdx) => (
+                    <div key={imageIdx} className="composer-image">
+                      <img
+                        src={`data:${img.mimeType};base64,${img.data}`}
+                        alt="Preview"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(imageIdx)}
+                      >
+                        ×
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
-              <div className="message-content">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {msg.content}
-                </ReactMarkdown>
-              </div>
-            </div>
-          ))}
-          {status === "streaming" && messages[messages.length - 1]?.role === "user" && (
-            <div className="message agent typing-indicator">
-              <div className="typing-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {showScrollButton && (
-          <button className="scroll-button" onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })}>
-            Jump to latest
-          </button>
-        )}
-
-        <div className="composer">
-          <div
-            className={`composer-inner ${
-              isDragging ? "composer-dragging" : ""
-            }`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {attachedImages.length > 0 && (
-              <div className="composer-images">
-                {attachedImages.map((img, imageIdx) => (
-                  <div key={imageIdx} className="composer-image">
-                    <img
-                      src={`data:${img.mimeType};base64,${img.data}`}
-                      alt="Preview"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(imageIdx)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Message the advisor..."
-              rows={1}
-            />
-            <label className="composer-attach">
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={async (event) => {
-                  if (!event.target.files) return;
-                  const files = Array.from(event.target.files);
-                  const imageFiles = files.filter((file) =>
-                    file.type.startsWith("image/")
-                  );
-                  if (!imageFiles.length) return;
-                  const newImages = await Promise.all(
-                    imageFiles.map(
-                      (file) =>
-                        new Promise<{ data: string; mimeType: string }>(
-                          (resolve, reject) => {
-                            const reader = new FileReader();
-                            reader.onload = () => {
-                              const base64 = (reader.result as string).split(
-                                ","
-                              )[1];
-                              resolve({ data: base64, mimeType: file.type });
-                            };
-                            reader.onerror = reject;
-                            reader.readAsDataURL(file);
-                          }
-                        )
-                    )
-                  );
-                  setAttachedImages((prev) => [...prev, ...newImages]);
-                  event.target.value = "";
-                }}
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isViewingOldChat ? "Viewing past conversation (read-only)" : "Message the advisor..."}
+                rows={1}
+                disabled={isViewingOldChat}
               />
-              +
-            </label>
-            <button
-              onClick={sendMessage}
-              disabled={
-                status === "connecting" ||
-                status === "missing_url" ||
-                (!input.trim() && attachedImages.length === 0)
-              }
-            >
-              Send
-            </button>
+              <label className="composer-attach">
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  disabled={isViewingOldChat}
+                  onChange={async (event) => {
+                    if (!event.target.files) return;
+                    const files = Array.from(event.target.files);
+                    const imageFiles = files.filter((file) =>
+                      file.type.startsWith("image/")
+                    );
+                    if (!imageFiles.length) return;
+                    const newImages = await Promise.all(
+                      imageFiles.map(
+                        (file) =>
+                          new Promise<{ data: string; mimeType: string }>(
+                            (resolve, reject) => {
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                const base64 = (reader.result as string).split(
+                                  ","
+                                )[1];
+                                resolve({ data: base64, mimeType: file.type });
+                              };
+                              reader.onerror = reject;
+                              reader.readAsDataURL(file);
+                            }
+                          )
+                      )
+                    );
+                    setAttachedImages((prev) => [...prev, ...newImages]);
+                    event.target.value = "";
+                  }}
+                />
+                +
+              </label>
+              <button
+                onClick={sendMessage}
+                disabled={
+                  isViewingOldChat ||
+                  status === "connecting" ||
+                  status === "missing_url" ||
+                  (!input.trim() && attachedImages.length === 0)
+                }
+              >
+                Send
+              </button>
+            </div>
+            <div className="composer-hint">
+              Press Enter to send • Shift+Enter for a new line
+            </div>
           </div>
-          <div className="composer-hint">
-            Press Enter to send • Shift+Enter for a new line
-          </div>
-        </div>
         </section>
+      </div>
       )}
 
       {activeTab === "dashboard" && (

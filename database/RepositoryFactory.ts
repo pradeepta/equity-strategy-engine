@@ -10,6 +10,7 @@ import { StrategyRepository } from './repositories/StrategyRepository';
 import { OrderRepository } from './repositories/OrderRepository';
 import { ExecutionHistoryRepository } from './repositories/ExecutionHistoryRepository';
 import { SystemLogRepository } from './repositories/SystemLogRepository';
+import { ChatRepository } from './repositories/ChatRepository';
 import { OperationQueueService } from '../live/queue/OperationQueueService';
 
 export class RepositoryFactory {
@@ -18,6 +19,7 @@ export class RepositoryFactory {
   private orderRepo?: OrderRepository;
   private execHistoryRepo?: ExecutionHistoryRepository;
   private systemLogRepo?: SystemLogRepository;
+  private chatRepo?: ChatRepository;
   private operationQueueService?: OperationQueueService;
   private pool?: Pool;
 
@@ -79,6 +81,16 @@ export class RepositoryFactory {
       this.systemLogRepo = new SystemLogRepository(this.prisma);
     }
     return this.systemLogRepo;
+  }
+
+  /**
+   * Get Chat Repository instance (singleton per factory)
+   */
+  getChatRepo(): ChatRepository {
+    if (!this.chatRepo) {
+      this.chatRepo = new ChatRepository(this.prisma);
+    }
+    return this.chatRepo;
   }
 
   /**
@@ -158,6 +170,10 @@ export function getExecutionHistoryRepo(): ExecutionHistoryRepository {
 
 export function getSystemLogRepo(): SystemLogRepository {
   return getRepositoryFactory().getSystemLogRepo();
+}
+
+export function getChatRepo(): ChatRepository {
+  return getRepositoryFactory().getChatRepo();
 }
 
 export function getOperationQueueService(): OperationQueueService {

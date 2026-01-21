@@ -7,9 +7,12 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import { getRepositoryFactory } from './database/RepositoryFactory';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { getRepositoryFactory, getChatRepo } from './database/RepositoryFactory';
 import { TwsMarketDataClient } from './broker/twsMarketData';
 import { BacktestEngine } from './backtest/BacktestEngine';
+import { getStorageProvider, generateImageKey } from './lib/storage';
 import 'dotenv/config';
 
 // Create PostgreSQL connection pool
@@ -31,7 +34,7 @@ const PORT = process.env.PORTFOLIO_API_PORT || 3002;
 // Enable CORS for web client
 const setCORSHeaders = (res: ServerResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 };
 
@@ -693,6 +696,171 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         console.error('[backtest] Error running backtest:', error);
         sendJSON(res, { error: error.message || 'Failed to run backtest' }, 500);
       }
+    // ============================================================================
+    // CHAT HISTORY ENDPOINTS
+    // ============================================================================
+    } else if (pathname === '/api/chat/sessions' && req.method === 'GET') {
+      // GET /api/chat/sessions?limit=50&offset=0
+      const userId = process.env.USER_ID;
+      if (!userId) {
+        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        return;
+      }
+
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+
+      const chatRepo = getChatRepo();
+
+      const [sessions, total] = await Promise.all([
+        chatRepo.findSessionsByUser(userId, { limit, offset }),
+        chatRepo.countUserSessions(userId),
+      ]);
+
+      sendJSON(res, { sessions, total });
+
+    } else if (pathname === '/api/chat/sessions' && req.method === 'POST') {
+      // POST /api/chat/sessions - Create new session
+      const userId = process.env.USER_ID;
+      if (!userId) {
+        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        return;
+      }
+
+      const body = await parseBody(req);
+      const chatRepo = getChatRepo();
+
+      const session = await chatRepo.createSession({
+        userId,
+        title: body.title,
+        gatewaySessionId: body.gatewaySessionId,
+        agentSessionId: body.agentSessionId,
+        persona: body.persona,
+      });
+
+      sendJSON(res, { session }, 201);
+
+    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'GET') {
+      // GET /api/chat/sessions/:id?includeMessages=true&messageLimit=500
+      const sessionId = pathname.split('/')[4];
+      const includeMessages = url.searchParams.get('includeMessages') === 'true';
+      const messageLimit = parseInt(url.searchParams.get('messageLimit') || '500', 10);
+
+      const chatRepo = getChatRepo();
+
+      const session = includeMessages
+        ? await chatRepo.getSessionWithMessages(sessionId, messageLimit)
+        : await chatRepo.findSessionById(sessionId);
+
+      if (!session) {
+        sendJSON(res, { error: 'Session not found' }, 404);
+        return;
+      }
+
+      sendJSON(res, { session });
+
+    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'PUT') {
+      // PUT /api/chat/sessions/:id - Update session
+      const sessionId = pathname.split('/')[4];
+      const body = await parseBody(req);
+
+      const chatRepo = getChatRepo();
+
+      try {
+        const session = await chatRepo.updateSession(sessionId, {
+          title: body.title,
+          gatewaySessionId: body.gatewaySessionId,
+          agentSessionId: body.agentSessionId,
+          isActive: body.isActive,
+        });
+
+        sendJSON(res, { session });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error updating chat session:', error);
+        sendJSON(res, { error: error.message || 'Failed to update session' }, 500);
+      }
+
+    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      // DELETE /api/chat/sessions/:id - Soft delete session
+      const sessionId = pathname.split('/')[4];
+
+      const chatRepo = getChatRepo();
+
+      try {
+        await chatRepo.softDeleteSession(sessionId);
+        sendJSON(res, { success: true });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error deleting chat session:', error);
+        sendJSON(res, { error: error.message || 'Failed to delete session' }, 500);
+      }
+
+    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+\/messages$/) && req.method === 'POST') {
+      // POST /api/chat/sessions/:id/messages - Add message
+      const sessionId = pathname.split('/')[4];
+      const body = await parseBody(req);
+
+      if (!body.role || !body.content) {
+        sendJSON(res, { error: 'role and content are required' }, 400);
+        return;
+      }
+
+      const chatRepo = getChatRepo();
+      const storage = getStorageProvider();
+
+      try {
+        // Create message first (without images)
+        const message = await chatRepo.addMessage({
+          chatSessionId: sessionId,
+          role: body.role,
+          content: body.content,
+          imageUrls: [],
+        });
+
+        // Handle image uploads if any
+        if (body.images?.length) {
+          const imageUrls: string[] = [];
+
+          for (let i = 0; i < body.images.length; i++) {
+            const img = body.images[i];
+            const buffer = Buffer.from(img.data, 'base64');
+            const key = generateImageKey(sessionId, message.id, i, img.mimeType);
+            const result = await storage.save(key, buffer, { mimeType: img.mimeType });
+            imageUrls.push(result.url);
+          }
+
+          // Update message with image URLs
+          await chatRepo.updateMessageImages(message.id, imageUrls);
+          message.imageUrls = imageUrls;
+        }
+
+        sendJSON(res, { message }, 201);
+      } catch (error: any) {
+        console.error('[portfolio-api] Error adding chat message:', error);
+        sendJSON(res, { error: error.message || 'Failed to add message' }, 500);
+      }
+
+    } else if (pathname.match(/^\/api\/chat\/images\/.*/) && req.method === 'GET') {
+      // GET /api/chat/images/:sessionId/:filename - Serve stored images
+      const imagePath = pathname.replace('/api/chat/images/', '');
+      const storage = getStorageProvider();
+
+      try {
+        const data = await storage.get(imagePath);
+        if (!data) {
+          sendJSON(res, { error: 'Image not found' }, 404);
+          return;
+        }
+
+        const metadata = await storage.getMetadata(imagePath);
+        const mimeType = metadata?.mimeType || 'application/octet-stream';
+
+        res.writeHead(200, { 'Content-Type': mimeType });
+        res.end(data);
+      } catch (error: any) {
+        console.error('[portfolio-api] Error serving image:', error);
+        sendJSON(res, { error: error.message || 'Failed to serve image' }, 500);
+      }
+
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -718,6 +886,14 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
+  console.log(`  Chat History:`);
+  console.log(`    GET  /api/chat/sessions - List chat sessions`);
+  console.log(`    POST /api/chat/sessions - Create chat session`);
+  console.log(`    GET  /api/chat/sessions/:id - Get session with messages`);
+  console.log(`    PUT  /api/chat/sessions/:id - Update session`);
+  console.log(`    DEL  /api/chat/sessions/:id - Delete session`);
+  console.log(`    POST /api/chat/sessions/:id/messages - Add message`);
+  console.log(`    GET  /api/chat/images/:path - Serve images`);
   console.log(`  GET /health - Health check`);
 });
 

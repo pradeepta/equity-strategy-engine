@@ -24,6 +24,7 @@ model User {
   strategies        Strategy[]
   accounts          Account[]
   apiKeys           ApiKey[]
+  chatSessions      ChatSession[]
 
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
@@ -592,4 +593,75 @@ enum StrategyEventType {
   SWAPPED_OUT     // Strategy was swapped out (became closed)
   DELETED
   STATUS_CHANGED  // Generic status change
+}
+
+// ============================================================================
+// CHAT HISTORY
+// ============================================================================
+
+model ChatSession {
+  id                String        @id @default(cuid())
+  userId            String
+
+  // Session identity
+  title             String        @default("New Chat")
+
+  // Link to ACP sessions (for optional context restoration)
+  gatewaySessionId  String?       // Links to localStorage acp_gateway_session_id
+  agentSessionId    String?       // Links to localStorage acp_agent_session_id
+
+  // Status
+  isActive          Boolean       @default(true)
+
+  // Metadata
+  persona           String        @default("blackrock_advisor")
+  messageCount      Int           @default(0)
+
+  // Timestamps
+  lastMessageAt     DateTime?
+
+  // Soft delete
+  deletedAt         DateTime?
+
+  // Relationships
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages          ChatMessage[]
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([userId, deletedAt])
+  @@index([userId, isActive])
+  @@index([lastMessageAt])
+  @@index([gatewaySessionId])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id                String        @id @default(cuid())
+  chatSessionId     String
+
+  // Message content
+  role              ChatRole
+  content           String        @db.Text
+
+  // Image attachments (array of storage URLs, not base64)
+  imageUrls         String[]
+
+  // Message ordering
+  sequenceNumber    Int           // Order within session for deterministic ordering
+
+  // Relationships
+  chatSession       ChatSession   @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime      @default(now())
+
+  @@index([chatSessionId, sequenceNumber])
+  @@index([chatSessionId, createdAt])
+  @@map("chat_messages")
+}
+
+enum ChatRole {
+  USER
+  AGENT
 }
