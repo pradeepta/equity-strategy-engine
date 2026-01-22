@@ -413,7 +413,14 @@ export class LiveTradingOrchestrator {
 
               // Check if evaluation is due (every bar for now)
               if (instance.shouldEvaluate(1)) {
-                await this.lifecycleManager.evaluateStrategy(instance);
+                // Skip evaluation outside market hours if configured
+                const evalMarketHoursOnly = process.env.STRATEGY_EVAL_MARKET_HOURS_ONLY === 'true';
+                if (evalMarketHoursOnly && !this.isMarketOpen()) {
+                  logger.debug(`⏸️  Skipping evaluation for ${instance.symbol} (market closed, STRATEGY_EVAL_MARKET_HOURS_ONLY=true)`);
+                  instance.resetEvaluationCounter(); // Reset to avoid accumulation
+                } else {
+                  await this.lifecycleManager.evaluateStrategy(instance);
+                }
               }
             }
           }

@@ -2,6 +2,31 @@
 
 This guide helps Claude Code sessions understand the codebase structure, conventions, and best practices for this Trading Strategy DSL System.
 
+---
+
+## 🚨 CRITICAL RULES - READ FIRST 🚨
+
+**Before doing ANYTHING with the database:**
+1. **ALWAYS read [prisma/schema.prisma](prisma/schema.prisma) FIRST**
+2. **NEVER guess table or column names**
+3. **Copy exact names from the schema file**
+
+**Why this matters:** PostgreSQL is case-sensitive. Guessing names causes 100% failure rate. Reading the schema takes 10 seconds and prevents 10 minutes of debugging.
+
+**Quick example:**
+```bash
+# ❌ WRONG - Will fail with "column does not exist"
+psql -c "SELECT id, activated_at FROM strategy WHERE status = 'ACTIVE';"
+
+# ✅ CORRECT - Read schema first, use exact names
+# From schema: model Strategy → table 'strategies', field 'activatedAt'
+psql -c "SELECT id, \"activatedAt\" FROM strategies WHERE status = 'ACTIVE';"
+```
+
+**See [Database Query Workflow](#database-query-workflow-critical---read-this-first) for complete instructions.**
+
+---
+
 ## Project Overview
 
 **Stocks Trading System** is a production-ready algorithmic trading platform that enables users to:
@@ -553,6 +578,125 @@ ORDER BY error_count DESC;
 - **Indexes:** Check schema for indexed columns (faster queries)
 - **Soft deletes:** `deletedAt` column used instead of hard deletes (strategies, users)
 
+### Database Query Workflow (CRITICAL - READ THIS FIRST)
+
+**⚠️ MANDATORY RULE: NEVER write a SQL query without reading prisma/schema.prisma first! ⚠️**
+
+**When you need to query the database, ALWAYS follow this workflow:**
+
+1. **Determine the actual requirement** - What information do you need?
+   - Example: "Find all active strategies" → Need to query `strategies` table
+   - Example: "Show recent errors" → Need to query `system_logs` table
+
+2. **READ THE PRISMA SCHEMA FILE FIRST** - This step is NOT optional:
+   ```
+   REQUIRED FIRST STEP: Use Read tool on prisma/schema.prisma
+   ```
+
+   **Why this is mandatory:**
+   - ❌ Guessing table/column names leads to syntax errors every single time
+   - ❌ PostgreSQL is case-sensitive with quoted identifiers
+   - ❌ Model names don't always match table names (e.g., `model Strategy` → table `strategies`)
+   - ✅ Reading the schema takes 10 seconds and prevents 5 minutes of debugging
+
+   **What to extract from the schema:**
+   - ✅ Exact table name (model name → lowercase, usually plural)
+   - ✅ Exact column names with proper casing (e.g., `strategyId`, `createdAt`, `activatedAt`)
+   - ✅ Data types (String, Int, DateTime, Boolean, Enum)
+   - ✅ Optional fields (marked with `?`)
+   - ✅ Enum definitions and valid values (e.g., `enum StrategyStatus { DRAFT PENDING ACTIVE CLOSED }`)
+   - ✅ Relationships and foreign keys
+
+   **Example - Reading Strategy model:**
+   ```prisma
+   model Strategy {
+     id            Int       @id @default(autoincrement())
+     name          String
+     symbol        String
+     status        StrategyStatus  // Enum!
+     yamlContent   String
+     activatedAt   DateTime?       // Optional, needs quotes in SQL
+     closedAt      DateTime?
+     closeReason   String?
+   }
+
+   enum StrategyStatus {
+     DRAFT
+     PENDING
+     ACTIVE
+     CLOSED
+   }
+   ```
+
+3. **Construct the query** using the EXACT names from the schema:
+   ```sql
+   -- CORRECT - uses exact names from schema
+   SELECT id, name, symbol, status, "activatedAt"
+   FROM strategies
+   WHERE status = 'ACTIVE';
+
+   -- WRONG - guessed column names
+   SELECT id, name, symbol, status, activated_at
+   FROM strategy
+   WHERE status = 'ACTIVE';
+   ```
+
+4. **Execute the query** using psql:
+   ```bash
+   # Connect to database
+   source <(grep "^DATABASE_URL" .env) && psql "$DATABASE_URL"
+
+   # Run query with proper escaping
+   SELECT * FROM strategies WHERE status = 'ACTIVE';
+   ```
+
+**Common Mistakes to AVOID:**
+- ❌ Guessing table names without checking schema
+- ❌ Guessing column names (snake_case vs camelCase)
+- ❌ Forgetting double quotes around camelCase identifiers
+- ❌ Using wrong enum values (check schema for allowed values)
+- ❌ Assuming relationships exist without checking schema
+
+**Example: Correct Workflow**
+
+```bash
+# Step 1: Need to find all CLOSED strategies
+# Step 2: Read prisma/schema.prisma to see strategies table structure
+# Step 3: Construct query with exact names from schema
+# Step 4: Execute
+
+source <(grep "^DATABASE_URL" .env) && psql "$DATABASE_URL" -c \
+  "SELECT id, name, symbol, status, \"closedAt\", \"closeReason\"
+   FROM strategies
+   WHERE status = 'CLOSED'
+   ORDER BY \"closedAt\" DESC
+   LIMIT 10;"
+```
+
+**Quick Reference Commands:**
+
+```bash
+# Connect to database
+source <(grep "^DATABASE_URL" .env) && psql "$DATABASE_URL"
+
+# List all tables (once connected)
+\dt
+
+# Describe table schema (shows EXACT column names)
+\d strategies
+\d orders
+\d system_logs
+
+# Run inline query without interactive session
+psql "$(grep "^DATABASE_URL" .env | cut -d'=' -f2- | tr -d '"')" -c "YOUR_QUERY_HERE"
+```
+
+**Pro Tips:**
+- Use `\d table_name` to see exact column names before querying
+- Copy-paste column names from schema output instead of typing
+- Test queries in psql interactive mode first before scripting
+- Use `-c` flag for one-off queries, interactive mode for exploration
+
 ### Strategy Compilation Errors
 - Check YAML syntax with online validator
 - Enable verbose logging in [compiler/compile.ts](compiler/compile.ts)
@@ -648,6 +792,7 @@ ORDER BY error_count DESC;
 - `STRATEGY_WATCH_INTERVAL_MS=5000` (default: 5 seconds)
 - `STRATEGY_EVAL_ENABLED=false` (default: disabled)
 - `STRATEGY_EVAL_WS_ENDPOINT` - Evaluator WebSocket URL
+- `STRATEGY_EVAL_MARKET_HOURS_ONLY=true` (default: true) - Only evaluate during market hours (9:30 AM - 4:00 PM ET)
 
 **Safety Controls:**
 - `ALLOW_LIVE_ORDERS=false` (default: dry-run mode)
@@ -953,6 +1098,57 @@ npm run strategy:add -- --file=strategies/nvda-bb.yaml        # Bollinger breako
 
 **Migration:** Requires database migration `20260121025340_remove_symbol_unique_constraint`
 
+### 7. Market Hours Evaluation Filter (2026-01-22)
+
+**Problem:** Periodic strategy evaluations were only triggering for strategies with timeframes that could fetch bars outside market hours (e.g., 1h worked, but 5m failed).
+
+**Root Cause:** TWS cannot provide intraday bars (5m, 15m, 30m) outside market hours (9:30 AM - 4:00 PM ET), causing bar fetches to fail and skipping evaluation.
+
+**Solution:** Added `STRATEGY_EVAL_MARKET_HOURS_ONLY` environment variable to skip evaluations outside market hours.
+
+**How It Works:**
+
+At [live/LiveTradingOrchestrator.ts:415-424](live/LiveTradingOrchestrator.ts#L415-L424):
+
+```typescript
+// Check if evaluation is due (every bar for now)
+if (instance.shouldEvaluate(1)) {
+  // Skip evaluation outside market hours if configured
+  const evalMarketHoursOnly = process.env.STRATEGY_EVAL_MARKET_HOURS_ONLY === 'true';
+  if (evalMarketHoursOnly && !this.isMarketOpen()) {
+    logger.debug(`⏸️  Skipping evaluation for ${instance.symbol} (market closed)`);
+    instance.resetEvaluationCounter(); // Reset to avoid accumulation
+  } else {
+    await this.lifecycleManager.evaluateStrategy(instance);
+  }
+}
+```
+
+**Configuration:**
+
+```bash
+# .env
+STRATEGY_EVAL_MARKET_HOURS_ONLY=true  # Default: true
+```
+
+**When to Use:**
+- **`true` (recommended)**: Skip evaluations outside market hours
+  - Prevents wasted evaluator calls when intraday bars are unavailable
+  - Ensures evaluations use fresh data
+  - No point evaluating when you can't act on recommendations
+- **`false`**: Allow off-hours evaluations (for hourly/daily strategies)
+  - Useful if running only daily/hourly timeframe strategies
+  - Hourly bars work outside market hours (but may be stale)
+
+**Impact:**
+- Evaluations now only run when market is open (9:30 AM - 4:00 PM ET, weekdays)
+- Intraday strategies (5m, 15m, 30m) no longer fail evaluation due to missing bars
+- Evaluation counter resets on skip to prevent accumulation
+
+**Files Modified:**
+- [live/LiveTradingOrchestrator.ts:415-424](live/LiveTradingOrchestrator.ts#L415-L424) - Added market hours check
+- [.env:73-76](.env#L73-L76) - Added `STRATEGY_EVAL_MARKET_HOURS_ONLY` variable
+
 ---
 
 ## Troubleshooting Common Issues
@@ -1230,6 +1426,43 @@ npm start
 - Dashboard state (portfolio data, loading, errors)
 - Logs state (logs, stats, auto-refresh)
 
+### Performance Optimization (CRITICAL)
+
+**Frontend performance is critical for chat interface responsiveness.**
+
+**Common Performance Issues:**
+1. **Unbounded message array growth** - Every message kept in memory forever
+2. **Full re-renders on every update** - ReactMarkdown re-parses all messages
+3. **No component memoization** - Entire message list re-renders on state change
+4. **Excessive event handlers** - Scroll handlers fire 60+ times per second
+
+**Applied Optimizations:**
+- ✅ **Debounced scroll handler** (100ms) with passive event listeners
+- ✅ **Limited message rendering** (last 100 messages via `slice(-100)`)
+- ✅ **Proper cleanup** in useEffect hooks to prevent memory leaks
+
+**DO NOT Use React.memo for Message Components:**
+- ❌ React.memo on message components breaks streaming updates
+- ❌ Custom comparison functions are error-prone with nested objects
+- ❌ Message objects are recreated on each render, defeating shallow comparison
+- ✅ Instead: Limit rendered messages + debounce handlers
+
+**Performance Pattern for Chat:**
+```typescript
+// CORRECT - Simple, works reliably
+{messages.slice(-100).map((msg, idx) => (
+  <MessageComponent key={`msg-${idx}`} message={msg} />
+))}
+
+// WRONG - Breaks streaming or causes blank screens
+const MessageComponent = memo(({ message }) => { ... })
+```
+
+**If Performance Still Issues:**
+1. Reduce message limit: `slice(-100)` → `slice(-50)`
+2. Increase debounce: `100ms` → `200ms`
+3. Consider react-window for virtualization (complex, only if needed)
+
 ### Common Tasks
 
 **Adding a New Dashboard Section:**
@@ -1431,6 +1664,48 @@ const deployment = await deploy_strategy({ yaml_content: yamlContent })
 ### Agent Persona Configuration
 
 The **BlackRock advisor agent** (`blackrock_advisor` persona) is configured in [ai-gateway-live/src/config.ts](ai-gateway-live/src/config.ts) with the above workflow built into its system prompt. When users interact with this agent in the web dashboard, it will automatically follow the 5-step workflow for strategy deployments.
+
+**Off-Hours Strategy Creation** (2026-01-22):
+
+The agent prompt now includes proactive detection and handling of strategy creation outside market hours:
+
+- **Problem**: `propose_deterministic_strategy()` requires intraday bars (5m, 15m, 30m) which TWS cannot provide outside 9:30 AM - 4:00 PM ET
+- **Solution**: Agent proactively detects market hours and uses daily timeframe (1d) from the start when market is closed:
+  - **Detects** current time in ET timezone (weekdays 9:30 AM - 4:00 PM = market hours)
+  - **Chooses** appropriate timeframe BEFORE calling tool:
+    - Market open: Use `timeframe: '5m', limit: 100` (default intraday analysis)
+    - Market closed: Use `timeframe: '1d', limit: 100` (daily bars, 100 days of structure)
+  - **Informs** user about approach taken (doesn't ask for permission)
+
+**Example User Experience**:
+```
+User: "Create a strategy for TSLA with $150 max risk"
+
+Agent (off-hours, proactive approach):
+🕐 Market closed - analyzing last 100 days of structure for TSLA...
+
+[Calls propose_deterministic_strategy with timeframe: '1d' directly]
+
+✅ Strategy created: TSLA Daily Mean Reversion
+- Entry Zone: [235, 238] (based on daily ATR and support levels)
+- Stop Loss: 230 (-$150 max risk)
+- Targets: [243, 248, 253] (1:1.5, 1:3, 1:4.5 R:R)
+- Analysis used 100 days of daily bars for trend/structure
+
+Note: Strategy uses daily timeframe since market is currently closed.
+Intraday strategies (5m/15m) can be created during market hours (9:30 AM - 4:00 PM ET).
+```
+
+**Key Difference from Previous Approach**:
+- ❌ Old: Try 5m → fail → ask user what to do (reactive)
+- ❌ Middle: Try 5m → fail → auto-retry with 1d → inform (reactive with automation)
+- ✅ New: Detect market hours → choose 1d directly → inform (proactive)
+
+**Benefits**:
+- No wasted API calls (no failed 5m attempt)
+- Faster response (single tool call vs retry loop)
+- More intelligent UX (agent predicts and adapts vs reacts to failures)
+- User feels agent is autonomous and competent
 
 **See detailed workflow example:** [docs/agent-workflow-example.md](docs/agent-workflow-example.md)
 

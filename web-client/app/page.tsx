@@ -30,6 +30,41 @@ const mergeChunk = (current: string, chunk: string) => {
   return current + chunk;
 };
 
+// Message component - removed memo for now to ensure functionality
+function MessageComponent({ message }: { message: ChatMessage }) {
+  return (
+    <div className={`message ${message.role}`}>
+      {message.images && message.images.length > 0 && (
+        <div className="message-images">
+          {message.images.map((img, imageIdx) => (
+            <img
+              key={imageIdx}
+              src={`data:${img.mimeType};base64,${img.data}`}
+              alt="Attachment"
+            />
+          ))}
+        </div>
+      )}
+      {message.imageUrls && message.imageUrls.length > 0 && (
+        <div className="message-images">
+          {message.imageUrls.map((url, imageIdx) => (
+            <img
+              key={imageIdx}
+              src={`${API_BASE}${url}`}
+              alt="Attachment"
+            />
+          ))}
+        </div>
+      )}
+      <div className="message-content">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {message.content}
+        </ReactMarkdown>
+      </div>
+    </div>
+  );
+}
+
 let sharedClient: AcpClient | null = null;
 
 const getClient = (
@@ -331,19 +366,29 @@ export default function HomePage() {
     };
   }, [client, gatewayUrl]);
 
+  // Debounced scroll handler to improve performance
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
+
+    let scrollTimeout: NodeJS.Timeout;
     const handleScroll = () => {
-      const scrollDistanceFromBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight;
-      const isNearBottom = scrollDistanceFromBottom < 200;
-      if (isNearBottom) {
-        setShowScrollButton(false);
-      }
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        const scrollDistanceFromBottom =
+          container.scrollHeight - container.scrollTop - container.clientHeight;
+        const isNearBottom = scrollDistanceFromBottom < 200;
+        if (isNearBottom) {
+          setShowScrollButton(false);
+        }
+      }, 100); // Debounce by 100ms
     };
-    container.addEventListener("scroll", handleScroll);
-    return () => container.removeEventListener("scroll", handleScroll);
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      clearTimeout(scrollTimeout);
+      container.removeEventListener("scroll", handleScroll);
+    };
   }, []);
 
   useEffect(() => {
@@ -549,40 +594,18 @@ export default function HomePage() {
             </div>
           )}
           <div className="messages" ref={messagesContainerRef}>
-            {messages.length === 0 && (
+            {messages.length === 0 ? (
               <div className="empty-state">Start a conversation…</div>
+            ) : (
+              <>
+                {messages.slice(-100).map((msg, idx) => (
+                  <MessageComponent
+                    key={`msg-${messages.length - 100 + idx}`}
+                    message={msg}
+                  />
+                ))}
+              </>
             )}
-            {messages.map((msg, idx) => (
-              <div key={idx} className={`message ${msg.role}`}>
-                {msg.images && msg.images.length > 0 && (
-                  <div className="message-images">
-                    {msg.images.map((img, imageIdx) => (
-                      <img
-                        key={imageIdx}
-                        src={`data:${img.mimeType};base64,${img.data}`}
-                        alt="Attachment"
-                      />
-                    ))}
-                  </div>
-                )}
-                {msg.imageUrls && msg.imageUrls.length > 0 && (
-                  <div className="message-images">
-                    {msg.imageUrls.map((url, imageIdx) => (
-                      <img
-                        key={imageIdx}
-                        src={`${API_BASE}${url}`}
-                        alt="Attachment"
-                      />
-                    ))}
-                  </div>
-                )}
-                <div className="message-content">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            ))}
             {status === "streaming" && messages[messages.length - 1]?.role === "user" && (
               <div className="message agent typing-indicator">
                 <div className="typing-dots">
