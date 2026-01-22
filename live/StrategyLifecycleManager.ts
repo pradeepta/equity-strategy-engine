@@ -14,6 +14,7 @@ import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHi
 import { OrderRepository } from "../database/repositories/OrderRepository";
 import { SystemLogRepository } from "../database/repositories/SystemLogRepository";
 import { OperationQueueService } from "./queue/OperationQueueService";
+import { isMarketOpen } from "../utils/marketHours";
 import * as YAML from "yaml";
 
 export class StrategyLifecycleManager {
@@ -841,37 +842,10 @@ export class StrategyLifecycleManager {
     }
   }
 
+  /**
+   * Check if market is open (delegates to shared utility)
+   */
   private isMarketOpenNow(): boolean {
-    try {
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        weekday: "short",
-        hour: "numeric",
-        minute: "numeric",
-        hour12: false,
-      });
-
-      const parts = formatter.formatToParts(new Date());
-      const weekday = parts.find((p) => p.type === "weekday")?.value || "";
-      const hour = parseInt(
-        parts.find((p) => p.type === "hour")?.value || "0",
-        10
-      );
-      const minute = parseInt(
-        parts.find((p) => p.type === "minute")?.value || "0",
-        10
-      );
-
-      if (["Sat", "Sun"].includes(weekday)) {
-        return false;
-      }
-
-      const minutes = hour * 60 + minute;
-      const open = 9 * 60 + 30;
-      const close = 16 * 60;
-      return minutes >= open && minutes < close;
-    } catch {
-      return false;
-    }
+    return isMarketOpen();
   }
 }

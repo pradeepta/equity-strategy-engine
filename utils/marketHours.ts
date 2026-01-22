@@ -160,3 +160,144 @@ export function formatTradingTimeInfo(totalBars: number, timeframe: string): str
     `Strategy Activity: ${tradingTime.description}`,
   ].join('\n');
 }
+
+/**
+ * Check if US stock market is currently open (9:30 AM - 4:00 PM ET, weekdays only)
+ * Simple boolean version of getMarketHoursInfo()
+ * @returns true if market is open, false otherwise
+ */
+export function isMarketOpen(): boolean {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(new Date());
+    const weekday = parts.find((p) => p.type === 'weekday')?.value || '';
+    const hour = parseInt(
+      parts.find((p) => p.type === 'hour')?.value || '0',
+      10
+    );
+    const minute = parseInt(
+      parts.find((p) => p.type === 'minute')?.value || '0',
+      10
+    );
+
+    // Weekend check
+    if (['Sat', 'Sun'].includes(weekday)) {
+      return false;
+    }
+
+    // Market hours: 9:30 AM - 4:00 PM ET
+    const minutes = hour * 60 + minute;
+    const marketOpen = 9 * 60 + 30; // 9:30 AM
+    const marketClose = 16 * 60;    // 4:00 PM
+
+    return minutes >= marketOpen && minutes < marketClose;
+  } catch (error) {
+    // Fallback: assume market closed on error
+    console.error('Error checking market hours:', error);
+    return false;
+  }
+}
+
+/**
+ * Get current time in ET timezone as string (for logging)
+ * @returns Current ET time in format "HH:MM ET"
+ */
+export function getCurrentETTime(): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+    });
+    return formatter.format(new Date()) + ' ET';
+  } catch {
+    return 'Unknown ET';
+  }
+}
+
+/**
+ * Convert timeframe string to milliseconds
+ * @param timeframe Timeframe string (e.g., "5m", "15m", "1h", "1d")
+ * @returns Timeframe duration in milliseconds
+ */
+export function getTimeframeMs(timeframe: string): number {
+  const minutes = parseTimeframeToMinutes(timeframe);
+  return minutes * 60 * 1000;
+}
+
+/**
+ * Check if a specific timestamp falls within market hours
+ * @param timestamp Unix timestamp in milliseconds
+ * @returns true if timestamp is during market hours, false otherwise
+ */
+export function isMarketHours(timestamp: number): boolean {
+  try {
+    const date = new Date(timestamp);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(date);
+    const weekday = parts.find((p) => p.type === 'weekday')?.value || '';
+    const hour = parseInt(
+      parts.find((p) => p.type === 'hour')?.value || '0',
+      10
+    );
+    const minute = parseInt(
+      parts.find((p) => p.type === 'minute')?.value || '0',
+      10
+    );
+
+    // Weekend check
+    if (['Sat', 'Sun'].includes(weekday)) {
+      return false;
+    }
+
+    // Market hours: 9:30 AM - 4:00 PM ET
+    const minutes = hour * 60 + minute;
+    const marketOpen = 9 * 60 + 30; // 9:30 AM
+    const marketClose = 16 * 60;    // 4:00 PM
+
+    return minutes >= marketOpen && minutes < marketClose;
+  } catch (error) {
+    console.error('Error checking market hours for timestamp:', error);
+    return false;
+  }
+}
+
+/**
+ * Check if a time range includes any market hours
+ * Useful for gap detection - only flag gaps during market hours
+ * @param startTime Start timestamp in milliseconds
+ * @param endTime End timestamp in milliseconds
+ * @returns true if range includes any market hours
+ */
+export function rangeIncludesMarketHours(startTime: number, endTime: number): boolean {
+  // Sample every 30 minutes in the range
+  const sampleInterval = 30 * 60 * 1000; // 30 minutes in ms
+
+  for (let time = startTime; time <= endTime; time += sampleInterval) {
+    if (isMarketHours(time)) {
+      return true;
+    }
+  }
+
+  // Check end time as well
+  if (isMarketHours(endTime)) {
+    return true;
+  }
+
+  return false;
+}

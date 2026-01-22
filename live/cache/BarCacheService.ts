@@ -12,7 +12,7 @@ import type { Bar } from '../../spec/types';
 import type { BarRepository } from '../../database/repositories/BarRepository';
 import type { CachedBars, Gap, BarCacheConfig, CacheStats } from './types';
 import { TwsMarketDataClient } from '../../broker/twsMarketData';
-import { getTimeframeMs, isMarketHours, rangeIncludesMarketHours } from '../utils/marketHours';
+import { getTimeframeMs, isMarketHours, rangeIncludesMarketHours } from '../../utils/marketHours';
 import { LoggerFactory } from '../../logging/logger';
 
 const logger = LoggerFactory.getLogger('BarCacheService');

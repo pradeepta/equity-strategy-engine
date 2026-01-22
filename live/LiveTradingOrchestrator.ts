@@ -21,6 +21,7 @@ import { LoggerFactory } from "../logging/logger";
 import { Logger } from "../logging/logger";
 import { BarCacheService } from "./cache/BarCacheService";
 import { BarCacheMonitor } from "./cache/BarCacheMonitor";
+import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
@@ -559,17 +560,10 @@ export class LiveTradingOrchestrator {
 
   /**
    * Check if market is open (9:30 AM - 4:00 PM ET)
+   * Delegates to shared utility function
    */
   private isMarketOpen(): boolean {
-    const now = new Date();
-    const hours = now.getHours();
-    const minutes = now.getMinutes();
-    const timeMinutes = hours * 60 + minutes;
-
-    const marketOpen = 9 * 60 + 30; // 9:30 AM
-    const marketClose = 16 * 60; // 4:00 PM
-
-    return timeMinutes >= marketOpen && timeMinutes < marketClose;
+    return checkMarketOpen();
   }
 
   /**
