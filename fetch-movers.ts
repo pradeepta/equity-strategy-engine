@@ -67,7 +67,11 @@ async function fetchNasdaqMoversTWS(): Promise<StockMover[]> {
     }, 10000);
 
     client.on('connected', () => {
-      console.log('✓ Connected to TWS\n');
+      console.log('✓ Connected to TWS for market movers');
+      // Set market data type (default to frozen for safety)
+      const marketDataType = parseInt(process.env.TWS_MARKET_DATA_TYPE || '2');
+      client.reqMarketDataType(marketDataType);
+      console.log(`✓ Using market data type: ${marketDataType} (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen)\n`);
       connected = true;
       clearTimeout(timeout);
       resolve();

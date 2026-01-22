@@ -693,12 +693,18 @@ main {
 .modal-content {
   background: #ffffff;
   border-radius: 16px;
-  max-width: 600px;
-  width: 90%;
-  max-height: 80vh;
+  max-width: 1200px;
+  width: 95%;
+  max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   animation: slideUp 0.3s ease-out;
+}
+
+.modal-chart {
+  max-width: 95%;
+  width: 1400px;
+  max-height: 95vh;
 }
 
 @keyframes slideUp {

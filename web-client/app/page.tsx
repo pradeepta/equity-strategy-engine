@@ -7,6 +7,14 @@ import { AcpClient } from "../src/lib/acpClient";
 import { AuditLogsViewer } from "./components/AuditLogsViewer";
 import { LogsViewer } from "./components/LogsViewer";
 import { ChatHistorySidebar, ChatSession } from "./components/ChatHistorySidebar";
+import {
+  createChart,
+  CandlestickData,
+  LineData,
+  LineStyle,
+  CandlestickSeries,
+  LineSeries
+} from 'lightweight-charts';
 
 const API_BASE = "http://localhost:3002";
 
@@ -80,6 +88,337 @@ const getClient = (
   }
   return sharedClient;
 };
+
+// Embedded Strategy Chart Component
+function StrategyChart({ strategy }: { strategy: any }) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const [bars, setBars] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tradeParams, setTradeParams] = useState<{
+    entryZone: [number, number] | null;
+    stopLoss: number | null;
+    targets: number[];
+    invalidationLevel: number | null;
+    side: 'BUY' | 'SELL' | null;
+  }>({
+    entryZone: null,
+    stopLoss: null,
+    targets: [],
+    invalidationLevel: null,
+    side: null,
+  });
+
+  // Fetch bars
+  useEffect(() => {
+    const fetchBars = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(
+          `${API_BASE}/api/portfolio/strategies/${strategy.id}/bars?limit=200`
+        );
+        if (!response.ok) throw new Error('Failed to fetch chart data');
+        const data = await response.json();
+        setBars(data.bars || []);
+        setError(null);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load chart');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchBars();
+  }, [strategy.id]);
+
+  // Initialize chart
+  useEffect(() => {
+    if (!chartContainerRef.current || bars.length === 0) return;
+
+    try {
+      const chart = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth,
+        height: 500,
+        layout: {
+          background: { color: '#1a1a1a' },
+          textColor: '#d1d5db',
+        },
+        grid: {
+          vertLines: { color: '#2b2b2b' },
+          horzLines: { color: '#2b2b2b' },
+        },
+        crosshair: { mode: 1 },
+        rightPriceScale: { borderColor: '#2b2b2b' },
+        timeScale: {
+          borderColor: '#2b2b2b',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
+
+      chartRef.current = chart;
+
+      // Add candlestick data
+      const candlestickSeries = chart.addSeries(CandlestickSeries, {
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
+      });
+
+      const chartData: CandlestickData[] = bars
+        .map((bar) => ({
+          time: Math.floor(new Date(bar.timestamp).getTime() / 1000) as any,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }))
+        .sort((a, b) => (a.time as number) - (b.time as number));
+
+      candlestickSeries.setData(chartData);
+
+      // Parse YAML for trade parameters
+      const yamlLines = strategy.yamlContent.split('\n');
+      let inOrderPlans = false;
+      let entryZone: [number, number] | null = null;
+      let stopLoss: number | null = null;
+      let targets: number[] = [];
+      let invalidationLevel: number | null = null;
+      let side: 'BUY' | 'SELL' | null = null;
+
+      for (let i = 0; i < yamlLines.length; i++) {
+        const line = yamlLines[i].trim();
+
+        if (line.startsWith('orderPlans:')) {
+          inOrderPlans = true;
+          continue;
+        }
+
+        if (inOrderPlans) {
+          if (line.startsWith('side:')) {
+            const match = line.match(/side:\s*(.+)/);
+            if (match) side = match[1].trim() as 'BUY' | 'SELL';
+          }
+
+          if (line.startsWith('entryZone:')) {
+            const nextLine = yamlLines[i + 1]?.trim();
+            if (nextLine?.startsWith('[')) {
+              const match = nextLine.match(/\[([0-9.]+),\s*([0-9.]+)\]/);
+              if (match) {
+                entryZone = [parseFloat(match[1]), parseFloat(match[2])];
+              }
+            }
+          }
+
+          if (line.startsWith('stopLoss:')) {
+            const match = line.match(/stopLoss:\s*([0-9.]+)/);
+            if (match) stopLoss = parseFloat(match[1]);
+          }
+
+          if (line.startsWith('targets:')) {
+            let j = i + 1;
+            while (j < yamlLines.length && yamlLines[j].trim().startsWith('-')) {
+              const targetMatch = yamlLines[j].match(/price:\s*([0-9.]+)/);
+              if (targetMatch) {
+                targets.push(parseFloat(targetMatch[1]));
+              }
+              j++;
+            }
+          }
+
+          if (line.startsWith('invalidationLevel:')) {
+            const match = line.match(/invalidationLevel:\s*([0-9.]+)/);
+            if (match) invalidationLevel = parseFloat(match[1]);
+          }
+
+          if (line.match(/^[a-z]+:/) && !line.startsWith('side:') &&
+              !line.startsWith('entryZone:') && !line.startsWith('stopLoss:') &&
+              !line.startsWith('targets:') && !line.startsWith('invalidationLevel:')) {
+            break;
+          }
+        }
+      }
+
+      setTradeParams({ entryZone, stopLoss, targets, invalidationLevel, side });
+
+      // Add entry zone lines
+      if (entryZone) {
+        const [lower, upper] = entryZone;
+        const entryLowerSeries = chart.addSeries(LineSeries, {
+          color: '#22c55e',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const entryUpperSeries = chart.addSeries(LineSeries, {
+          color: '#22c55e',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+
+        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: lower }));
+        const lineDataUpper: LineData[] = chartData.map(d => ({ time: d.time, value: upper }));
+        entryLowerSeries.setData(lineData);
+        entryUpperSeries.setData(lineDataUpper);
+      }
+
+      // Add stop loss line
+      if (stopLoss !== null) {
+        const stopLossValue = stopLoss;
+        const stopSeries = chart.addSeries(LineSeries, {
+          color: '#ef4444',
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: stopLossValue }));
+        stopSeries.setData(lineData);
+      }
+
+      // Add target lines
+      targets.forEach((target, idx) => {
+        const targetSeries = chart.addSeries(LineSeries, {
+          color: '#3b82f6',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dotted,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: target }));
+        targetSeries.setData(lineData);
+      });
+
+      // Add invalidation line
+      if (invalidationLevel !== null) {
+        const invalidationValue = invalidationLevel;
+        const invalidSeries = chart.addSeries(LineSeries, {
+          color: '#f97316',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: invalidationValue }));
+        invalidSeries.setData(lineData);
+      }
+
+      chart.timeScale().fitContent();
+
+      return () => {
+        chart.remove();
+      };
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }, [bars, strategy.yamlContent]);
+
+  if (loading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: '#737373' }}>
+        Loading chart...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: '20px', color: '#ef4444', textAlign: 'center' }}>
+        Error: {error}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div ref={chartContainerRef} style={{ width: '100%', minHeight: '500px' }} />
+
+      {/* Legend */}
+      {tradeParams.entryZone && (
+        <div style={{
+          marginTop: '16px',
+          padding: '16px',
+          backgroundColor: '#2b2b2b',
+          borderRadius: '8px',
+          fontSize: '13px',
+          color: '#d1d5db',
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: '12px', fontSize: '14px' }}>
+            Trade Levels
+            {tradeParams.side && (
+              <span style={{
+                marginLeft: '12px',
+                padding: '4px 8px',
+                backgroundColor: tradeParams.side === 'BUY' ? '#22c55e' : '#ef4444',
+                color: 'white',
+                borderRadius: '4px',
+                fontSize: '12px',
+              }}>
+                {tradeParams.side}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+            {tradeParams.entryZone && (
+              <div>
+                <div style={{ color: '#22c55e', fontWeight: 600 }}>Entry Zone (dashed green)</div>
+                <div>${tradeParams.entryZone[0].toFixed(2)} - ${tradeParams.entryZone[1].toFixed(2)}</div>
+              </div>
+            )}
+
+            {tradeParams.stopLoss && (
+              <div>
+                <div style={{ color: '#ef4444', fontWeight: 600 }}>Stop Loss (solid red)</div>
+                <div>
+                  ${tradeParams.stopLoss.toFixed(2)}
+                  {tradeParams.entryZone && tradeParams.side && (
+                    <span style={{ marginLeft: '8px', color: '#f87171' }}>
+                      ({tradeParams.side === 'BUY'
+                        ? ((tradeParams.stopLoss - tradeParams.entryZone[1]) / tradeParams.entryZone[1] * 100).toFixed(1)
+                        : ((tradeParams.entryZone[0] - tradeParams.stopLoss) / tradeParams.entryZone[0] * 100).toFixed(1)
+                      }%)
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tradeParams.targets.map((target, idx) => (
+              <div key={idx}>
+                <div style={{ color: '#3b82f6', fontWeight: 600 }}>Target {idx + 1} (dotted blue)</div>
+                <div>
+                  ${target.toFixed(2)}
+                  {tradeParams.entryZone && tradeParams.side && (
+                    <span style={{ marginLeft: '8px', color: '#60a5fa' }}>
+                      (+{tradeParams.side === 'BUY'
+                        ? ((target - tradeParams.entryZone[1]) / tradeParams.entryZone[1] * 100).toFixed(1)
+                        : ((tradeParams.entryZone[0] - target) / tradeParams.entryZone[0] * 100).toFixed(1)
+                      }%)
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {tradeParams.invalidationLevel && (
+              <div>
+                <div style={{ color: '#f97316', fontWeight: 600 }}>Invalidation (dashed orange)</div>
+                <div>${tradeParams.invalidationLevel.toFixed(2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function HomePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1336,7 +1675,13 @@ function Dashboard() {
                 </div>
               )}
 
-              {selectedStrategy.yamlContent && (
+                      {/* Embedded Chart Section */}
+              <div className="modal-section">
+                <h3 className="modal-section-title">Price Chart with Trade Levels</h3>
+                <StrategyChart strategy={selectedStrategy} />
+              </div>
+
+      {selectedStrategy.yamlContent && (
                 <div className="modal-section">
                   <h3 className="modal-section-title">Strategy Configuration</h3>
                   <pre className="yaml-content">
@@ -1502,8 +1847,8 @@ function Dashboard() {
             </div>
 
             {/* Modal Actions Footer */}
-            {selectedStrategy.status === 'ACTIVE' && (
-              <div className="modal-footer">
+            <div className="modal-footer">
+              {selectedStrategy.status === 'ACTIVE' && (
                 <button
                   className="close-strategy-button"
                   onClick={() => {
@@ -1512,10 +1857,8 @@ function Dashboard() {
                 >
                   Close Strategy
                 </button>
-              </div>
-            )}
-            {selectedStrategy.status === 'CLOSED' && (
-              <div className="modal-footer">
+              )}
+              {selectedStrategy.status === 'CLOSED' && (
                 <button
                   className="reopen-strategy-button"
                   onClick={() => {
@@ -1524,8 +1867,8 @@ function Dashboard() {
                 >
                   Reopen Strategy
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}

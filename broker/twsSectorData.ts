@@ -58,6 +58,10 @@ export class TwsSectorDataClient {
 
       client.on('connected', () => {
         console.log(`✓ Connected to TWS for sector data`);
+        // Set market data type (default to frozen for safety)
+        const marketDataType = parseInt(process.env.TWS_MARKET_DATA_TYPE || '2');
+        client.reqMarketDataType(marketDataType);
+        console.log(`✓ Using market data type: ${marketDataType}`);
         connected = true;
         clearTimeout(timeout);
         resolve();
@@ -146,6 +150,10 @@ export class TwsSectorDataClient {
 
       client.on('connected', () => {
         console.log(`✓ Connected to TWS for scanner`);
+        // Set market data type (default to frozen for safety)
+        const marketDataType = parseInt(process.env.TWS_MARKET_DATA_TYPE || '2');
+        client.reqMarketDataType(marketDataType);
+        console.log(`✓ Using market data type: ${marketDataType}`);
         connected = true;
         clearTimeout(timeout);
         resolve();

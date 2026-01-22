@@ -444,7 +444,63 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/backtest')) {
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/bars')) {
+      // GET /api/portfolio/strategies/:id/bars - Get historical bars for chart from cache
+      if (req.method !== 'GET') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/bars
+      const limit = parseInt(url.searchParams.get('limit') || '200', 10);
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        const strategy = await strategyRepo.findById(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        // Fetch bars from cached market_bars table
+        const cachedBars = await prisma.marketBar.findMany({
+          where: {
+            symbol: strategy.symbol,
+            timeframe: strategy.timeframe,
+          },
+          orderBy: {
+            timestamp: 'desc',
+          },
+          take: limit,
+        });
+
+        // Convert to Bar format and reverse to chronological order
+        const bars = cachedBars
+          .reverse()
+          .map(bar => ({
+            timestamp: new Date(Number(bar.timestamp)).toISOString(),
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+          }));
+
+        sendJSON(res, {
+          bars,
+          symbol: strategy.symbol,
+          timeframe: strategy.timeframe,
+          count: bars.length,
+          cached: true, // Indicate data is from cache
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching bars:', error);
+        sendJSON(res, { error: error.message || 'Failed to fetch chart data' }, 500);
+      }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars')) {
       // GET /api/portfolio/strategies/:id - Get single strategy details
       if (req.method !== 'GET') {
         sendJSON(res, { error: 'Method not allowed' }, 405);

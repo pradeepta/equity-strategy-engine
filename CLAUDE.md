@@ -804,7 +804,59 @@ psql "$(grep "^DATABASE_URL" .env | cut -d'=' -f2- | tr -d '"')" -c "YOUR_QUERY_
 
 ---
 
-## Recent Fixes & Improvements (2026-01-20)
+## Recent Fixes & Improvements
+
+### 7. TWS Market Data Type Configuration (2026-01-22)
+
+**Problem:** Without paid IBKR market data subscription, portfolio snapshots and market tools would show stale or missing prices.
+
+**Root Cause:** TWS API defaults to "Live" market data (Type 1), which requires a paid subscription. Without it:
+- Portfolio positions show `currentPrice = 0` or yesterday's close during market hours
+- Market movers scanner receives zero ticks (no data)
+- Sector tools fail to get current prices
+
+**Solution:** Added `TWS_MARKET_DATA_TYPE` environment variable to explicitly request delayed (free) data.
+
+**Files Modified:**
+- [.env.example:31-38](.env.example#L31-L38) - Added `TWS_MARKET_DATA_TYPE=3` (delayed, recommended)
+- [broker/twsPortfolio.ts:43-47](broker/twsPortfolio.ts#L43-L47) - Set market data type on connection
+- [fetch-movers.ts:71-74](fetch-movers.ts#L71-L74) - Set market data type on connection
+- [broker/twsSectorData.ts:61-64](broker/twsSectorData.ts#L61-L64) - Set market data type on connection (2 places)
+
+**Market Data Types:**
+- **Type 1 (Live)**: Real-time data, requires paid subscription
+- **Type 2 (Frozen)**: Last closing price, free, deterministic ✅ **RECOMMENDED for safety**
+- **Type 3 (Delayed)**: 15-minute delayed data, free, use for intraday rebalancing only
+- **Type 4 (Delayed-Frozen)**: Falls back to frozen if delayed unavailable
+
+**Impact:**
+- Portfolio snapshots use closing prices (no intraday lag confusion)
+- Risk limits enforced with deterministic values (no 15-min race conditions)
+- AI agent sees conservative portfolio state (safer decisions)
+- Market tools work without subscription (last close prices)
+- Users with paid subscription can set `TWS_MARKET_DATA_TYPE=1` for real-time
+
+**Why Frozen (Type 2) is Default:**
+- Strategies run for hours/days (not intraday rebalancing)
+- Risk caps need deterministic values (15-min delay could violate limits)
+- Closing prices sufficient for entry/exit decisions
+- No false signals from intraday volatility
+
+**Configuration:**
+```bash
+# .env
+TWS_MARKET_DATA_TYPE=2  # Frozen (safe, recommended)
+# Use Type 3 only if you need intraday portfolio values:
+# TWS_MARKET_DATA_TYPE=3  # Delayed (15-min lag, intraday rebalancing)
+# Or if you have paid subscription:
+# TWS_MARKET_DATA_TYPE=1  # Live (requires subscription)
+```
+
+**Important Note:** Historical bar fetching (`reqHistoricalData`) is NOT affected by this setting - historical bars are always available for free and don't require subscriptions.
+
+---
+
+## Historical Fixes (2026-01-20 and earlier)
 
 ### 1. Strategy Reopen Idempotency Fix
 
