@@ -1291,6 +1291,7 @@ async function handleGetPortfolioOverview() {
 
 /**
  * Get market data handler
+ * Now uses BarCacheService for efficient fetching (database → TWS fallback)
  */
 async function handleGetMarketData(args: any) {
   mcpLogger.info('get_market_data - INPUT', {
@@ -1306,10 +1307,80 @@ async function handleGetMarketData(args: any) {
     const brokerType = process.env.BROKER || 'tws';
 
     if (brokerType === 'tws') {
-      const { TwsMarketDataClient } = await import('./broker/twsMarketData');
+      // Check if bar caching is enabled
+      const barCacheEnabled = process.env.BAR_CACHE_ENABLED === 'true';
 
-      const client = new TwsMarketDataClient();
-      const bars = await client.getHistoricalBars(symbol, limit, timeframe);
+      let bars: any[];
+
+      if (barCacheEnabled) {
+        // Fetch from database cache first, then TWS if needed
+        const { getBarRepo } = await import('./database/RepositoryFactory');
+        const barRepo = getBarRepo();
+
+        // Try to get bars from database
+        const dbBars = await barRepo.getRecentBars(symbol, timeframe, limit);
+
+        if (dbBars.length >= limit * 0.8) {
+          // Have enough bars in DB (80% of requested)
+          bars = dbBars;
+          mcpLogger.info('get_market_data - fetched from database', {
+            symbol,
+            timeframe,
+            barsCount: bars.length,
+            source: 'database',
+          });
+        } else {
+          // Not enough bars in DB, fetch from TWS with unique client ID
+          const { TwsMarketDataClient } = await import('./broker/twsMarketData');
+          const uniqueClientId = 1000 + Math.floor(Math.random() * 9000); // Random ID between 1000-9999
+          const client = new TwsMarketDataClient(
+            process.env.TWS_HOST || '127.0.0.1',
+            parseInt(process.env.TWS_PORT || '7497'),
+            uniqueClientId
+          );
+
+          const twsBars = await client.getHistoricalBars(symbol, limit, timeframe);
+
+          // Store TWS bars to database for future use
+          if (twsBars.length > 0) {
+            await barRepo.insertBars(symbol, timeframe, twsBars);
+          }
+
+          // Combine and deduplicate
+          const combined = [...dbBars, ...twsBars];
+          const deduplicated = combined
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .filter((bar, idx, arr) => idx === 0 || bar.timestamp !== arr[idx - 1].timestamp);
+
+          bars = deduplicated.slice(-limit);
+
+          mcpLogger.info('get_market_data - fetched from TWS and cached', {
+            symbol,
+            timeframe,
+            barsCount: bars.length,
+            dbBars: dbBars.length,
+            twsBars: twsBars.length,
+            source: 'tws+cache',
+            clientId: uniqueClientId,
+          });
+        }
+      } else {
+        // Legacy path: Direct TWS fetch (no caching) with unique client ID
+        const { TwsMarketDataClient } = await import('./broker/twsMarketData');
+        const uniqueClientId = 1000 + Math.floor(Math.random() * 9000); // Random ID between 1000-9999
+        const client = new TwsMarketDataClient(
+          process.env.TWS_HOST || '127.0.0.1',
+          parseInt(process.env.TWS_PORT || '7497'),
+          uniqueClientId
+        );
+        bars = await client.getHistoricalBars(symbol, limit, timeframe);
+        mcpLogger.info('get_market_data - fetched from TWS (cache disabled)', {
+          symbol,
+          timeframe,
+          barsCount: bars.length,
+          clientId: uniqueClientId,
+        });
+      }
 
       return {
         success: true,

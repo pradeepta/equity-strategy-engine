@@ -29,6 +29,7 @@ export class StrategyEngine {
   private barHistory: Bar[] = [];
   private featureHistory: Map<string, FeatureValue[]> = new Map();
   private replayMode: boolean = false;
+  private readonly MAX_BAR_HISTORY: number; // Keep last N bars in memory
   private readonly MAX_FEATURE_HISTORY = 100; // Keep last 100 bars of history
 
   constructor(
@@ -38,6 +39,11 @@ export class StrategyEngine {
     private brokerEnv: BrokerEnvironment
   ) {
     this.timers = new TimerManager();
+
+    // Read MAX_BAR_HISTORY from environment variable (default: 200 bars)
+    // Most indicators (e.g., SMA200) need at most 200 bars
+    this.MAX_BAR_HISTORY = parseInt(process.env.ENGINE_MAX_BAR_HISTORY || '200', 10);
+
     this.state = {
       symbol: ir.symbol,
       currentState: ir.initialState,
@@ -63,6 +69,11 @@ export class StrategyEngine {
       this.state.barCount++;
       this.state.currentBar = bar;
       this.barHistory.push(bar);
+
+      // Keep only last MAX_BAR_HISTORY bars to prevent unbounded memory growth
+      if (this.barHistory.length > this.MAX_BAR_HISTORY) {
+        this.barHistory.shift(); // Remove oldest bar
+      }
 
       // Compute features for this bar
       await this.computeFeatures(bar);

@@ -19,6 +19,8 @@ import { BrokerReconciliationService } from "./reconciliation/BrokerReconciliati
 import { OrderAlertService } from "./alerts/OrderAlertService";
 import { LoggerFactory } from "../logging/logger";
 import { Logger } from "../logging/logger";
+import { BarCacheService } from "./cache/BarCacheService";
+import { BarCacheMonitor } from "./cache/BarCacheMonitor";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
@@ -47,6 +49,8 @@ export class LiveTradingOrchestrator {
   private lockService: DistributedLockService;
   private reconciliationService: BrokerReconciliationService;
   private alertService: OrderAlertService;
+  private barCacheService?: BarCacheService;
+  private barCacheMonitor?: BarCacheMonitor;
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
@@ -112,11 +116,21 @@ export class LiveTradingOrchestrator {
       this.repositoryFactory.getSystemLogRepo()
     );
 
+    // Initialize bar cache service (if enabled)
+    const barCacheEnabled = process.env.BAR_CACHE_ENABLED === 'true';
+    if (barCacheEnabled) {
+      const barRepo = this.repositoryFactory.getBarRepo();
+      this.barCacheService = new BarCacheService(barRepo);
+      this.barCacheMonitor = new BarCacheMonitor(barRepo, this.barCacheService);
+      logger.info('✓ Bar caching enabled');
+    }
+
     // Initialize components
     this.multiStrategyManager = new MultiStrategyManager(
       config.brokerAdapter,
       config.brokerEnv,
-      strategyRepo
+      strategyRepo,
+      this.barCacheService  // Pass bar cache service
     );
 
     const twsHost = config.twsHost || process.env.TWS_HOST || "127.0.0.1";
@@ -246,6 +260,12 @@ export class LiveTradingOrchestrator {
     // Start database poller
     this.databasePoller.start();
 
+    // Start bar cache monitor (if enabled)
+    if (this.barCacheMonitor) {
+      this.barCacheMonitor.start();
+      logger.info("✓ Bar cache monitoring started");
+    }
+
     logger.info("════════════════════════════════════════════════════════════");
     logger.info("RUNNING MULTI-STRATEGY TRADING LOOP");
     logger.info("════════════════════════════════════════════════════════════");
@@ -270,6 +290,12 @@ export class LiveTradingOrchestrator {
 
     // Stop database poller
     this.databasePoller.stop();
+
+    // Stop bar cache monitor (if enabled)
+    if (this.barCacheMonitor) {
+      this.barCacheMonitor.stop();
+      logger.info("✓ Bar cache monitoring stopped");
+    }
 
     // Clear main loop interval
     if (this.mainLoopInterval) {
@@ -371,16 +397,19 @@ export class LiveTradingOrchestrator {
             `⏭️  No strategies need bar updates yet (all waiting for timeframe intervals)`
           );
         } else {
+          // Deduplicate symbols (multiple strategies can share same symbol)
+          const uniqueSymbols = Array.from(new Set(strategiesNeedingBars));
+
           logger.info(
             `🔄 Fetching bars for ${strategiesNeedingBars.length}/${
               activeStrategies.length
-            } strategy(ies): ${strategiesNeedingBars.join(", ")}`
+            } strategy(ies): ${strategiesNeedingBars.join(", ")} (${uniqueSymbols.length} unique symbols)`
           );
 
-          // Fetch latest bars only for symbols that need updates
+          // Fetch latest bars only for unique symbols
           const latestBars =
             await this.multiStrategyManager.fetchLatestBarsForSymbols(
-              strategiesNeedingBars
+              uniqueSymbols
             );
 
           // Process bars for each symbol (distributes to all strategies)

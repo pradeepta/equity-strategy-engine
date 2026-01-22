@@ -9,6 +9,7 @@ import { TwsMarketDataClient } from '../broker/twsMarketData';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, BrokerEnvironment } from '../spec/types';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
+import { BarCacheService } from './cache/BarCacheService';
 
 export class MultiStrategyManager {
   private instances: Map<string, StrategyInstance>;  // strategyId -> instance
@@ -18,14 +19,25 @@ export class MultiStrategyManager {
   private marketDataClients: Map<string, TwsMarketDataClient>;  // symbol -> client (shared across strategies)
   private clientIdCounter: number = 10;  // Start at 10 to avoid conflicts with main clients
   private strategyRepo: StrategyRepository;
+  private barCache?: BarCacheService;  // Optional bar cache service
 
-  constructor(adapter: BaseBrokerAdapter, brokerEnv: BrokerEnvironment, strategyRepo: StrategyRepository) {
+  constructor(
+    adapter: BaseBrokerAdapter,
+    brokerEnv: BrokerEnvironment,
+    strategyRepo: StrategyRepository,
+    barCache?: BarCacheService
+  ) {
     this.instances = new Map();
     this.symbolIndex = new Map();
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
     this.marketDataClients = new Map();
     this.strategyRepo = strategyRepo;
+    this.barCache = barCache;
+
+    if (this.barCache) {
+      console.log('✓ MultiStrategyManager initialized with bar caching enabled');
+    }
   }
 
   /**
@@ -265,6 +277,9 @@ export class MultiStrategyManager {
   /**
    * Fetch latest bars for specific symbols only
    * Returns map of symbol -> bars
+   *
+   * If bar cache is enabled, uses BarCacheService for efficient fetching.
+   * Otherwise, falls back to direct TWS client calls.
    */
   async fetchLatestBarsForSymbols(symbols: string[]): Promise<Map<string, Bar[]>> {
     const results = new Map<string, Bar[]>();
@@ -278,19 +293,63 @@ export class MultiStrategyManager {
           return;
         }
 
-        const client = this.marketDataClients.get(symbol);
-        if (!client) {
-          console.warn(`No market data client for ${symbol}`);
-          return;
-        }
-
-        // Use first strategy to get timeframe and filter bars
+        // Use first strategy to get timeframe
         const firstInstance = strategies[0];
         const timeframe = firstInstance.getTimeframe();
-        const bars = await client.getHistoricalBars(symbol, 2, timeframe);
-        const newBars = firstInstance.filterNewBars(bars);
 
-        results.set(symbol, newBars);
+        let bars: Bar[];
+
+        // Use cache if available, otherwise fall back to direct TWS
+        if (this.barCache) {
+          // First, try to get bars from database via cache
+          const barRepo = this.barCache['barRepo']; // Access private field
+          const dbBars = await barRepo.getRecentBars(symbol, timeframe, 100);
+
+          // Get TWS client for this symbol
+          const client = this.marketDataClients.get(symbol);
+          if (!client) {
+            console.warn(`No market data client for ${symbol}`);
+            return;
+          }
+
+          // If we have DB bars, only fetch new bars since latest timestamp
+          let twsBars: Bar[];
+          if (dbBars.length > 0) {
+            // Fetch recent bars (2 periods) to get only new bars
+            twsBars = await client.getHistoricalBars(symbol, 2, timeframe);
+          } else {
+            // No DB bars - fetch more history for initial load
+            const periodsToFetch = timeframe === '1d' ? 100 : 3; // 100 days or 3 days of intraday
+            twsBars = await client.getHistoricalBars(symbol, periodsToFetch, timeframe);
+          }
+
+          // Store TWS bars to database (deduplicated automatically)
+          if (twsBars.length > 0) {
+            await barRepo.insertBars(symbol, timeframe, twsBars);
+          }
+
+          // Combine DB and TWS bars
+          const allBars = [...dbBars, ...twsBars]
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .filter((bar, idx, arr) => idx === 0 || bar.timestamp !== arr[idx - 1].timestamp);
+
+          bars = allBars;
+
+          // Filter to only new bars based on last processed timestamp
+          const newBars = firstInstance.filterNewBars(bars);
+          results.set(symbol, newBars);
+        } else {
+          // Legacy path: Direct TWS fetch
+          const client = this.marketDataClients.get(symbol);
+          if (!client) {
+            console.warn(`No market data client for ${symbol}`);
+            return;
+          }
+
+          bars = await client.getHistoricalBars(symbol, 2, timeframe);
+          const newBars = firstInstance.filterNewBars(bars);
+          results.set(symbol, newBars);
+        }
       } catch (error) {
         console.error(`Failed to fetch bars for ${symbol}:`, error);
       }
