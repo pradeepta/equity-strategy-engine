@@ -51,7 +51,8 @@ export class MultiStrategyManager {
       strategy.symbol,
       strategy.name,
       this.brokerAdapter,
-      this.brokerEnv
+      this.brokerEnv,
+      strategy.activatedAt || undefined  // Pass activation timestamp
     );
 
     // Initialize (compiles YAML, creates engine)

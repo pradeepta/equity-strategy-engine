@@ -26,6 +26,8 @@ export class StrategyInstance {
   private initialized: boolean = false;
   private lastBarFetchTime: number = 0;  // Track last time we fetched bars
   private lastProcessedBarTimestamp: number | null = null;
+  private activatedAt: Date;  // When strategy was activated
+  private barsProcessedSinceActivation: number = 0;  // Real-time bars only
 
   constructor(
     strategyId: string,
@@ -34,7 +36,8 @@ export class StrategyInstance {
     symbol: string,
     name: string,
     adapter: BaseBrokerAdapter,
-    brokerEnv: BrokerEnvironment
+    brokerEnv: BrokerEnvironment,
+    activatedAt?: Date  // Optional - defaults to now
   ) {
     this.strategyId = strategyId;
     this.userId = userId;
@@ -43,6 +46,7 @@ export class StrategyInstance {
     this.strategyName = name;
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
+    this.activatedAt = activatedAt || new Date();
 
     // Create compiler with standard registry
     const featureRegistry = createStandardRegistry();
@@ -99,8 +103,14 @@ export class StrategyInstance {
 
     await this.engine.processBar(bar, options);
     this.lastProcessedBarTimestamp = bar.timestamp;
+
+    // Only count non-replay bars toward evaluation and real-time tracking
     if (!options?.replay) {
       this.barsSinceLastEval++;
+      // Only count bars that occurred after activation as "real-time"
+      if (bar.timestamp >= this.activatedAt.getTime()) {
+        this.barsProcessedSinceActivation++;
+      }
     }
   }
 
@@ -208,11 +218,18 @@ export class StrategyInstance {
   /**
    * Get performance metrics
    */
-  getPerformanceMetrics(): { barsActive: number; ordersPlaced: number } {
+  getPerformanceMetrics(): {
+    barsActive: number;
+    barsActiveSinceActivation: number;
+    ordersPlaced: number;
+    activatedAt: Date;
+  } {
     const state = this.getState();
     return {
-      barsActive: state.barCount,
+      barsActive: state.barCount,  // Total bars (including historical replay)
+      barsActiveSinceActivation: this.barsProcessedSinceActivation,  // Real-time only
       ordersPlaced: state.openOrders.length,
+      activatedAt: this.activatedAt,
     };
   }
 

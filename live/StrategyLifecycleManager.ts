@@ -97,10 +97,18 @@ export class StrategyLifecycleManager {
         },
         performance: {
           barsActive: performance.barsActive,
+          barsActiveSinceActivation: performance.barsActiveSinceActivation,
           ordersPlaced: performance.ordersPlaced,
           currentState: state.currentState,
+          activatedAt: performance.activatedAt,
         },
       };
+
+      console.log(`🔍 [DEBUG] Sending evaluation for ${instance.symbol}:`);
+      console.log(`   barsActive (total): ${performance.barsActive}`);
+      console.log(`   barsActiveSinceActivation (real-time): ${performance.barsActiveSinceActivation}`);
+      console.log(`   activatedAt: ${performance.activatedAt.toISOString()}`);
+      console.log(`   timeframe: ${instance.getTimeframe()}`);
 
       // Send to evaluation endpoint
       const response = await this.evaluatorClient.evaluate(request);
