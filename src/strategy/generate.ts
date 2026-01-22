@@ -7,10 +7,19 @@ import {
   breakoutRangeHighLong,
   rangeBounceLong,
   rangeMidlineReclaimLong,
+  rangeMidlineRejectShort,
   hodBreakoutLong,
   lodBreakdownShort,
   breakoutRangeHighShort,
   rangeBounceShort,
+  vwapReclaimLong,
+  vwapRejectShort,
+  ema20ReclaimLong,
+  ema20RejectShort,
+  bbSqueezeBreakoutLong,
+  bbSqueezeBreakdownShort,
+  trendContinuationBreakoutLong,
+  trendContinuationBreakdownShort,
 } from './families';
 
 export function generateCandidates(metrics: Metrics, constraints: Constraints): Candidate[] {
@@ -97,6 +106,106 @@ export function generateCandidates(metrics: Metrics, constraints: Constraints): 
         for (const stopAboveHighAtr of [0.5, 0.75]) {
           const c = rangeBounceShort(metrics, constraints, { lookback, belowHighAtr, widthAtr, stopAboveHighAtr });
           if (c) candidates.push(c);
+        }
+      }
+    }
+  }
+
+  // Range Midline Reject Short
+  for (const lookback of lookbacks) {
+    for (const bufAtr of [0.05, 0.1]) {
+      for (const widthAtr of widths) {
+        for (const stopAtr of stops) {
+          const c = rangeMidlineRejectShort(metrics, constraints, { lookback, bufAtr, widthAtr, stopAtr });
+          if (c) candidates.push(c);
+        }
+      }
+    }
+  }
+
+  // VWAP Reclaim Long
+  for (const k1 of [0.5, 0.75]) {
+    for (const k2 of [0.1, 0.15]) {
+      for (const stopAtr of stops) {
+        const c = vwapReclaimLong(metrics, constraints, { k1, k2, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // VWAP Reject Short
+  for (const k1 of [0.5, 0.75]) {
+    for (const k2 of [0.1, 0.15]) {
+      for (const stopAtr of stops) {
+        const c = vwapRejectShort(metrics, constraints, { k1, k2, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // EMA20 Reclaim Long
+  for (const k1 of [0.5, 0.75]) {
+    for (const k2 of [0.1, 0.15]) {
+      for (const stopAtr of stops) {
+        const c = ema20ReclaimLong(metrics, constraints, { k1, k2, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // EMA20 Reject Short
+  for (const k1 of [0.5, 0.75]) {
+    for (const k2 of [0.1, 0.15]) {
+      for (const stopAtr of stops) {
+        const c = ema20RejectShort(metrics, constraints, { k1, k2, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // BB Squeeze Breakout Long
+  for (const bufferAtr of buffers) {
+    for (const widthAtr of widths) {
+      for (const stopAtr of stops) {
+        const c = bbSqueezeBreakoutLong(metrics, constraints, { bufferAtr, widthAtr, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // BB Squeeze Breakdown Short
+  for (const bufferAtr of buffers) {
+    for (const widthAtr of widths) {
+      for (const stopAtr of stops) {
+        const c = bbSqueezeBreakdownShort(metrics, constraints, { bufferAtr, widthAtr, stopAtr });
+        if (c) candidates.push(c);
+      }
+    }
+  }
+
+  // Trend Continuation Breakout Long
+  for (const lookback of lookbacks) {
+    for (const bufferAtr of buffers) {
+      for (const widthAtr of widths) {
+        for (const stopAtr of stops) {
+          for (const minAdx of [20, 25]) {
+            const c = trendContinuationBreakoutLong(metrics, constraints, { lookback, bufferAtr, widthAtr, stopAtr, minAdx });
+            if (c) candidates.push(c);
+          }
+        }
+      }
+    }
+  }
+
+  // Trend Continuation Breakdown Short
+  for (const lookback of lookbacks) {
+    for (const bufferAtr of buffers) {
+      for (const widthAtr of widths) {
+        for (const stopAtr of stops) {
+          for (const minAdx of [20, 25]) {
+            const c = trendContinuationBreakdownShort(metrics, constraints, { lookback, bufferAtr, widthAtr, stopAtr, minAdx });
+            if (c) candidates.push(c);
+          }
         }
       }
     }

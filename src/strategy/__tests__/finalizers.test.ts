@@ -14,6 +14,10 @@ const mockMetrics: Metrics = {
   lod: 94,
   currentPrice: 100,
   ema20: 99,
+  vwap: 100,
+  bbUpper: 104,
+  bbLower: 96,
+  adx: 25,
 };
 
 const mockConstraints: Constraints = {

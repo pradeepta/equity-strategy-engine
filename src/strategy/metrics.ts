@@ -19,6 +19,10 @@ export interface Metrics {
   lod: number;
   currentPrice: number;
   ema20: number | null;
+  vwap: number;
+  bbUpper: number | null;
+  bbLower: number | null;
+  adx: number;
 }
 
 export interface Constraints {
@@ -95,6 +99,101 @@ export function computeEma(bars: Bar[], period: number = 20): number | null {
   return ema;
 }
 
+export function computeVwap(bars: Bar[]): number {
+  if (bars.length === 0) {
+    throw new Error('No bars provided for VWAP calculation');
+  }
+
+  let cumulativeTPV = 0;
+  let cumulativeVolume = 0;
+
+  for (const bar of bars) {
+    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
+    cumulativeTPV += typicalPrice * bar.volume;
+    cumulativeVolume += bar.volume;
+  }
+
+  if (cumulativeVolume === 0) {
+    // Fallback to current close if no volume
+    return bars[bars.length - 1].close;
+  }
+
+  return cumulativeTPV / cumulativeVolume;
+}
+
+export function computeBollingerBands(
+  bars: Bar[],
+  period: number = 20,
+  stdDevMultiplier: number = 2
+): { upper: number; middle: number; lower: number } | null {
+  if (bars.length < period) {
+    return null;
+  }
+
+  // Calculate SMA (middle band)
+  const recentBars = bars.slice(-period);
+  const closes = recentBars.map(b => b.close);
+  const middle = closes.reduce((sum, close) => sum + close, 0) / period;
+
+  // Calculate standard deviation
+  const squaredDiffs = closes.map(close => Math.pow(close - middle, 2));
+  const variance = squaredDiffs.reduce((sum, sq) => sum + sq, 0) / period;
+  const stdDev = Math.sqrt(variance);
+
+  // Calculate bands
+  const upper = middle + stdDevMultiplier * stdDev;
+  const lower = middle - stdDevMultiplier * stdDev;
+
+  return { upper, middle, lower };
+}
+
+export function computeAdx(bars: Bar[], period: number = 14): number {
+  if (bars.length < period + 1) {
+    return 0; // Not enough data, return 0 (weak trend)
+  }
+
+  // Calculate True Range
+  const trueRanges: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const high = bars[i].high;
+    const low = bars[i].low;
+    const prevClose = bars[i - 1].close;
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+    trueRanges.push(tr);
+  }
+
+  // Calculate +DM and -DM
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const highDiff = bars[i].high - bars[i - 1].high;
+    const lowDiff = bars[i - 1].low - bars[i].low;
+
+    plusDM.push(highDiff > lowDiff && highDiff > 0 ? highDiff : 0);
+    minusDM.push(lowDiff > highDiff && lowDiff > 0 ? lowDiff : 0);
+  }
+
+  // Simple smoothing (Wilder's smoothing would be more accurate but complex)
+  const smoothTR = trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
+  const smoothPlusDM = plusDM.slice(-period).reduce((a, b) => a + b, 0) / period;
+  const smoothMinusDM = minusDM.slice(-period).reduce((a, b) => a + b, 0) / period;
+
+  // Calculate +DI and -DI
+  const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+  const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+
+  // Calculate DX
+  const diSum = plusDI + minusDI;
+  const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
+
+  // ADX is typically smoothed DX over period, but we'll use DX directly for simplicity
+  return dx;
+}
+
 export function computeMetrics(bars: Bar[]): Metrics {
   if (bars.length < 50) {
     throw new Error(`Insufficient bars for metrics: need >= 50, got ${bars.length}`);
@@ -110,6 +209,9 @@ export function computeMetrics(bars: Bar[]): Metrics {
   const { hod, lod } = computeHodLod(bars);
   const currentPrice = bars[bars.length - 1].close;
   const ema20 = computeEma(bars, 20);
+  const vwap = computeVwap(bars);
+  const bb = computeBollingerBands(bars, 20, 2);
+  const adx = computeAdx(bars, 14);
 
   return {
     atr,
@@ -123,5 +225,9 @@ export function computeMetrics(bars: Bar[]): Metrics {
     lod,
     currentPrice,
     ema20,
+    vwap,
+    bbUpper: bb?.upper ?? null,
+    bbLower: bb?.lower ?? null,
+    adx,
   };
 }
