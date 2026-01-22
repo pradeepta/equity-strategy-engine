@@ -117,11 +117,11 @@ export class StrategyLifecycleManager {
           component: "StrategyEvaluator",
           message: `Evaluation failed for ${instance.symbol}`,
           metadata: {
+            errorCode: "EVAL_ERROR",
             symbol: instance.symbol,
             strategyId: instance.strategyId,
             strategyName: instance.strategyName,
             reason: response.reason,
-            errorCode: "EVAL_ERROR",
             confidence: response.confidence,
             recommendation: response.recommendation,
           },

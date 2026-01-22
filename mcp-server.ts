@@ -17,6 +17,22 @@ dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+// ============================================================================
+// Winston File Logger (for stdio mode where stderr isn't visible)
+// ============================================================================
+import { Logger } from './logging/logger';
+
+const mcpLogger = new Logger({
+  component: 'MCP-Server',
+  enableConsole: true,
+  enableDatabase: false, // No DB for MCP server
+  enableFile: true,
+  logFilePath: path.join(process.cwd(), 'mcp-server.log'),
+  logLevel: process.env.LOG_LEVEL || 'debug',
+});
+
+mcpLogger.info('MCP Server starting', { pid: process.pid, cwd: process.cwd() });
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -347,6 +363,54 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: 'propose_deterministic_strategy',
+    description: 'Generate a deterministic trading strategy using quantitative metrics and hard risk gates (NO vibe trading). This tool: 1) Fetches market data, 2) Computes metrics (ATR, trend, range), 3) Generates candidates from multiple strategy families (breakout/bounce/reclaim), 4) Enforces hard gates (risk, R:R, entry distance), 5) Returns ranked strategies with YAML. Use this when you want a systematic, math-based strategy without subjective analysis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Trading symbol (e.g., "AAPL", "NVDA")',
+        },
+        timeframe: {
+          type: 'string',
+          description: 'Bar timeframe (default: "5m")',
+          default: '5m',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of bars to fetch for analysis (default: 100, min: 50)',
+          default: 100,
+        },
+        maxRiskPerTrade: {
+          type: 'number',
+          description: 'Maximum dollar risk per trade (used for position sizing)',
+        },
+        rrTarget: {
+          type: 'number',
+          description: 'Target risk:reward ratio (default: 3.0)',
+          default: 3.0,
+        },
+        maxEntryDistancePct: {
+          type: 'number',
+          description: 'Maximum distance from current price to entry zone as percentage (default: 3.0)',
+          default: 3.0,
+        },
+        entryTimeoutBars: {
+          type: 'number',
+          description: 'Number of bars before entry timeout (default: 10)',
+          default: 10,
+        },
+        rthOnly: {
+          type: 'boolean',
+          description: 'Trade only during regular trading hours (default: true)',
+          default: true,
+        },
+      },
+      required: ['symbol', 'maxRiskPerTrade'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -371,6 +435,12 @@ function loadYamlContent(args: any): string {
  * Compile strategy handler
  */
 async function handleCompileStrategy(args: any) {
+  mcpLogger.info('compile_strategy - INPUT', {
+    has_yaml_content: !!args.yaml_content,
+    yaml_content_length: args.yaml_content?.length,
+    yaml_file_path: args.yaml_file_path,
+  });
+
   const yamlContent = loadYamlContent(args);
 
   // Compile
@@ -379,7 +449,7 @@ async function handleCompileStrategy(args: any) {
 
   try {
     const compiled = compiler.compileFromYAML(yamlContent);
-    return {
+    const result = {
       success: true,
       compiled_ir: compiled,
       metadata: {
@@ -391,13 +461,24 @@ async function handleCompileStrategy(args: any) {
         order_plans_count: compiled.orderPlans.length,
       },
     };
+    mcpLogger.info('compile_strategy - OUTPUT', {
+      success: true,
+      symbol: compiled.symbol,
+      timeframe: compiled.timeframe,
+      features_count: compiled.featurePlan.length,
+    });
+    return result;
   } catch (error: any) {
-    return {
+    const result = {
       success: false,
       error: 'Compilation failed',
       message: error.message,
       stack: error.stack,
     };
+    mcpLogger.error('compile_strategy - ERROR', error, {
+      success: false,
+    });
+    return result;
   }
 }
 
@@ -450,7 +531,7 @@ async function handleBacktestStrategy(args: any) {
   let compiled = args.compiled_ir;
   if (!compiled) {
     const compileResult = await handleCompileStrategy(args);
-    if (!compileResult.success) {
+    if (!compileResult.success || !('compiled_ir' in compileResult)) {
       return compileResult;
     }
     compiled = compileResult.compiled_ir;
@@ -1148,7 +1229,7 @@ async function handleCreateLiveEngine(args: any) {
   let compiled = args.compiled_ir;
   if (!compiled) {
     const compileResult = await handleCompileStrategy(args);
-    if (!compileResult.success) {
+    if (!compileResult.success || !('compiled_ir' in compileResult)) {
       return compileResult;
     }
     compiled = compileResult.compiled_ir;
@@ -1212,6 +1293,12 @@ async function handleGetPortfolioOverview() {
  * Get market data handler
  */
 async function handleGetMarketData(args: any) {
+  mcpLogger.info('get_market_data - INPUT', {
+    symbol: args.symbol,
+    timeframe: args.timeframe || '5m',
+    limit: args.limit || 100,
+  });
+
   try {
     const { symbol, timeframe = '5m', limit = 100 } = args;
 
@@ -1317,7 +1404,7 @@ async function handleGetLivePortfolioSnapshot(args: any) {
     const fetcher = new PortfolioDataFetcher(host, port, clientId);
     const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
 
-    return {
+    const result = {
       success: true,
       snapshot: {
         timestamp: snapshot.timestamp,
@@ -1338,13 +1425,26 @@ async function handleGetLivePortfolioSnapshot(args: any) {
       },
       note: 'This is the same real-time data used by automated strategy swap evaluations',
     };
+
+    mcpLogger.info('get_live_portfolio_snapshot - OUTPUT', {
+      success: true,
+      account_id: snapshot.accountId,
+      total_value: snapshot.totalValue,
+      buying_power: snapshot.buyingPower,
+      positions_count: snapshot.positions.length,
+      unrealized_pnl: snapshot.unrealizedPnL,
+    });
+
+    return result;
   } catch (error: any) {
-    return {
+    const result = {
       success: false,
       error: 'Failed to fetch live portfolio snapshot',
       message: error.message,
       note: 'Make sure TWS/IB Gateway is running and connected',
     };
+    mcpLogger.error('get_live_portfolio_snapshot - ERROR', error);
+    return result;
   }
 }
 
@@ -1352,6 +1452,11 @@ async function handleGetLivePortfolioSnapshot(args: any) {
  * Get sector info handler
  */
 async function handleGetSectorInfo(args: any) {
+  mcpLogger.info('get_sector_info - INPUT', {
+    symbol: args.symbol,
+    broker: process.env.BROKER || 'tws',
+  });
+
   try {
     const { symbol } = args;
     const brokerType = process.env.BROKER || 'tws';
@@ -1373,21 +1478,35 @@ async function handleGetSectorInfo(args: any) {
     const client = new TwsSectorDataClient(host, port, clientId);
     const sectorInfo = await client.getSectorInfo(symbol);
 
-    return {
+    const result = {
       success: true,
       symbol: sectorInfo.symbol,
       industry: sectorInfo.industry,
       category: sectorInfo.category,
       subcategory: sectorInfo.subcategory,
     };
+
+    mcpLogger.info('get_sector_info - OUTPUT', {
+      success: true,
+      symbol: sectorInfo.symbol,
+      industry: sectorInfo.industry,
+    });
+
+    return result;
   } catch (error: any) {
-    return {
+    const result = {
       success: false,
       error: 'Failed to fetch sector info',
       message: error.message,
       symbol: args.symbol,
       note: 'Make sure TWS/IB Gateway is running and the symbol is valid',
     };
+    mcpLogger.info('get_sector_info - OUTPUT', {
+      success: false,
+      symbol: args.symbol,
+      error: error.message,
+    });
+    return result;
   }
 }
 
@@ -1395,6 +1514,12 @@ async function handleGetSectorInfo(args: any) {
  * Get sector peers handler
  */
 async function handleGetSectorPeers(args: any) {
+  mcpLogger.info('get_sector_peers - INPUT', {
+    symbol: args.symbol,
+    limit: args.limit || 10,
+    broker: process.env.BROKER || 'tws',
+  });
+
   try {
     const { symbol, limit = 10 } = args;
     const brokerType = process.env.BROKER || 'tws';
@@ -1416,20 +1541,144 @@ async function handleGetSectorPeers(args: any) {
     const client = new TwsSectorDataClient(host, port, clientId);
     const peers = await client.getSectorPeers(symbol, limit);
 
-    return {
+    const result = {
       success: true,
       referenceSymbol: symbol,
       peers,
       count: peers.length,
     };
+
+    mcpLogger.info('get_sector_peers - OUTPUT', {
+      success: true,
+      reference_symbol: symbol,
+      peers_count: peers.length,
+      peers,
+    });
+
+    return result;
   } catch (error: any) {
-    return {
+    const result = {
       success: false,
       error: 'Failed to fetch sector peers',
       message: error.message,
       symbol: args.symbol,
       note: 'Make sure TWS/IB Gateway is running and the symbol is valid',
     };
+    mcpLogger.info('get_sector_peers - OUTPUT', {
+      success: false,
+      symbol: args.symbol,
+      error: error.message,
+    });
+    return result;
+  }
+}
+
+/**
+ * Propose deterministic strategy handler
+ */
+async function handleProposeDeterministicStrategy(args: any) {
+  mcpLogger.info('propose_deterministic_strategy - INPUT', {
+    symbol: args.symbol,
+    timeframe: args.timeframe || '5m',
+    limit: args.limit || 100,
+    maxRiskPerTrade: args.maxRiskPerTrade,
+    rrTarget: args.rrTarget || 3.0,
+    maxEntryDistancePct: args.maxEntryDistancePct || 3.0,
+  });
+
+  try {
+    const {
+      symbol,
+      timeframe = '5m',
+      limit = 100,
+      maxRiskPerTrade,
+      rrTarget = 3.0,
+      maxEntryDistancePct = 3.0,
+      entryTimeoutBars = 10,
+      rthOnly = true,
+    } = args;
+
+    // Validate required params
+    if (!symbol) {
+      return {
+        success: false,
+        error: 'symbol is required',
+      };
+    }
+
+    if (!maxRiskPerTrade || maxRiskPerTrade <= 0) {
+      return {
+        success: false,
+        error: 'maxRiskPerTrade must be a positive number',
+      };
+    }
+
+    // Fetch market data first
+    const marketDataResult = await handleGetMarketData({ symbol, timeframe, limit });
+
+    if (!marketDataResult.success || !marketDataResult.bars) {
+      return {
+        success: false,
+        error: 'Failed to fetch market data',
+        message: marketDataResult.error || 'No bars returned',
+      };
+    }
+
+    const bars = marketDataResult.bars;
+
+    // Import the deterministic strategy generator
+    const { proposeDeterministic } = await import('./src/strategy/mcp-integration');
+
+    // Generate strategy proposal
+    const proposal = proposeDeterministic({
+      symbol,
+      timeframe,
+      bars,
+      maxRiskPerTrade,
+      rrTarget,
+      maxEntryDistancePct,
+      entryTimeoutBars,
+      rthOnly,
+    });
+
+    if (proposal.success && proposal.result) {
+      mcpLogger.info('propose_deterministic_strategy - OUTPUT', {
+        success: true,
+        symbol,
+        best_strategy: {
+          name: proposal.result.best.name,
+          side: proposal.result.best.side,
+          rr_worst: proposal.result.best.rrWorst,
+          dollar_risk: proposal.result.best.dollarRiskWorst,
+          entry_distance_pct: proposal.result.best.entryDistancePct,
+        },
+        alternatives_count: proposal.result.candidatesTop5.length,
+        metrics: {
+          atr: proposal.result.metrics.atr,
+          trend20: proposal.result.metrics.trend20,
+          current_price: proposal.result.metrics.currentPrice,
+        },
+      });
+    } else {
+      mcpLogger.info('propose_deterministic_strategy - OUTPUT', {
+        success: false,
+        error: proposal.error,
+      });
+    }
+
+    return proposal;
+  } catch (error: any) {
+    const result = {
+      success: false,
+      error: 'Failed to generate deterministic strategy',
+      message: error.message,
+      stack: error.stack,
+    };
+    mcpLogger.info('propose_deterministic_strategy - OUTPUT', {
+      success: false,
+      error: error.message,
+    });
+    return result;
   }
 }
 
@@ -1437,6 +1686,11 @@ async function handleGetSectorPeers(args: any) {
  * Get portfolio sector concentration handler
  */
 async function handleGetPortfolioSectorConcentration(args: any) {
+  mcpLogger.info('get_portfolio_sector_concentration - INPUT', {
+    force_refresh: args.force_refresh || false,
+    broker: process.env.BROKER || 'tws',
+  });
+
   try {
     const forceRefresh = args.force_refresh || false;
     const brokerType = process.env.BROKER || 'tws';
@@ -1519,7 +1773,7 @@ async function handleGetPortfolioSectorConcentration(args: any) {
       }))
       .sort((a, b) => b.marketValue - a.marketValue); // Sort by market value descending
 
-    return {
+    const result = {
       success: true,
       portfolio: {
         totalValue: snapshot.totalValue,
@@ -1533,13 +1787,28 @@ async function handleGetPortfolioSectorConcentration(args: any) {
       topSector: sectorExposure[0],
       note: 'Use this data to assess portfolio diversification risk before deploying new strategies',
     };
+
+    mcpLogger.info('get_portfolio_sector_concentration - OUTPUT', {
+      success: true,
+      position_count: snapshot.positions.length,
+      sectors_count: sectorExposure.length,
+      top_sector: sectorExposure[0]?.sector,
+      top_sector_pct: sectorExposure[0]?.percentage.toFixed(2),
+    });
+
+    return result;
   } catch (error: any) {
-    return {
+    const result = {
       success: false,
       error: 'Failed to analyze portfolio sector concentration',
       message: error.message,
       note: 'Make sure TWS/IB Gateway is running and connected',
     };
+    mcpLogger.info('get_portfolio_sector_concentration - OUTPUT', {
+      success: false,
+      error: error.message,
+    });
+    return result;
   }
 }
 
@@ -1554,6 +1823,9 @@ function registerHandlers(server: Server): void {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    // Log tool invocation
+    mcpLogger.info(`Tool invoked: ${name}`, { tool: name, args });
 
     try {
       let result;
@@ -1607,9 +1879,15 @@ function registerHandlers(server: Server): void {
         case 'get_portfolio_sector_concentration':
           result = await handleGetPortfolioSectorConcentration(args);
           break;
+        case 'propose_deterministic_strategy':
+          result = await handleProposeDeterministicStrategy(args);
+          break;
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
+
+      // Log tool output
+      mcpLogger.info(`Tool completed: ${name}`, { tool: name });
 
       return {
         content: [
@@ -1620,19 +1898,20 @@ function registerHandlers(server: Server): void {
         ],
       };
     } catch (error: any) {
+      // Log error output
+      const errorResult = {
+        success: false,
+        error: error.message,
+        stack: error.stack,
+      };
+
+      mcpLogger.error(`Tool failed: ${name}`, error);
+
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(
-              {
-                success: false,
-                error: error.message,
-                stack: error.stack,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify(errorResult, null, 2),
           },
         ],
         isError: true,
@@ -1701,9 +1980,9 @@ async function startHttpServer(): Promise<void> {
   });
 
   app.listen(MCP_HTTP_PORT, () => {
-    console.error(
-      `Stocks Trading MCP Server running on http://localhost:${MCP_HTTP_PORT}/mcp`
-    );
+    mcpLogger.info(`MCP Server running (HTTP mode)`, {
+      url: `http://localhost:${MCP_HTTP_PORT}/mcp`
+    });
   });
 }
 
@@ -1711,7 +1990,7 @@ async function startStdioServer(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Stocks Trading MCP Server running on stdio');
+  mcpLogger.info('MCP Server running (stdio mode)');
 }
 
 async function main() {
@@ -1723,6 +2002,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Fatal error in main():', error);
+  mcpLogger.error('Fatal error in main()', error);
   process.exit(1);
 });

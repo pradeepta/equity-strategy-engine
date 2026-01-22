@@ -207,6 +207,13 @@ logger.info('[MultiStrategyManager] Loading strategy', {
 })
 ```
 
+### Documentation Files
+- **NEVER proactively create documentation files** (*.md) after completing tasks
+- **ONLY create documentation** when explicitly requested by the user
+- Focus on completing the actual implementation work
+- Existing documentation should be updated only when necessary (e.g., when adding new major features that require explanation)
+- Summary documents, README files, or guides should not be created automatically
+
 ---
 
 ## Data Flow Patterns

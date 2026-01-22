@@ -23,9 +23,9 @@ export function spawnAgent(session: Session): void {
     for (const line of lines) {
       const payload = line.trimEnd();
       if (payload) {
-        // console.log(
-        //   `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
-        // );
+        console.log(
+          `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
+        );
       }
       maybeHandleSessionNew(session, payload);
       forwardToClient(session, payload);
@@ -68,14 +68,20 @@ function forwardToClient(session: Session, message: string): void {
   // Try to handle permission requests before forwarding
   try {
     const parsed = JSON.parse(message) as Record<string, unknown>;
+
+    // Log tool calls
+    if (parsed.method?.toString().includes('tools/call')) {
+      console.log('[agent] MCP tool call detected:', parsed.method, parsed.params);
+    }
+
     handlePermissionRequest(session, parsed);
   } catch {
     // Not JSON or parsing error, just forward
   }
 
-  // console.log(
-  //   `[gateway][ws->client] session=${session.id}: ${message.slice(0, 2000)}`
-  // );
+  console.log(
+    `[gateway][ws->client] session=${session.id}: ${message.slice(0, 500)}`
+  );
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     session.ws.send(message);
   } else {
@@ -131,10 +137,10 @@ function handlePermissionRequest(
   const toolCallId = (params?.toolCall as Record<string, unknown>)
     ?.toolCallId as string | undefined;
 
-  console.log(
-    `[agent] Permission request for session ${session.id}:`,
-    JSON.stringify(parsed)
-  );
+  // console.log(
+  //   `[agent] Permission request for session ${session.id}:`,
+  //   JSON.stringify(parsed)
+  // );
 
   // Early exit if auto-approve is disabled
   if (!AUTO_APPROVE_PERMISSIONS) {
@@ -170,13 +176,13 @@ function handlePermissionRequest(
     },
   };
 
-  console.log(`[agent] Permission response:`, JSON.stringify(response));
+  // console.log(`[agent] Permission response:`, JSON.stringify(response));
   writeToAgentStdin(session, JSON.stringify(response));
-  console.log(
-    `[agent] Auto-approved permission id=${parsed.id} optionId=${
-      allowOption.optionId
-    } toolCallId=${toolCallId ?? "unknown"}`
-  );
+  // console.log(
+  //   `[agent] Auto-approved permission id=${parsed.id} optionId=${
+  //     allowOption.optionId
+  //   } toolCallId=${toolCallId ?? "unknown"}`
+  // );
 }
 
 function maybeHandleSessionNew(session: Session, payload: string): void {

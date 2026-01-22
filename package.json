@@ -25,7 +25,7 @@
     "live:build": "npm run build && node dist/live.js",
     "live:multi": "ts-node live-multi.ts",
     "live:multi:build": "npm run build && node dist/live-multi.js",
-    "dev:all": "concurrently --names \"LIVE,API,WEB,AI\" --prefix-colors \"cyan,green,yellow,magenta\" \"npm run live:multi\" \"npm run portfolio:api:dev\" \"cd web-client && npm run dev\" \"cd ai-gateway-live && npm run dev\"",
+    "dev:all": "concurrently --names \"LIVE,API,WEB,AI,MCP\" --prefix-colors \"cyan,green,yellow,magenta,blue\" \"npm run live:multi\" \"npm run portfolio:api:dev\" \"cd web-client && npm run dev\" \"cd ai-gateway-live && npm run dev\" \"npm run mcp:dev\"",
     "strategy:add": "ts-node cli/add-strategy.ts",
     "strategy:list": "ts-node cli/list-strategies.ts",
     "strategy:close": "ts-node cli/close-strategy.ts",

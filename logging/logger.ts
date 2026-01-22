@@ -21,6 +21,8 @@ export interface LoggerOptions {
   prisma?: PrismaClient;
   enableConsole?: boolean;
   enableDatabase?: boolean;
+  enableFile?: boolean;
+  logFilePath?: string;
   logLevel?: string;
 }
 
@@ -53,6 +55,20 @@ export class Logger {
         new PrismaTransport({
           prisma: options.prisma,
           component: options.component,
+        })
+      );
+    }
+
+    // File transport (optional, for stdio mode where stderr isn't visible)
+    if (options.enableFile && options.logFilePath) {
+      transports.push(
+        new winston.transports.File({
+          filename: options.logFilePath,
+          format: combine(
+            timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+            errors({ stack: true }),
+            winston.format.json()
+          ),
         })
       );
     }
