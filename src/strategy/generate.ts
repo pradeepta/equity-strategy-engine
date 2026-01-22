@@ -22,12 +22,18 @@ import {
   trendContinuationBreakdownShort,
 } from './families';
 
-export function generateCandidates(metrics: Metrics, constraints: Constraints): Candidate[] {
+export function generateCandidates(metrics: Metrics, constraints: Constraints, timeframe?: string): Candidate[] {
   const candidates: Candidate[] = [];
 
   // Parameter grids (small for speed)
   const buffers = [0.05, 0.10];
-  const widths = [0.05];
+
+  // Adjust zone widths based on timeframe
+  // Daily timeframe needs wider zones to avoid gap-through (1-2% of price)
+  // Intraday timeframes (5m, 15m, 30m, 1h) use tighter zones (0.05-0.1 ATR)
+  const isDaily = timeframe === '1d' || timeframe === '1D';
+  const widths = isDaily ? [0.3, 0.5] : [0.05, 0.1];
+
   const stops = [1.0, 1.25];
   const lookbacks = [20, 40];
 
@@ -232,8 +238,8 @@ export function proposeBestStrategy(
     // 1. Compute metrics
     const metrics = computeMetrics(bars);
 
-    // 2. Generate candidates
-    const candidates = generateCandidates(metrics, constraints);
+    // 2. Generate candidates (pass timeframe for width adjustment)
+    const candidates = generateCandidates(metrics, constraints, timeframe);
 
     if (candidates.length === 0) {
       return {

@@ -29,7 +29,45 @@ export function renderYaml(candidate: Candidate, constraints: Constraints, symbo
       triggerRule = `close < ${entryHigh}`;
       features = ['close', 'rsi'];
     }
+  } else if (family.includes('vwap')) {
+    // VWAP reclaim/reject families
+    if (side === 'buy') {
+      // VWAP Reclaim Long: price reclaims VWAP after dip
+      armRule = 'close > vwap && rsi < 55';
+      triggerRule = `close > ${entryLow}`;
+      features = ['close', 'vwap', 'rsi'];
+    } else {
+      // VWAP Reject Short: price rejects at VWAP after rally
+      armRule = 'close < vwap && rsi > 45';
+      triggerRule = `close < ${entryHigh}`;
+      features = ['close', 'vwap', 'rsi'];
+    }
+  } else if (family.includes('ema20')) {
+    // EMA20 reclaim/reject families (more specific than generic 'reclaim')
+    if (side === 'buy') {
+      // EMA20 Reclaim Long: price reclaims EMA20 after dip
+      armRule = 'close > ema20 && rsi < 55';
+      triggerRule = `close > ${entryLow}`;
+      features = ['close', 'ema20', 'rsi'];
+    } else {
+      // EMA20 Reject Short: price rejects at EMA20 after rally
+      armRule = 'close < ema20 && rsi > 45';
+      triggerRule = `close < ${entryHigh}`;
+      features = ['close', 'ema20', 'rsi'];
+    }
   } else if (family.includes('reclaim')) {
+    // Generic reclaim (range_midline_reclaim)
+    if (side === 'buy') {
+      armRule = 'close > ema20';
+      triggerRule = `close > ${entryLow}`;
+      features = ['close', 'ema20'];
+    } else {
+      armRule = 'close < ema20';
+      triggerRule = `close < ${entryHigh}`;
+      features = ['close', 'ema20'];
+    }
+  } else if (family.includes('reject')) {
+    // Generic reject (range_midline_reject) - should come after specific checks
     if (side === 'buy') {
       armRule = 'close > ema20';
       triggerRule = `close > ${entryLow}`;
@@ -47,6 +85,32 @@ export function renderYaml(candidate: Candidate, constraints: Constraints, symbo
     armRule = 'close < ema20 && rsi < 45';
     triggerRule = `close < ${entryHigh}`;
     features = ['close', 'ema20', 'rsi'];
+  } else if (family.includes('bb_squeeze')) {
+    // BB Squeeze families: use BB bands + squeeze detection
+    if (side === 'buy') {
+      // BB Squeeze Breakout Long: price breaks above compressed BB upper band
+      armRule = 'close > ema20 && (bb_upper - bb_lower) / close < 0.02';
+      triggerRule = `close > ${entryLow}`;
+      features = ['close', 'ema20', 'bb_upper', 'bb_lower'];
+    } else {
+      // BB Squeeze Breakdown Short: price breaks below compressed BB lower band
+      armRule = 'close < ema20 && (bb_upper - bb_lower) / close < 0.02';
+      triggerRule = `close < ${entryHigh}`;
+      features = ['close', 'ema20', 'bb_upper', 'bb_lower'];
+    }
+  } else if (family.includes('trend_continuation')) {
+    // Trend Continuation families: use ADX for trend strength
+    if (side === 'buy') {
+      // Trend Continuation Breakout Long: strong uptrend continuation
+      armRule = 'close > ema20 && adx > 25 && rsi > 50';
+      triggerRule = `close > ${entryLow}`;
+      features = ['close', 'ema20', 'adx', 'rsi'];
+    } else {
+      // Trend Continuation Breakdown Short: strong downtrend continuation
+      armRule = 'close < ema20 && adx > 25 && rsi < 50';
+      triggerRule = `close < ${entryHigh}`;
+      features = ['close', 'ema20', 'adx', 'rsi'];
+    }
   } else {
     // Default fallback
     armRule = side === 'buy' ? 'close > ema20' : 'close < ema20';

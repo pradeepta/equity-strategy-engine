@@ -129,4 +129,55 @@ describe('proposeBestStrategy', () => {
     const result2 = proposeBestStrategy(bars, 'GOLD', '5m', constraints);
     expect(result2.best).toEqual(best);
   });
+
+  it('should use wider zones for daily timeframe', () => {
+    const bars = generateMockBars(100, 250, 0.5); // AAPL-like daily bars
+
+    // 5m timeframe (intraday)
+    const result5m = proposeBestStrategy(bars, 'AAPL', '5m', constraints);
+
+    // 1d timeframe (daily)
+    const result1d = proposeBestStrategy(bars, 'AAPL', '1d', constraints);
+
+    expect(result5m.best).not.toBeNull();
+    expect(result1d.best).not.toBeNull();
+
+    // Daily zone should be significantly wider than intraday
+    const zone5m = result5m.best!.entryHigh - result5m.best!.entryLow;
+    const zone1d = result1d.best!.entryHigh - result1d.best!.entryLow;
+
+    // Daily zone should be at least 3x wider (0.3 vs 0.05 ATR multiplier = 6x)
+    expect(zone1d).toBeGreaterThan(zone5m * 3);
+
+    // Daily zone should be 1-2% of price (for ~$250 stock = $2.50-$5)
+    const price1d = bars[bars.length - 1].close;
+    const zonePct1d = (zone1d / price1d) * 100;
+    expect(zonePct1d).toBeGreaterThanOrEqual(0.5); // At least 0.5% wide
+    expect(zonePct1d).toBeLessThanOrEqual(3.0);    // Not ridiculously wide
+  });
+
+  it('should generate BB Squeeze strategies with proper features', () => {
+    const bars = generateMockBars(100, 100, 0.1); // Bullish trend
+    const result = proposeBestStrategy(bars, 'TEST', '5m', constraints);
+
+    expect(result.candidatesTop5.length).toBeGreaterThan(0);
+
+    // Find BB squeeze candidates if any
+    const bbSqueezeCandidates = result.candidatesTop5.filter(c =>
+      c.family.includes('bb_squeeze')
+    );
+
+    if (bbSqueezeCandidates.length > 0) {
+      // If BB squeeze candidates exist, they should use BB features
+      const bbCandidate = bbSqueezeCandidates[0];
+      const yaml = result.yaml || '';
+
+      // Check that BB features are declared (if this is the best candidate)
+      if (result.best?.family.includes('bb_squeeze')) {
+        expect(yaml).toContain('bb_upper');
+        expect(yaml).toContain('bb_lower');
+        expect(yaml).toContain('(bb_upper - bb_lower)'); // Squeeze detection
+      }
+    }
+  });
 });
