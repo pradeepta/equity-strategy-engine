@@ -1,0 +1,43 @@
+{
+  "analysis": {
+    "id": "713d983b-db1f-4ed9-b5a6-c7b831f5f406",
+    "ticker": "AAPL",
+    "setup_type": "short",
+    "key_levels": {
+      "support": ["248.8", "248.0", "246.0", "245.0"],
+      "resistance": ["249.3", "250.0", "250.8", "252.0"],
+      "vwap": "249.28",
+      "ema_9": "248.33",
+      "ema_20": "248.53",
+      "ema_50": "249.01",
+      "ema_200": null
+    },
+    "patterns": [
+      "lower_highs",
+      "consolidation",
+      "vwap_reject",
+      "bear_flag"
+    ],
+    "trade_plan": {
+      "entry": "248.85",
+      "stop_loss": "249.35",
+      "targets": ["247.85", "246.85"],
+      "invalidation_level": "249.35",
+      "invalidation_condition": "Exit/invalid if price reclaims VWAP (~249.28) and holds above 249.35"
+    },
+    "risk_reward": {
+      "risk_per_share": "0.5",
+      "reward_per_share": "1.0",
+      "ratio": "2.0",
+      "quality": "high"
+    },
+    "reasoning": "Market regime is risk_off with SPY bearish, favoring short continuation.",
+    "confidence": 6
+  },
+  "market_regime": {
+    "spy_trend": "bearish",
+    "overall_bias": "risk_off",
+    "vix_level": "15.64"
+  },
+  "max_risk_per_trade": 350
+}

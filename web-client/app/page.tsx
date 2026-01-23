@@ -7,6 +7,9 @@ import { AcpClient } from "../src/lib/acpClient";
 import { AuditLogsViewer } from "./components/AuditLogsViewer";
 import { LogsViewer } from "./components/LogsViewer";
 import { ChatHistorySidebar, ChatSession } from "./components/ChatHistorySidebar";
+import TradeCheckModal from "./components/TradeCheckModal";
+import { createStrategyPrompt } from "../src/lib/tradeCheckMapper";
+import type { TradeCheckAnalysis, MarketRegime } from "../src/lib/tradeCheckClient";
 import {
   createChart,
   CandlestickData,
@@ -440,6 +443,9 @@ export default function HomePage() {
   const [isViewingOldChat, setIsViewingOldChat] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // TradeCheck modal state
+  const [showTradeCheckModal, setShowTradeCheckModal] = useState(false);
+
   const gatewayUrl = process.env.NEXT_PUBLIC_ACP_URL;
   const persona = "blackrock_advisor";
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -829,6 +835,18 @@ export default function HomePage() {
     client.sendPrompt(text, userImages);
   };
 
+  const handleUseTradeCheckAnalysis = (analysis: TradeCheckAnalysis, regime: MarketRegime) => {
+    const { prompt } = createStrategyPrompt(analysis, regime);
+    setInput(prompt);
+    // Auto-scroll to show the filled prompt
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        textareaRef.current.focus();
+      }
+    }, 100);
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -999,6 +1017,23 @@ export default function HomePage() {
                 rows={1}
                 disabled={isViewingOldChat}
               />
+              <button
+                type="button"
+                className="composer-ai-analyze"
+                onClick={() => setShowTradeCheckModal(true)}
+                disabled={isViewingOldChat}
+                title="AI Trade Analysis"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '20px',
+                  cursor: isViewingOldChat ? 'not-allowed' : 'pointer',
+                  padding: '8px 12px',
+                  opacity: isViewingOldChat ? 0.5 : 1,
+                }}
+              >
+                🤖
+              </button>
               <label className="composer-attach">
                 <input
                   type="file"
@@ -1073,6 +1108,13 @@ export default function HomePage() {
           <LogsViewer />
         </section>
       )}
+
+      {/* TradeCheck AI Analysis Modal */}
+      <TradeCheckModal
+        isOpen={showTradeCheckModal}
+        onClose={() => setShowTradeCheckModal(false)}
+        onUseAnalysis={handleUseTradeCheckAnalysis}
+      />
     </div>
   );
 }

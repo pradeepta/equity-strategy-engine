@@ -13,6 +13,10 @@ import { getRepositoryFactory, getChatRepo } from './database/RepositoryFactory'
 import { TwsMarketDataClient } from './broker/twsMarketData';
 import { BacktestEngine } from './backtest/BacktestEngine';
 import { getStorageProvider, generateImageKey } from './lib/storage';
+import OpenAI from 'openai';
+import { StrategyCompiler } from './compiler/compile';
+import { createStandardRegistry } from './features/registry';
+import { generateDSLDocumentation, generateConversionSystemPrompt } from './lib/dslDocGenerator';
 import 'dotenv/config';
 
 // Create PostgreSQL connection pool
@@ -377,6 +381,137 @@ const getLogStats = async () => {
     })),
     recentErrors,
   };
+};
+
+// Convert TradeCheck analysis to YAML strategy using Claude
+// DSL System Prompt is generated dynamically from the feature registry
+const convertTradeCheckToYAML = async (
+  analysis: any,
+  marketRegime: any,
+  maxRisk: number = 350
+): Promise<{ yaml: string; warnings: string[] }> => {
+
+  // Validate required Azure OpenAI environment variables
+  if (!process.env.AZURE_OPENAI_ENDPOINT) {
+    throw new Error('AZURE_OPENAI_ENDPOINT not set in environment');
+  }
+  if (!process.env.AZURE_OPENAI_API_KEY) {
+    throw new Error('AZURE_OPENAI_API_KEY not set in environment');
+  }
+  if (!process.env.AZURE_OPENAI_DEPLOYMENT) {
+    throw new Error('AZURE_OPENAI_DEPLOYMENT not set in environment');
+  }
+
+  // Initialize Azure OpenAI client
+  const client = new OpenAI({
+    apiKey: process.env.AZURE_OPENAI_API_KEY,
+    baseURL: `${process.env.AZURE_OPENAI_ENDPOINT}/openai/deployments/${process.env.AZURE_OPENAI_DEPLOYMENT}`,
+    defaultQuery: { 'api-version': process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview' },
+    defaultHeaders: { 'api-key': process.env.AZURE_OPENAI_API_KEY }
+  });
+
+  // Build user prompt
+  const userPrompt = `
+Convert this TradeCheck analysis to valid YAML:
+
+${JSON.stringify({ analysis, marketRegime, maxRiskPerTrade: maxRisk }, null, 2)}
+
+Requirements:
+- Use timeframe: 5m (5-minute bars)
+- Calculate qty: floor(${maxRisk} / abs(entry - stop))
+- Validate stop loss is on correct side of entry
+- Validate targets are on correct side of entry
+- Infer appropriate features from patterns and key_levels
+- Create meaningful arm/trigger/invalidate rules
+- Output ONLY YAML, no markdown or explanations
+`;
+
+  try {
+    // Generate DSL system prompt dynamically from feature registry
+    const dslSystemPrompt = generateConversionSystemPrompt();
+
+    // Call Azure OpenAI API
+    const response = await client.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT!,
+      messages: [
+        { role: 'system', content: dslSystemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_completion_tokens: 4096,
+      temperature: 0.7
+    });
+
+    // Extract YAML from response
+    let yaml = response.choices[0]?.message?.content || '';
+
+    // Remove markdown code fences if present
+    yaml = yaml.replace(/```ya?ml\n?/g, '').replace(/```\n?/g, '').trim();
+
+    // Validate compilation
+    const warnings: string[] = [];
+    try {
+      const registry = createStandardRegistry();
+      const compiler = new StrategyCompiler(registry);
+      compiler.compileFromYAML(yaml);
+    } catch (compileError: any) {
+      throw new Error(`YAML compilation failed: ${compileError.message}`);
+    }
+
+    return { yaml, warnings };
+
+  } catch (error: any) {
+    if (error.message?.includes('YAML compilation failed')) {
+      throw error; // Re-throw compilation errors
+    }
+    throw new Error(`LLM conversion failed: ${error.message}`);
+  }
+};
+
+// Fetch analysis from TradeCheck backend
+const fetchTradeCheckAnalysis = async (
+  symbol: string,
+  timeframe: string = '5m',
+  limit: number = 100
+): Promise<{ market_regime: any; analyses: any[] }> => {
+  const tradeCheckUrl = process.env.TRADECHECK_API_URL || 'http://localhost:8000';
+  const url = `${tradeCheckUrl}/api/analyze`;
+
+  // Calculate date range based on limit
+  // For 5m bars: limit bars * 5 minutes
+  // For 1d bars: limit days
+  const endDate = new Date();
+  const startDate = new Date();
+
+  if (timeframe === '1d') {
+    startDate.setDate(endDate.getDate() - limit);
+  } else {
+    // For intraday: approximate days needed (assuming 6.5 hour trading day = 390 minutes)
+    const minutesPerBar = timeframe === '5m' ? 5 : timeframe === '15m' ? 15 : timeframe === '1h' ? 60 : 5;
+    const daysNeeded = Math.ceil((limit * minutesPerBar) / 390) + 5; // Add buffer days
+    startDate.setDate(endDate.getDate() - daysNeeded);
+  }
+
+  const requestBody = {
+    tickers: [symbol],
+    start_date: startDate.toISOString().split('T')[0],
+    end_date: endDate.toISOString().split('T')[0],
+    timeframe,
+    limit
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`TradeCheck API returned ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  return data as { market_regime: any; analyses: any[] };
 };
 
 // Request handler
@@ -941,6 +1076,151 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sendJSON(res, { error: error.message || 'Failed to serve image' }, 500);
       }
 
+    } else if (pathname === '/api/dsl/schema' && req.method === 'GET') {
+      // GET /api/dsl/schema - Get DSL schema documentation (dynamically generated from feature registry)
+      try {
+        const dslDocs = generateDSLDocumentation();
+        sendJSON(res, {
+          success: true,
+          schema: dslDocs,
+          generatedAt: new Date().toISOString()
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error generating DSL schema:', error);
+        sendJSON(res, { error: error.message || 'Failed to generate DSL schema' }, 500);
+      }
+
+    } else if (pathname === '/api/tradecheck/convert' && req.method === 'POST') {
+      // POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy
+      try {
+        const body = await parseBody(req);
+        const { analysis, market_regime, max_risk_per_trade } = body;
+
+        if (!analysis) {
+          sendJSON(res, { error: 'Missing required field: analysis' }, 400);
+          return;
+        }
+
+        if (!market_regime) {
+          sendJSON(res, { error: 'Missing required field: market_regime' }, 400);
+          return;
+        }
+
+        console.log(`[portfolio-api] Converting TradeCheck analysis for ${analysis.ticker}`);
+
+        const result = await convertTradeCheckToYAML(
+          analysis,
+          market_regime,
+          max_risk_per_trade || 350
+        );
+
+        sendJSON(res, {
+          success: true,
+          yaml: result.yaml,
+          warnings: result.warnings,
+          analysisId: analysis.id,
+          ticker: analysis.ticker,
+          setupType: analysis.setup_type
+        });
+
+      } catch (error: any) {
+        console.error('[portfolio-api] Error converting TradeCheck analysis:', error);
+        sendJSON(res, {
+          success: false,
+          error: error.message || 'Failed to convert analysis'
+        }, 500);
+      }
+
+    } else if (pathname === '/api/tradecheck/analyze-and-convert' && req.method === 'POST') {
+      // POST /api/tradecheck/analyze-and-convert - Fetch analysis from TradeCheck and convert to YAML
+      try {
+        const body = await parseBody(req);
+        const { symbol, timeframe = '5m', limit = 100, max_risk_per_trade = 350 } = body;
+
+        if (!symbol) {
+          sendJSON(res, {
+            success: false,
+            error: 'Missing required field: symbol',
+            step: 'validation'
+          }, 400);
+          return;
+        }
+
+        console.log(`[portfolio-api] Analyzing ${symbol} on ${timeframe}...`);
+
+        // Step 1: Fetch analysis from TradeCheck
+        let tradeCheckResponse;
+        try {
+          tradeCheckResponse = await fetchTradeCheckAnalysis(symbol, timeframe, limit);
+        } catch (error: any) {
+          console.error('[portfolio-api] TradeCheck fetch failed:', error);
+          sendJSON(res, {
+            success: false,
+            error: `TradeCheck analysis failed: ${error.message}`,
+            step: 'fetch_analysis'
+          }, 500);
+          return;
+        }
+
+        // Validate response has analyses
+        if (!tradeCheckResponse.analyses || tradeCheckResponse.analyses.length === 0) {
+          sendJSON(res, {
+            success: false,
+            error: 'No analyses returned from TradeCheck',
+            step: 'fetch_analysis',
+            tradeCheckResponse
+          }, 400);
+          return;
+        }
+
+        // Use first analysis (or could support selecting by confidence)
+        const analysis = tradeCheckResponse.analyses[0];
+        const market_regime = tradeCheckResponse.market_regime;
+
+        console.log(`[portfolio-api] Converting analysis ${analysis.id} to YAML...`);
+
+        // Step 2: Convert to YAML
+        let conversionResult;
+        try {
+          conversionResult = await convertTradeCheckToYAML(
+            analysis,
+            market_regime,
+            max_risk_per_trade
+          );
+        } catch (error: any) {
+          console.error('[portfolio-api] YAML conversion failed:', error);
+          sendJSON(res, {
+            success: false,
+            error: `YAML conversion failed: ${error.message}`,
+            step: 'convert_yaml',
+            analysis
+          }, 500);
+          return;
+        }
+
+        // Step 3: Return combined result
+        sendJSON(res, {
+          success: true,
+          symbol,
+          timeframe,
+          analysisId: analysis.id,
+          setupType: analysis.setup_type,
+          confidence: analysis.confidence,
+          analysis,
+          market_regime,
+          yaml: conversionResult.yaml,
+          warnings: conversionResult.warnings,
+          generatedAt: new Date().toISOString()
+        });
+
+      } catch (error: any) {
+        console.error('[portfolio-api] Unexpected error:', error);
+        sendJSON(res, {
+          success: false,
+          error: error.message || 'Unexpected error during analysis and conversion'
+        }, 500);
+      }
+
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -966,6 +1246,10 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
+  console.log(`  DSL & TradeCheck:`);
+  console.log(`    GET  /api/dsl/schema - Get DSL schema (dynamically from feature registry)`);
+  console.log(`    POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy`);
+  console.log(`    POST /api/tradecheck/analyze-and-convert - Fetch from TradeCheck + convert to YAML`);
   console.log(`  Chat History:`);
   console.log(`    GET  /api/chat/sessions - List chat sessions`);
   console.log(`    POST /api/chat/sessions - Create chat session`);

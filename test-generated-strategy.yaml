@@ -1,0 +1,52 @@
+meta:
+  name: "AAPL 5m VWAP Reject Bear Flag (Short)"
+  symbol: AAPL
+  timeframe: 5m
+  description: |
+    Auto-generated from TradeCheck AI analysis.
+    Short setup based on lower highs/consolidation (bear flag) with VWAP rejection in a risk-off regime.
+    Arms when price is below VWAP/EMA50 and momentum is bearish; triggers on a breakdown into the entry zone.
+    Invalidates if price reclaims VWAP and holds above the stop/invalidation level.
+
+features:
+  - name: close
+    type: builtin
+  - name: open
+    type: builtin
+  - name: vwap
+    type: indicator
+  - name: ema50
+    type: indicator
+  - name: ema20
+    type: indicator
+  - name: price_falling
+    type: indicator
+  - name: red_bar
+    type: indicator
+
+rules:
+  arm: "close < vwap && close < ema50 && ema20 < ema50"
+  trigger: "close <= 248.85 && (price_falling || red_bar)"
+  invalidate:
+    when_any:
+      - "close > vwap"
+      - "close >= 249.35"
+
+orderPlans:
+  - name: aapl_short_vwap_reject
+    side: sell
+    entryZone: [247.61, 248.09]
+    qty: 700
+    stopPrice: 249.35
+    targets:
+      - price: 247.85
+        ratioOfPosition: 0.5
+      - price: 246.85
+        ratioOfPosition: 0.5
+
+execution:
+  entryTimeoutBars: 10
+  rthOnly: false
+
+risk:
+  maxRiskPerTrade: 350

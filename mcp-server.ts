@@ -47,6 +47,7 @@ import { StrategyEngine } from './runtime/engine';
 import { createStandardRegistry } from './features/registry';
 import { validateStrategyDSL } from './spec/schema';
 import { getRepositoryFactory } from './database/RepositoryFactory';
+import { generateDSLDocumentation } from './lib/dslDocGenerator';
 import * as yaml from 'yaml';
 import * as fs from 'fs';
 import express from 'express';
@@ -828,282 +829,72 @@ states:
 
 /**
  * Get DSL schema documentation handler
+ * Uses lazy-loaded cache for performance (generated once per process)
  */
+
+// Module-level cache for DSL documentation (lazy-loaded)
+let cachedDSLDocs: ReturnType<typeof generateDSLDocumentation> | null = null;
+
 async function handleGetDSLSchema(args: any) {
   const section = args.section || 'full';
 
-  const schemaDocs = {
-    full: `# Trading Strategy DSL Schema
+  // Generate DSL docs once, then cache for subsequent calls
+  if (!cachedDSLDocs) {
+    mcpLogger.debug('Generating DSL documentation from feature registry');
+    cachedDSLDocs = generateDSLDocumentation();
+  }
 
-## Complete Structure
+  // Format documentation based on requested section
+  let documentation: string;
 
-\`\`\`yaml
-meta:
-  name: string            # Strategy name
-  symbol: string          # Trading symbol (e.g., "AAPL", "GOOGL")
-  timeframe: string       # Bar timeframe (e.g., "1m", "5m", "1h", "1d")
-  description: string     # Optional description
+  if (section === 'full') {
+    // Full schema with all features from registry
+    documentation = `# Trading Strategy DSL Schema
 
-features:                 # Array of features (indicators, built-ins, microstructure)
-  - name: string          # Unique feature name
-    type: builtin|indicator|microstructure
-    params:               # Optional parameters (specific to feature type)
-      key: value
+## Available Features (Dynamically Generated)
 
-rules:
-  arm: string            # Optional: Expression to arm (enable) the strategy
-  trigger: string        # Optional: Expression that triggers order execution
-  invalidate:            # Optional: Conditions to invalidate armed state
-    when_any:
-      - string           # Array of invalidation expressions
+**Builtins** (always available):
+${cachedDSLDocs.availableFeatures.builtins.join(', ')}
 
-orderPlans:              # Array of order plans
-  - name: string         # Order plan name
-    side: buy|sell       # Order side
-    entryZone:           # Entry price zone [min, max]
-      - number
-      - number
-    qty: number          # Quantity (positive number)
-    stopPrice: number    # Stop loss price
-    targets:             # Array of profit targets
-      - price: number
-        ratioOfPosition: number  # Ratio of position (0-1)
+**Indicators** (must declare in features section):
+${cachedDSLDocs.availableFeatures.indicators.join(', ')}
 
-execution:               # Optional execution settings
-  entryTimeoutBars: number     # Bars to wait before timeout (default: 10)
-  rthOnly: boolean             # Regular trading hours only (default: false)
+**Microstructure** (must declare in features section):
+${cachedDSLDocs.availableFeatures.microstructure.join(', ')}
 
-risk:
-  maxRiskPerTrade: number      # Maximum risk per trade (positive number)
-\`\`\`
+## Schema Format
 
-## Field Details
+${cachedDSLDocs.schemaFormat}
 
-### meta
-- **name**: Human-readable strategy name
-- **symbol**: Stock symbol to trade
-- **timeframe**: Candle period - "1m", "5m", "15m", "30m", "1h", "4h", "1d"
-- **description**: Optional strategy description
+## Expression Syntax
 
-### features
-Array of features that calculate indicators or extract data:
-- **name**: Unique identifier used in expressions
-- **type**:
-  - \`builtin\`: Built-in features (close, open, high, low, volume, timestamp, dayOfWeek, hour, minute)
-  - \`indicator\`: Technical indicators (rsi, macd, ema, sma, bbands, atr, adx, etc.)
-  - \`microstructure\`: Market microstructure features
-- **params**: Type-specific parameters (e.g., \`period: 14\` for RSI)
+${cachedDSLDocs.expressionSyntax}
 
-### rules
-State machine rules:
-- **arm**: Expression that enables the strategy (e.g., \`rsi < 30\`)
-- **trigger**: Expression that fires orders (e.g., \`close > ema20\`)
-- **invalidate.when_any**: Array of expressions that disable armed state
+## Critical Rules
 
-### orderPlans
-- **name**: Descriptive name for the order
-- **side**: "buy" or "sell"
-- **entryZone**: [minPrice, maxPrice] - acceptable entry range
-- **qty**: Number of shares
-- **stopPrice**: Stop loss price
-- **targets**: Array of profit targets with price and position ratio
-
-### execution (optional)
-- **entryTimeoutBars**: How many bars to wait before canceling entry (default: 10)
-- **rthOnly**: Only trade during regular trading hours (default: false)
-
-### risk
-- **maxRiskPerTrade**: Maximum $ risk per trade
+${cachedDSLDocs.criticalRules.map((rule, i) => `${i + 1}. ${rule}`).join('\n')}
 
 ## Example Strategy
 
-\`\`\`yaml
-meta:
-  name: "RSI Mean Reversion"
-  symbol: "AAPL"
-  timeframe: "5m"
-  description: "Buy oversold, sell overbought"
+${cachedDSLDocs.exampleStrategy}`;
+  } else {
+    // For specific sections, return targeted info
+    documentation = `# DSL Schema - ${section} section
 
-features:
-  - name: rsi
-    type: indicator
-    params:
-      period: 14
-  - name: ema20
-    type: indicator
-    params:
-      period: 20
+${cachedDSLDocs.schemaFormat}
 
-rules:
-  arm: "rsi < 30"
-  trigger: "close > ema20"
-  invalidate:
-    when_any:
-      - "rsi > 70"
-
-orderPlans:
-  - name: "long_entry"
-    side: buy
-    entryZone: [99, 101]
-    qty: 100
-    stopPrice: 95
-    targets:
-      - price: 105
-        ratioOfPosition: 0.5
-      - price: 110
-        ratioOfPosition: 0.5
-
-risk:
-  maxRiskPerTrade: 500
-\`\`\``,
-
-    meta: `### meta Section
-\`\`\`yaml
-meta:
-  name: string            # Strategy name
-  symbol: string          # Trading symbol
-  timeframe: string       # Bar timeframe
-  description: string     # Optional
-\`\`\`
-
-Timeframe values: "1m", "5m", "15m", "30m", "1h", "4h", "1d"`,
-
-    features: `### features Section
-
-**IMPORTANT**: Features are pre-registered with fixed names. Use the exact feature names below.
-
-\`\`\`yaml
-features:
-  - name: <feature_name>  # Use exact name from list below
-\`\`\`
-
-**Available Features** (use exact names):
-
-**Built-in OHLCV**:
-- close, open, high, low, volume, price
-
-**Indicators**:
-- rsi (14-period RSI)
-- macd, macd_signal, macd_histogram (12,26,9 MACD)
-- ema20, ema50 (20 and 50-period EMAs)
-- sma50, sma150, sma200 (50, 150, 200-period SMAs)
-- sma50_rising, sma150_rising, sma200_rising (trend detection)
-- bb_upper, bb_middle, bb_lower (Bollinger Bands)
-- vwap (Volume Weighted Average Price)
-
-**Momentum & Oscillators**:
-- stochastic_k, stochastic_d (Stochastic Oscillator 14-period)
-- cci (Commodity Channel Index 20-period)
-- williams_r (Williams %R 14-period)
-
-**Volatility & Range**:
-- atr (Average True Range 14-period)
-
-**Trend Strength**:
-- adx (Average Directional Index 14-period)
-
-**Volume Indicators**:
-- volume_zscore (Z-score of volume vs historical average)
-- volume_sma (20-period Simple Moving Average of volume)
-- volume_ema (20-period Exponential Moving Average of volume)
-- obv (On Balance Volume)
-
-**Price Levels**:
-- lod, hod (Low/High of Day)
-- fifty_two_week_high, fifty_two_week_low
-
-**Pattern Recognition**:
-- cup_handle_confidence (Cup & Handle pattern score 0-100)
-
-**Microstructure**:
-- delta, absorption
-
-**Example** (use exact feature names):
-\`\`\`yaml
-features:
-  - name: rsi          # 14-period RSI
-  - name: ema20        # 20-period EMA
-  - name: ema50        # 50-period EMA
-  - name: atr          # 14-period ATR
-  - name: adx          # 14-period ADX
-  - name: volume_sma   # 20-period volume SMA
-  - name: stochastic_k # Stochastic %K
-\`\`\``,
-
-    rules: `### rules Section
-\`\`\`yaml
-rules:
-  arm: string            # Expression to arm strategy
-  trigger: string        # Expression to trigger orders
-  invalidate:
-    when_any:
-      - string          # Invalidation conditions
-\`\`\`
-
-Expressions use feature names and operators:
-- Comparisons: <, >, <=, >=, ==, !=
-- Logic: &&, ||, !
-- Math: +, -, *, /, %
-
-**Example**:
-\`\`\`yaml
-rules:
-  arm: "rsi < 30 && close > ema20"
-  trigger: "close > open"
-  invalidate:
-    when_any:
-      - "rsi > 70"
-      - "close < ema20"
-\`\`\``,
-
-    orderPlans: `### orderPlans Section
-\`\`\`yaml
-orderPlans:
-  - name: string
-    side: buy|sell
-    entryZone: [number, number]
-    qty: number
-    stopPrice: number
-    targets:
-      - price: number
-        ratioOfPosition: number
-\`\`\`
-
-**Example**:
-\`\`\`yaml
-orderPlans:
-  - name: "long_position"
-    side: buy
-    entryZone: [100, 102]
-    qty: 100
-    stopPrice: 95
-    targets:
-      - price: 110
-        ratioOfPosition: 0.5
-      - price: 115
-        ratioOfPosition: 0.5
-\`\`\``,
-
-    risk: `### risk Section
-\`\`\`yaml
-risk:
-  maxRiskPerTrade: number  # Maximum $ risk per trade
-\`\`\`
-
-**Example**:
-\`\`\`yaml
-risk:
-  maxRiskPerTrade: 500  # Risk max $500 per trade
-\`\`\``
-  };
-
-  const doc = schemaDocs[section as keyof typeof schemaDocs] || schemaDocs.full;
+Available features: ${cachedDSLDocs.availableFeatures.indicators.length} indicators, ${cachedDSLDocs.availableFeatures.builtins.length} builtins, ${cachedDSLDocs.availableFeatures.microstructure.length} microstructure features`;
+  }
 
   return {
     success: true,
     section,
-    documentation: doc,
-    available_sections: Object.keys(schemaDocs),
+    documentation,
+    available_features: cachedDSLDocs.availableFeatures,
+    total_features:
+      cachedDSLDocs.availableFeatures.builtins.length +
+      cachedDSLDocs.availableFeatures.indicators.length +
+      cachedDSLDocs.availableFeatures.microstructure.length,
   };
 }
 
