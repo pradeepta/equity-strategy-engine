@@ -22,16 +22,86 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 // ============================================================================
 import { Logger } from './logging/logger';
 
+const defaultLogDir = process.env.MCP_LOG_DIR || process.env.LOG_DIR || path.resolve(__dirname, '..');
+const logFilePath = process.env.MCP_LOG_FILE_PATH || path.join(defaultLogDir, 'mcp-server.log');
+
 const mcpLogger = new Logger({
   component: 'MCP-Server',
   enableConsole: true,
   enableDatabase: false, // No DB for MCP server
   enableFile: true,
-  logFilePath: path.join(process.cwd(), 'mcp-server.log'),
+  logFilePath,
   logLevel: process.env.LOG_LEVEL || 'debug',
 });
 
-mcpLogger.info('MCP Server starting', { pid: process.pid, cwd: process.cwd() });
+mcpLogger.info('MCP Server starting', {
+  pid: process.pid,
+  cwd: process.cwd(),
+  logFilePath,
+});
+
+const logFullResults = process.env.MCP_LOG_FULL_RESULTS !== 'false';
+
+function summarizeResult(result: any): Record<string, any> {
+  if (!result || typeof result !== 'object') {
+    return { resultType: typeof result };
+  }
+
+  const summary: Record<string, any> = {
+    success: result.success,
+  };
+
+  if (typeof result.error === 'string') {
+    summary.error = result.error;
+  }
+  if (typeof result.message === 'string') {
+    summary.message = result.message;
+  }
+  if (typeof result.count === 'number') {
+    summary.count = result.count;
+  }
+  if (Array.isArray(result.bars)) {
+    summary.barsCount = result.bars.length;
+  }
+  if (Array.isArray(result.strategies)) {
+    summary.strategiesCount = result.strategies.length;
+  }
+  if (Array.isArray(result.peers)) {
+    summary.peersCount = result.peers.length;
+  }
+  if (result.snapshot?.positions) {
+    summary.positionsCount = result.snapshot.positions.length;
+  }
+  if (result.portfolio?.activeStrategies) {
+    summary.activeStrategiesCount = result.portfolio.activeStrategies.length;
+  }
+
+  summary.resultKeys = Object.keys(result);
+  return summary;
+}
+
+function estimateDurationDaysForBars(limit: number, timeframe: string): number {
+  const tf = (timeframe || '').toLowerCase().trim();
+  const barsPerDay: Record<string, number> = {
+    '1m': 390,
+    '5m': 78,
+    '15m': 26,
+    '30m': 13,
+    '1h': 6.5,
+  };
+
+  if (tf === '1d' || tf === '1day' || tf.endsWith('d')) {
+    return Math.max(1, Math.ceil(limit));
+  }
+
+  const perDay = barsPerDay[tf];
+  if (perDay) {
+    return Math.max(1, Math.ceil(limit / perDay));
+  }
+
+  // Fallback: assume 5m bars during regular session
+  return Math.max(1, Math.ceil(limit / 78));
+}
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -1130,7 +1200,8 @@ async function handleGetMarketData(args: any) {
             uniqueClientId
           );
 
-          const twsBars = await client.getHistoricalBars(symbol, limit, timeframe);
+          const durationDays = estimateDurationDaysForBars(limit, timeframe);
+          const twsBars = await client.getHistoricalBars(symbol, durationDays, timeframe);
 
           // Store TWS bars to database for future use
           if (twsBars.length > 0) {
@@ -1153,6 +1224,8 @@ async function handleGetMarketData(args: any) {
             twsBars: twsBars.length,
             source: 'tws+cache',
             clientId: uniqueClientId,
+            requestedBars: limit,
+            durationDays,
           });
         }
       } else {
@@ -1164,12 +1237,15 @@ async function handleGetMarketData(args: any) {
           parseInt(process.env.TWS_PORT || '7497'),
           uniqueClientId
         );
-        bars = await client.getHistoricalBars(symbol, limit, timeframe);
+        const durationDays = estimateDurationDaysForBars(limit, timeframe);
+        bars = await client.getHistoricalBars(symbol, durationDays, timeframe);
         mcpLogger.info('get_market_data - fetched from TWS (cache disabled)', {
           symbol,
           timeframe,
           barsCount: bars.length,
           clientId: uniqueClientId,
+          requestedBars: limit,
+          durationDays,
         });
       }
 
@@ -1196,11 +1272,26 @@ async function handleGetMarketData(args: any) {
       };
     }
   } catch (error: any) {
+    mcpLogger.error('get_market_data - ERROR', error, {
+      symbol: args.symbol,
+      timeframe: args.timeframe || '5m',
+      limit: args.limit || 100,
+    });
+    const errorMessage = error?.message || 'Unknown error';
+    const suggestions = [
+      'Verify TWS/IB Gateway is running and connected.',
+      'If requesting intraday bars, try again during market hours or use timeframe "1d".',
+      'Confirm market data subscriptions and symbol permissions in TWS.',
+    ];
+    if (errorMessage.toLowerCase().includes('timeout')) {
+      suggestions.unshift('Historical data request timed out — try a smaller limit or a higher timeframe.');
+    }
     return {
       success: false,
       error: 'Failed to fetch market data',
-      message: error.message,
+      message: errorMessage,
       note: 'Make sure the broker connection is available',
+      suggestions,
     };
   }
 }
@@ -1748,8 +1839,19 @@ function registerHandlers(server: Server): void {
           throw new Error(`Unknown tool: ${name}`);
       }
 
-      // Log tool output
-      mcpLogger.info(`Tool completed: ${name}`, { tool: name });
+      const resultSummary = summarizeResult(result);
+
+      // Log tool output (summary + full payload)
+      mcpLogger.info(`Tool completed: ${name}`, { tool: name, ...resultSummary });
+      if (logFullResults) {
+        mcpLogger.debug(`Tool result: ${name}`, { tool: name, result });
+      }
+
+      const isErrorResult =
+        result &&
+        typeof result === 'object' &&
+        (('success' in result && result.success === false) ||
+          ('valid' in result && (result as any).valid === false));
 
       return {
         content: [
@@ -1758,6 +1860,7 @@ function registerHandlers(server: Server): void {
             text: JSON.stringify(result, null, 2),
           },
         ],
+        isError: isErrorResult,
       };
     } catch (error: any) {
       // Log error output

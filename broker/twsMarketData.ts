@@ -4,8 +4,22 @@
  */
 
 import { Bar } from "../spec/types";
+import * as path from "path";
+import { Logger } from "../logging/logger";
 
 const IB = require("ib");
+
+const defaultLogDir = process.env.MCP_LOG_DIR || process.env.LOG_DIR || path.resolve(__dirname, "..");
+const logFilePath = process.env.MCP_LOG_FILE_PATH || path.join(defaultLogDir, "mcp-server.log");
+
+const twsLogger = new Logger({
+  component: "TWS-MarketData",
+  enableConsole: true,
+  enableDatabase: false,
+  enableFile: true,
+  logFilePath,
+  logLevel: process.env.LOG_LEVEL || "debug",
+});
 
 export class TwsMarketDataClient {
   private host: string;
@@ -48,9 +62,11 @@ export class TwsMarketDataClient {
       }, 10000);
 
       client.on("connected", () => {
-        console.log(
-          `✓ Connected to TWS for market data at ${this.host}:${this.port}`
-        );
+        twsLogger.info("Connected to TWS for market data", {
+          host: this.host,
+          port: this.port,
+          clientId: this.clientId,
+        });
         connected = true;
         clearTimeout(timeout);
         resolve();
@@ -65,9 +81,13 @@ export class TwsMarketDataClient {
           infoText.includes("hmds data farm connection is ok") ||
           infoText.includes("sec-def data farm connection is ok");
         if (!infoMessages.includes(code) && !isInfoText) {
-          console.error(
-            `TWS Error [${code}]: ${err.message} (reqId: ${reqId})`
-          );
+          twsLogger.error("TWS error", err, { code, reqId });
+        } else {
+          twsLogger.debug("TWS info message", {
+            code,
+            reqId,
+            message: err.message,
+          });
         }
         if (!connected && code === 502) {
           clearTimeout(timeout);
@@ -163,9 +183,14 @@ export class TwsMarketDataClient {
     );
 
     // Request the data
-    console.log(
-      `Requesting ${days} days of ${timeframe} bars for ${symbol}...`
-    );
+    twsLogger.info("Requesting historical bars", {
+      symbol,
+      timeframe,
+      days,
+      host: this.host,
+      port: this.port,
+      clientId: this.clientId,
+    });
     client.reqHistoricalData(
       reqId,
       contract,
@@ -179,18 +204,26 @@ export class TwsMarketDataClient {
     );
 
     // Wait for historicalDataEnd signal (proper IB protocol)
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        console.log(`Timeout reached, using ${bars.length} bars`);
-        resolve();
+        twsLogger.warn("Historical data timeout reached", {
+          barsCount: bars.length,
+          symbol,
+          timeframe,
+          days,
+        });
+        reject(new Error(`Historical data timeout for ${symbol} (${timeframe}, ${days}d)`));
       }, 30000); // 30s timeout for large requests
 
       client.once("historicalDataEnd", (id: number) => {
         if (id === reqId) {
           clearTimeout(timeout);
-          console.log(
-            `Data collection complete (${bars.length} bars received)`
-          );
+          twsLogger.info("Historical data collection complete", {
+            barsCount: bars.length,
+            symbol,
+            timeframe,
+            days,
+          });
           resolve();
         }
       });
@@ -198,7 +231,12 @@ export class TwsMarketDataClient {
 
     // Disconnect
     client.disconnect();
-    console.log(`✓ Received ${bars.length} bars from TWS`);
+    twsLogger.info("Received bars from TWS", {
+      barsCount: bars.length,
+      symbol,
+      timeframe,
+      days,
+    });
 
     // Sort by timestamp
     bars.sort((a, b) => a.timestamp - b.timestamp);

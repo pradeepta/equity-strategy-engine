@@ -67,7 +67,7 @@ export class Logger {
           format: combine(
             timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
             errors({ stack: true }),
-            winston.format.json()
+            winston.format.prettyPrint()
           ),
         })
       );

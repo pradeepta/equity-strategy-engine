@@ -23,9 +23,9 @@ export function spawnAgent(session: Session): void {
     for (const line of lines) {
       const payload = line.trimEnd();
       if (payload) {
-        console.log(
-          `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
-        );
+        // console.log(
+        //   `[agent][stdout] session=${session.id}: ${payload.slice(0, 2000)}`
+        // );
       }
       maybeHandleSessionNew(session, payload);
       forwardToClient(session, payload);
@@ -42,7 +42,7 @@ export function spawnAgent(session: Session): void {
 
   child.on("close", (code, signal) => {
     console.warn(
-      `[agent] exited session=${session.id} code=${code} signal=${signal}`
+      `[agent] exited session=${session.id} code=${code} signal=${signal}`,
     );
     session.child = null;
   });
@@ -55,7 +55,7 @@ export function writeToAgentStdin(session: Session, message: string): void {
   }
   const payload = `${message}\n`;
   console.log(
-    `[agent][stdin] session=${session.id}: ${payload.slice(0, 2000)}`
+    `[agent][stdin] session=${session.id}: ${payload.slice(0, 2000)}`,
   );
   session.child.stdin.write(payload);
 }
@@ -70,8 +70,12 @@ function forwardToClient(session: Session, message: string): void {
     const parsed = JSON.parse(message) as Record<string, unknown>;
 
     // Log tool calls
-    if (parsed.method?.toString().includes('tools/call')) {
-      console.log('[agent] MCP tool call detected:', parsed.method, parsed.params);
+    if (parsed.method?.toString().includes("tools/call")) {
+      console.log(
+        "[agent] MCP tool call detected:",
+        parsed.method,
+        parsed.params,
+      );
     }
 
     handlePermissionRequest(session, parsed);
@@ -79,17 +83,17 @@ function forwardToClient(session: Session, message: string): void {
     // Not JSON or parsing error, just forward
   }
 
-  console.log(
-    `[gateway][ws->client] session=${session.id}: ${message.slice(0, 500)}`
-  );
+  // console.log(
+  //   `[gateway][ws->client] session=${session.id}: ${message.slice(0, 500)}`,
+  // );
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     session.ws.send(message);
   } else {
     console.warn(
       `[ws] Dropping message (no websocket) session=${session.id}: ${message.slice(
         0,
-        200
-      )}`
+        200,
+      )}`,
     );
   }
 }
@@ -104,9 +108,9 @@ function tryFlushJsonBuffer(session: Session): void {
   }
   try {
     JSON.parse(buffer);
-    console.log(
-      `[agent][stdout] session=${session.id}: ${buffer.slice(0, 2000)}`
-    );
+    // console.log(
+    //   `[agent][stdout] session=${session.id}: ${buffer.slice(0, 2000)}`
+    // );
     maybeHandleSessionNew(session, buffer);
     forwardToClient(session, buffer);
     session.stdoutBuffer = "";
@@ -117,7 +121,7 @@ function tryFlushJsonBuffer(session: Session): void {
 
 function handlePermissionRequest(
   session: Session,
-  parsed: Record<string, unknown>
+  parsed: Record<string, unknown>,
 ): void {
   // Only process permission requests
   if (parsed.method !== "session/request_permission") {
@@ -147,7 +151,7 @@ function handlePermissionRequest(
     console.log(
       `[agent] Auto-approve disabled; not responding to permission id=${
         parsed.id
-      } toolCallId=${toolCallId ?? "unknown"}`
+      } toolCallId=${toolCallId ?? "unknown"}`,
     );
     return;
   }
@@ -211,10 +215,9 @@ function maybeHandleSessionNew(session: Session, payload: string): void {
     },
   };
   console.log(
-    `[agent][stdin] session=${session.id}: ${JSON.stringify(promptPayload).slice(
-      0,
-      2000
-    )}`
+    `[agent][stdin] session=${session.id}: ${JSON.stringify(
+      promptPayload,
+    ).slice(0, 2000)}`,
   );
   writeToAgentStdin(session, JSON.stringify(promptPayload));
   session.systemPromptSent = true;
