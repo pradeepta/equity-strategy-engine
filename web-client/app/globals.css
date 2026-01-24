@@ -231,6 +231,25 @@ main {
   color: #1a1a1a;
 }
 
+.message.tool {
+  align-self: flex-start;
+  background: #f9fafb;
+  color: #1f2937;
+  border: 1px dashed #e5e7eb;
+}
+
+.message-meta {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.message-meta.error {
+  color: #ef4444;
+}
+
 .scroll-button {
   position: absolute;
   right: 24px;

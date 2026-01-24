@@ -22,6 +22,14 @@ type UpdateCallback = (chunk: string) => void;
 type DoneCallback = () => void;
 type ErrorCallback = (message: string) => void;
 type SessionCallback = (sessionId: string) => void;
+type ToolEvent = {
+  kind: "call" | "result";
+  name?: string;
+  input?: unknown;
+  result?: unknown;
+  isError?: boolean;
+};
+type ToolCallback = (event: ToolEvent) => void;
 
 export class AcpClient {
   private ws: WebSocket | null = null;
@@ -33,6 +41,7 @@ export class AcpClient {
   private onDone: DoneCallback;
   private onError: ErrorCallback;
   private onSession: SessionCallback;
+  private onTool?: ToolCallback;
   private pendingSends: JsonRpcMessage[] = [];
   private needsSessionInit = false;
   private isConnecting = false;
@@ -42,24 +51,28 @@ export class AcpClient {
     onChunk: UpdateCallback,
     onDone: DoneCallback,
     onError: ErrorCallback,
-    onSession: SessionCallback
+    onSession: SessionCallback,
+    onTool?: ToolCallback
   ) {
     this.onChunk = onChunk;
     this.onDone = onDone;
     this.onError = onError;
     this.onSession = onSession;
+    this.onTool = onTool;
   }
 
   setHandlers(
     onChunk: UpdateCallback,
     onDone: DoneCallback,
     onError: ErrorCallback,
-    onSession: SessionCallback
+    onSession: SessionCallback,
+    onTool?: ToolCallback
   ): void {
     this.onChunk = onChunk;
     this.onDone = onDone;
     this.onError = onError;
     this.onSession = onSession;
+    this.onTool = onTool;
   }
 
   checkSessionInit(callback: () => void, timeout = 2000): void {
@@ -281,6 +294,12 @@ export class AcpClient {
 
     if (msg.method === "session/update") {
       const update = msg.params?.update as any;
+      const toolEvents = this.extractToolEvents(
+        update?.content || update?.textContent || update
+      );
+      if (toolEvents.length > 0 && this.onTool) {
+        toolEvents.forEach((event) => this.onTool?.(event));
+      }
       const text = this.extractText(update?.textContent || update?.content);
       console.log("[ACP] session/update", update?.sessionUpdate, {
         hasText: text !== undefined,
@@ -316,6 +335,57 @@ export class AcpClient {
     }
     if (typeof content?.text === "string") return content.text;
     return undefined;
+  }
+
+  private extractToolEvents(content: any): ToolEvent[] {
+    const events: ToolEvent[] = [];
+    const items = Array.isArray(content) ? content : [content];
+    items.forEach((item) => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+      const type = (item as any).type;
+      if (type === "tool_use") {
+        const name = (item as any).name || "unknown_tool";
+        const input = (item as any).input;
+        events.push({ kind: "call", name, input });
+      }
+      if (type === "tool_result") {
+        const isError = Boolean((item as any).is_error);
+        const toolUseId = (item as any).tool_use_id || "unknown";
+        const contentValue = (item as any).content;
+        events.push({
+          kind: "result",
+          name: toolUseId,
+          result: this.tryParseJson(contentValue),
+          isError,
+        });
+      }
+      if ((item as any).toolCall) {
+        const toolCall = (item as any).toolCall;
+        const name = toolCall?.name || "unknown_tool";
+        events.push({ kind: "call", name, input: toolCall?.input });
+      }
+      if ((item as any).toolResult) {
+        const toolResult = (item as any).toolResult;
+        events.push({
+          kind: "result",
+          result: this.tryParseJson(toolResult),
+        });
+      }
+    });
+    return events;
+  }
+
+  private tryParseJson(value: any): any {
+    if (typeof value !== "string") {
+      return value;
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
   }
 
   private send(message: JsonRpcMessage): void {

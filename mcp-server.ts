@@ -9,6 +9,7 @@
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { Pool } from 'pg';
 
 // Load environment variables from multiple possible locations
 // Try current directory first, then parent directory (for when running from dist/)
@@ -80,27 +81,29 @@ function summarizeResult(result: any): Record<string, any> {
   return summary;
 }
 
-function estimateDurationDaysForBars(limit: number, timeframe: string): number {
-  const tf = (timeframe || '').toLowerCase().trim();
-  const barsPerDay: Record<string, number> = {
-    '1m': 390,
-    '5m': 78,
-    '15m': 26,
-    '30m': 13,
-    '1h': 6.5,
-  };
+let barCacheService: BarCacheServiceV2 | null = null;
 
-  if (tf === '1d' || tf === '1day' || tf.endsWith('d')) {
-    return Math.max(1, Math.ceil(limit));
+function getBarCacheService(): BarCacheServiceV2 {
+  if (!barCacheService) {
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+    });
+
+    const twsHost = process.env.TWS_HOST || "127.0.0.1";
+    const twsPort = parseInt(process.env.TWS_PORT || "7497", 10);
+    const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
+
+    barCacheService = new BarCacheServiceV2(
+      pool,
+      { host: twsHost, port: twsPort, clientId: twsClientId },
+      {
+        enabled: true,
+        session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
+        what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
+      }
+    );
   }
-
-  const perDay = barsPerDay[tf];
-  if (perDay) {
-    return Math.max(1, Math.ceil(limit / perDay));
-  }
-
-  // Fallback: assume 5m bars during regular session
-  return Math.max(1, Math.ceil(limit / 78));
+  return barCacheService;
 }
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -118,6 +121,7 @@ import { createStandardRegistry } from './features/registry';
 import { validateStrategyDSL } from './spec/schema';
 import { getRepositoryFactory } from './database/RepositoryFactory';
 import { generateDSLDocumentation } from './lib/dslDocGenerator';
+import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
 import * as yaml from 'yaml';
 import * as fs from 'fs';
 import express from 'express';
@@ -343,23 +347,33 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_market_data',
-    description: 'Get recent market data (OHLCV bars) for a symbol. Use this to understand current market conditions before deploying a strategy.',
+    description: 'Get recent market data (OHLCV bars) for a symbol. Cache-backed; fills missing bars via IBKR historical data.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading symbol (e.g., "AAPL", "GOOGL")',
-        },
+        symbol: { type: 'string', description: 'Trading symbol (e.g., "AAPL", "GOOGL")' },
         timeframe: {
           type: 'string',
-          description: 'Bar timeframe (e.g., "1m", "5m", "1h")',
+          description: 'Bar timeframe (e.g., "1m", "5m", "15m", "1h", "1d")',
           default: '5m',
         },
-        limit: {
-          type: 'number',
-          description: 'Number of bars to fetch (default: 100)',
-          default: 100,
+        limit: { type: 'number', description: 'Number of bars to fetch', default: 100 },
+        session: {
+          type: 'string',
+          enum: ['rth', 'all'],
+          description: 'Regular trading hours only ("rth") or include extended hours ("all")',
+          default: 'rth',
+        },
+        what: {
+          type: 'string',
+          enum: ['trades', 'midpoint', 'bid', 'ask'],
+          description: 'What the bar represents. TRADES is typical for stocks; MIDPOINT can be denser outside RTH.',
+          default: 'trades',
+        },
+        end: {
+          type: 'string',
+          description: 'End time (ISO) or "now". Defaults to "now". Bars returned are completed bars up to this time.',
+          default: 'now',
         },
       },
       required: ['symbol'],
@@ -1159,95 +1173,42 @@ async function handleGetMarketData(args: any) {
     symbol: args.symbol,
     timeframe: args.timeframe || '5m',
     limit: args.limit || 100,
+    session: args.session || 'rth',
+    what: args.what || 'trades',
+    end: args.end || 'now',
   });
 
   try {
-    const { symbol, timeframe = '5m', limit = 100 } = args;
+    const {
+      symbol,
+      timeframe = '5m',
+      limit = 100,
+      session = 'rth',
+      what = 'trades',
+      end = 'now'
+    } = args;
 
     // Import broker adapter
     const brokerType = process.env.BROKER || 'tws';
 
     if (brokerType === 'tws') {
-      // Check if bar caching is enabled
-      const barCacheEnabled = process.env.BAR_CACHE_ENABLED === 'true';
+      const barCache = getBarCacheService();
+      const bars = await barCache.getBars(symbol, timeframe, limit, {
+        session: session as 'rth' | 'all',
+        what: what as 'trades' | 'midpoint' | 'bid' | 'ask',
+        end,
+      });
 
-      let bars: any[];
-
-      if (barCacheEnabled) {
-        // Fetch from database cache first, then TWS if needed
-        const { getBarRepo } = await import('./database/RepositoryFactory');
-        const barRepo = getBarRepo();
-
-        // Try to get bars from database
-        const dbBars = await barRepo.getRecentBars(symbol, timeframe, limit);
-
-        if (dbBars.length >= limit * 0.8) {
-          // Have enough bars in DB (80% of requested)
-          bars = dbBars;
-          mcpLogger.info('get_market_data - fetched from database', {
-            symbol,
-            timeframe,
-            barsCount: bars.length,
-            source: 'database',
-          });
-        } else {
-          // Not enough bars in DB, fetch from TWS with unique client ID
-          const { TwsMarketDataClient } = await import('./broker/twsMarketData');
-          const uniqueClientId = 1000 + Math.floor(Math.random() * 9000); // Random ID between 1000-9999
-          const client = new TwsMarketDataClient(
-            process.env.TWS_HOST || '127.0.0.1',
-            parseInt(process.env.TWS_PORT || '7497'),
-            uniqueClientId
-          );
-
-          const durationDays = estimateDurationDaysForBars(limit, timeframe);
-          const twsBars = await client.getHistoricalBars(symbol, durationDays, timeframe);
-
-          // Store TWS bars to database for future use
-          if (twsBars.length > 0) {
-            await barRepo.insertBars(symbol, timeframe, twsBars);
-          }
-
-          // Combine and deduplicate
-          const combined = [...dbBars, ...twsBars];
-          const deduplicated = combined
-            .sort((a, b) => a.timestamp - b.timestamp)
-            .filter((bar, idx, arr) => idx === 0 || bar.timestamp !== arr[idx - 1].timestamp);
-
-          bars = deduplicated.slice(-limit);
-
-          mcpLogger.info('get_market_data - fetched from TWS and cached', {
-            symbol,
-            timeframe,
-            barsCount: bars.length,
-            dbBars: dbBars.length,
-            twsBars: twsBars.length,
-            source: 'tws+cache',
-            clientId: uniqueClientId,
-            requestedBars: limit,
-            durationDays,
-          });
-        }
-      } else {
-        // Legacy path: Direct TWS fetch (no caching) with unique client ID
-        const { TwsMarketDataClient } = await import('./broker/twsMarketData');
-        const uniqueClientId = 1000 + Math.floor(Math.random() * 9000); // Random ID between 1000-9999
-        const client = new TwsMarketDataClient(
-          process.env.TWS_HOST || '127.0.0.1',
-          parseInt(process.env.TWS_PORT || '7497'),
-          uniqueClientId
-        );
-        const durationDays = estimateDurationDaysForBars(limit, timeframe);
-        bars = await client.getHistoricalBars(symbol, durationDays, timeframe);
-        mcpLogger.info('get_market_data - fetched from TWS (cache disabled)', {
-          symbol,
-          timeframe,
-          barsCount: bars.length,
-          clientId: uniqueClientId,
-          requestedBars: limit,
-          durationDays,
-        });
-      }
+      mcpLogger.info('get_market_data - resolved via cache', {
+        symbol,
+        timeframe,
+        barsCount: bars.length,
+        requestedBars: limit,
+        session,
+        what,
+        end,
+        cacheEnabled: process.env.BAR_CACHE_ENABLED === 'true',
+      });
 
       return {
         success: true,

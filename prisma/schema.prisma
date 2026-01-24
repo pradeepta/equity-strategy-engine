@@ -617,6 +617,27 @@ model MarketBar {
   @@map("market_bars")
 }
 
+model Bar {
+  symbol     String
+  period     String
+  what       String
+  session    String
+  barStart   DateTime @map("barstart")
+  barEnd     DateTime @map("barend")
+  open       Float
+  high       Float
+  low        Float
+  close      Float
+  volume     Float
+  wap        Float?
+  tradeCount Int?     @map("trade_count")
+  ingestedAt DateTime @default(now()) @map("ingested_at")
+
+  @@id([symbol, period, what, session, barStart])
+  @@index([symbol, period, what, session, barStart(sort: Desc)])
+  @@map("bars")
+}
+
 // ============================================================================
 // CHAT HISTORY
 // ============================================================================

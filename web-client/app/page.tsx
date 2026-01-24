@@ -22,10 +22,15 @@ import {
 const API_BASE = "http://localhost:3002";
 
 type ChatMessage = {
-  role: "user" | "agent";
+  role: "user" | "agent" | "tool";
   content: string;
   images?: { data: string; mimeType: string }[];
   imageUrls?: string[];
+  toolMeta?: {
+    kind: "call" | "result";
+    name?: string;
+    isError?: boolean;
+  };
 };
 
 const mergeChunk = (current: string, chunk: string) => {
@@ -41,10 +46,42 @@ const mergeChunk = (current: string, chunk: string) => {
   return current + chunk;
 };
 
+type ToolEvent = {
+  kind: "call" | "result";
+  name?: string;
+  input?: unknown;
+  result?: unknown;
+  isError?: boolean;
+};
+
+const formatToolMessage = (event: ToolEvent): string => {
+  const title =
+    event.kind === "call"
+      ? `Tool call: \`${event.name || "unknown"}\``
+      : `Tool result${event.isError ? " (error)" : ""}: \`${event.name || "unknown"}\``;
+  const payload =
+    event.kind === "call" ? event.input : event.result;
+  const json = safeJson(payload);
+  return `**${title}**\n\n\`\`\`json\n${json}\n\`\`\``;
+};
+
+const safeJson = (value: unknown): string => {
+  try {
+    return JSON.stringify(value ?? null, null, 2);
+  } catch {
+    return JSON.stringify({ error: "Failed to serialize tool payload" }, null, 2);
+  }
+};
+
 // Message component - removed memo for now to ensure functionality
 function MessageComponent({ message }: { message: ChatMessage }) {
   return (
     <div className={`message ${message.role}`}>
+      {message.role === "tool" && (
+        <div className={`message-meta ${message.toolMeta?.isError ? "error" : ""}`}>
+          Tool {message.toolMeta?.kind === "call" ? "call" : "result"}
+        </div>
+      )}
       {message.images && message.images.length > 0 && (
         <div className="message-images">
           {message.images.map((img, imageIdx) => (
@@ -82,12 +119,13 @@ const getClient = (
   onChunk: (chunk: string) => void,
   onDone: () => void,
   onError: (message: string) => void,
-  onSession: (sessionId: string) => void
+  onSession: (sessionId: string) => void,
+  onTool: (event: ToolEvent) => void
 ) => {
   if (!sharedClient) {
-    sharedClient = new AcpClient(onChunk, onDone, onError, onSession);
+    sharedClient = new AcpClient(onChunk, onDone, onError, onSession, onTool);
   } else {
-    sharedClient.setHandlers(onChunk, onDone, onError, onSession);
+    sharedClient.setHandlers(onChunk, onDone, onError, onSession, onTool);
   }
   return sharedClient;
 };
@@ -502,6 +540,20 @@ export default function HomePage() {
       (id) => {
         setSessionId(id);
         setStatus("ready");
+      },
+      (event) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "tool",
+            content: formatToolMessage(event),
+            toolMeta: {
+              kind: event.kind,
+              name: event.name,
+              isError: event.isError,
+            },
+          },
+        ]);
       }
     );
   }, []);

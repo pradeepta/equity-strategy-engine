@@ -10,7 +10,7 @@ import { Pool } from 'pg';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getRepositoryFactory, getChatRepo } from './database/RepositoryFactory';
-import { TwsMarketDataClient } from './broker/twsMarketData';
+import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
 import { BacktestEngine } from './backtest/BacktestEngine';
 import { getStorageProvider, generateImageKey } from './lib/storage';
 import OpenAI from 'openai';
@@ -34,6 +34,27 @@ const prisma = new PrismaClient({
 });
 
 const PORT = process.env.PORTFOLIO_API_PORT || 3002;
+
+let barCacheService: BarCacheServiceV2 | null = null;
+
+function getBarCacheService(): BarCacheServiceV2 {
+  if (!barCacheService) {
+    const twsHost = process.env.TWS_HOST || "127.0.0.1";
+    const twsPort = parseInt(process.env.TWS_PORT || "7497", 10);
+    const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
+
+    barCacheService = new BarCacheServiceV2(
+      pool,
+      { host: twsHost, port: twsPort, clientId: twsClientId },
+      {
+        enabled: true,
+        session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
+        what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
+      }
+    );
+  }
+  return barCacheService;
+}
 
 // Enable CORS for web client
 const setCORSHeaders = (res: ServerResponse) => {
@@ -600,29 +621,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return;
         }
 
-        // Fetch bars from cached market_bars table
-        const cachedBars = await prisma.marketBar.findMany({
-          where: {
-            symbol: strategy.symbol,
-            timeframe: strategy.timeframe,
-          },
-          orderBy: {
-            timestamp: 'desc',
-          },
-          take: limit,
-        });
+        // Use BarCacheServiceV2 for consistent, gap-filled, up-to-date bars
+        // This ensures web dashboard shows same data that strategies trade on
+        // Gap detection and backfilling are now built-in
+        const barCacheService = getBarCacheService();
+        const cachedBars = await barCacheService.getBars(
+          strategy.symbol,
+          strategy.timeframe,
+          limit
+        );
 
-        // Convert to Bar format and reverse to chronological order
-        const bars = cachedBars
-          .reverse()
-          .map(bar => ({
-            timestamp: new Date(Number(bar.timestamp)).toISOString(),
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close,
-            volume: bar.volume,
-          }));
+        // Convert to API format (Bar already has correct structure, just format timestamp)
+        const bars = cachedBars.map(bar => ({
+          timestamp: new Date(bar.timestamp).toISOString(),
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        }));
 
         sendJSON(res, {
           bars,
@@ -836,32 +853,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const timeframe = strategy.timeframe || '5m';
         const barCount = 180;
 
-        // Calculate days needed based on timeframe
-        let daysNeeded = 1;
-        if (timeframe.includes('m')) {
-          // Minutes: 180 bars * X minutes / (60 min/hr * 24 hr/day)
-          const minutes = parseInt(timeframe.replace('m', ''));
-          daysNeeded = Math.ceil((barCount * minutes) / (60 * 24)) + 1;
-        } else if (timeframe.includes('h')) {
-          // Hours
-          const hours = parseInt(timeframe.replace('h', ''));
-          daysNeeded = Math.ceil((barCount * hours) / 24) + 1;
-        } else if (timeframe === '1day' || timeframe === '1d') {
-          daysNeeded = barCount;
-        }
+        // Fetch historical bars via cache (DB → TWS fallback)
+        const barCache = getBarCacheService();
+        console.log(`[backtest] Fetching ${barCount} bars for ${strategy.symbol} @ ${timeframe}`);
 
-        // Fetch historical bars from TWS
-        const twsHost = process.env.TWS_HOST || '127.0.0.1';
-        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
-        const marketDataClient = new TwsMarketDataClient(twsHost, twsPort, 999); // Use unique client ID
-
-        console.log(`[backtest] Fetching ${barCount} bars (${daysNeeded} days) for ${strategy.symbol} @ ${timeframe}`);
-
-        const bars = await marketDataClient.getHistoricalBars(
-          strategy.symbol,
-          daysNeeded,
-          timeframe
-        );
+        const bars = await barCache.getBars(strategy.symbol, timeframe, barCount);
 
         if (bars.length === 0) {
           sendJSON(res, { error: 'No historical data available' }, 500);

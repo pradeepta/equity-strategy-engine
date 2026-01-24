@@ -19,7 +19,7 @@ import { BrokerReconciliationService } from "./reconciliation/BrokerReconciliati
 import { OrderAlertService } from "./alerts/OrderAlertService";
 import { LoggerFactory } from "../logging/logger";
 import { Logger } from "../logging/logger";
-import { BarCacheService } from "./cache/BarCacheService";
+import { BarCacheServiceV2 } from "./cache/BarCacheServiceV2";
 import { BarCacheMonitor } from "./cache/BarCacheMonitor";
 import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
 
@@ -50,7 +50,7 @@ export class LiveTradingOrchestrator {
   private lockService: DistributedLockService;
   private reconciliationService: BrokerReconciliationService;
   private alertService: OrderAlertService;
-  private barCacheService?: BarCacheService;
+  private barCacheService?: BarCacheServiceV2;
   private barCacheMonitor?: BarCacheMonitor;
   private config: OrchestratorConfig;
   private running: boolean = false;
@@ -117,13 +117,26 @@ export class LiveTradingOrchestrator {
       this.repositoryFactory.getSystemLogRepo()
     );
 
-    // Initialize bar cache service (if enabled)
+    // Initialize bar cache service V2 (if enabled)
     const barCacheEnabled = process.env.BAR_CACHE_ENABLED === 'true';
     if (barCacheEnabled) {
+      const pool = this.repositoryFactory.getPool();
+      const twsHost = config.twsHost || process.env.TWS_HOST || "127.0.0.1";
+      const twsPort = config.twsPort || parseInt(process.env.TWS_PORT || "7497", 10);
+      const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
+
+      this.barCacheService = new BarCacheServiceV2(
+        pool,
+        { host: twsHost, port: twsPort, clientId: twsClientId },
+        {
+          enabled: true,
+          session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
+          what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
+        }
+      );
       const barRepo = this.repositoryFactory.getBarRepo();
-      this.barCacheService = new BarCacheService(barRepo);
       this.barCacheMonitor = new BarCacheMonitor(barRepo, this.barCacheService);
-      logger.info('✓ Bar caching enabled');
+      logger.info('✓ Bar caching V2 enabled');
     }
 
     // Initialize components

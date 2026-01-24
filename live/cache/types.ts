@@ -23,6 +23,15 @@ export interface Gap {
 }
 
 /**
+ * Time range for missing data (gaps, old data, new data)
+ */
+export interface TimeRange {
+  startTime: number;     // Timestamp (ms) of range start
+  endTime: number;       // Timestamp (ms) of range end
+  reason: 'gap' | 'old' | 'new'; // Why this range is missing
+}
+
+/**
  * Cache statistics for monitoring
  */
 export interface CacheStats {

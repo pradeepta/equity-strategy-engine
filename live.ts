@@ -8,6 +8,9 @@ import * as https from 'https';
 import * as dotenv from 'dotenv';
 import { StrategyCompiler } from './compiler/compile';
 import { createStandardRegistry } from './features/registry';
+import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
+import { getRepositoryFactory } from './database/RepositoryFactory';
+import { Pool } from 'pg';
 import { StrategyEngine } from './runtime/engine';
 import { AlpacaRestAdapter } from './broker/alpacaRest';
 import { TwsAdapter } from './broker/twsAdapter';
@@ -302,13 +305,25 @@ async function runLiveTrading(
   let account: any;
 
   if (brokerType.toLowerCase() === 'tws') {
-    // Use TWS for market data
+    // Use TWS for market data with BarCacheServiceV2
     console.log('📊 Using TWS for market data\n');
-    const twsHost = process.env.TWS_HOST || '127.0.0.1';
-    const twsPort = parseInt(process.env.TWS_PORT || '7497');
-    const twsMarketData = new TwsMarketDataClient(twsHost, twsPort, 2);
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+    });
+    const twsHost = process.env.TWS_HOST || "127.0.0.1";
+    const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+    const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
 
-    initialBars = await twsMarketData.getHistoricalBars(symbol, 30, timeframeStr);
+    const barCache = new BarCacheServiceV2(
+      pool,
+      { host: twsHost, port: twsPort, clientId: twsClientId },
+      {
+        enabled: true,
+        session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
+        what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
+      }
+    );
+    initialBars = await barCache.getBars(symbol, timeframeStr, 100);
 
     // Mock account info for TWS (TWS doesn't provide portfolio data through this API)
     account = {
@@ -449,11 +464,24 @@ async function runLiveTrading(
       let newBars: Bar[];
 
       if (brokerType.toLowerCase() === 'tws') {
-        // Use TWS for real-time data
-        const twsHost = process.env.TWS_HOST || '127.0.0.1';
-        const twsPort = parseInt(process.env.TWS_PORT || '7497');
-        const twsMarketData = new TwsMarketDataClient(twsHost, twsPort, 2);
-        newBars = await twsMarketData.getHistoricalBars(symbol, 2, timeframeStr);
+        // Use BarCacheServiceV2 (DB → TWS fallback)
+        const pool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+        });
+        const twsHost = process.env.TWS_HOST || "127.0.0.1";
+        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+        const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
+
+        const barCache = new BarCacheServiceV2(
+          pool,
+          { host: twsHost, port: twsPort, clientId: twsClientId },
+          {
+            enabled: true,
+            session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
+            what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
+          }
+        );
+        newBars = await barCache.getBars(symbol, timeframeStr, 100);
       } else {
         // Use Alpaca for real-time data
         const alpaca = new AlpacaClient();
