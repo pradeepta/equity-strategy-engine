@@ -6,18 +6,24 @@ import remarkGfm from "remark-gfm";
 import { AcpClient } from "../src/lib/acpClient";
 import { AuditLogsViewer } from "./components/AuditLogsViewer";
 import { LogsViewer } from "./components/LogsViewer";
-import { ChatHistorySidebar, ChatSession } from "./components/ChatHistorySidebar";
+import {
+  ChatHistorySidebar,
+  ChatSession,
+} from "./components/ChatHistorySidebar";
 import TradeCheckModal from "./components/TradeCheckModal";
 import { createStrategyPrompt } from "../src/lib/tradeCheckMapper";
-import type { TradeCheckAnalysis, MarketRegime } from "../src/lib/tradeCheckClient";
+import type {
+  TradeCheckAnalysis,
+  MarketRegime,
+} from "../src/lib/tradeCheckClient";
 import {
   createChart,
   CandlestickData,
   LineData,
   LineStyle,
   CandlestickSeries,
-  LineSeries
-} from 'lightweight-charts';
+  LineSeries,
+} from "lightweight-charts";
 
 const API_BASE = "http://localhost:3002";
 
@@ -59,8 +65,7 @@ const formatToolMessage = (event: ToolEvent): string => {
     event.kind === "call"
       ? `Tool call: \`${event.name || "unknown"}\``
       : `Tool result${event.isError ? " (error)" : ""}: \`${event.name || "unknown"}\``;
-  const payload =
-    event.kind === "call" ? event.input : event.result;
+  const payload = event.kind === "call" ? event.input : event.result;
   const json = safeJson(payload);
   return `**${title}**\n\n\`\`\`json\n${json}\n\`\`\``;
 };
@@ -69,7 +74,11 @@ const safeJson = (value: unknown): string => {
   try {
     return JSON.stringify(value ?? null, null, 2);
   } catch {
-    return JSON.stringify({ error: "Failed to serialize tool payload" }, null, 2);
+    return JSON.stringify(
+      { error: "Failed to serialize tool payload" },
+      null,
+      2,
+    );
   }
 };
 
@@ -78,7 +87,9 @@ function MessageComponent({ message }: { message: ChatMessage }) {
   return (
     <div className={`message ${message.role}`}>
       {message.role === "tool" && (
-        <div className={`message-meta ${message.toolMeta?.isError ? "error" : ""}`}>
+        <div
+          className={`message-meta ${message.toolMeta?.isError ? "error" : ""}`}
+        >
           Tool {message.toolMeta?.kind === "call" ? "call" : "result"}
         </div>
       )}
@@ -96,11 +107,7 @@ function MessageComponent({ message }: { message: ChatMessage }) {
       {message.imageUrls && message.imageUrls.length > 0 && (
         <div className="message-images">
           {message.imageUrls.map((url, imageIdx) => (
-            <img
-              key={imageIdx}
-              src={`${API_BASE}${url}`}
-              alt="Attachment"
-            />
+            <img key={imageIdx} src={`${API_BASE}${url}`} alt="Attachment" />
           ))}
         </div>
       )}
@@ -120,7 +127,7 @@ const getClient = (
   onDone: () => void,
   onError: (message: string) => void,
   onSession: (sessionId: string) => void,
-  onTool: (event: ToolEvent) => void
+  onTool: (event: ToolEvent) => void,
 ) => {
   if (!sharedClient) {
     sharedClient = new AcpClient(onChunk, onDone, onError, onSession, onTool);
@@ -134,15 +141,32 @@ const getClient = (
 function StrategyChart({ strategy }: { strategy: any }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
+  const fetchingMoreRef = useRef(false);
+  const barLimitRef = useRef(200);
   const [bars, setBars] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [barLimit, setBarLimit] = useState(200);
+  const [lastResponseCount, setLastResponseCount] = useState<number | null>(null);
+  const firstBarDayLabel = bars.length
+    ? new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "2-digit",
+      }).format(new Date(bars[0].timestamp))
+    : null;
+  const lastBarDayLabel = bars.length
+    ? new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "2-digit",
+      }).format(new Date(bars[bars.length - 1].timestamp))
+    : null;
   const [tradeParams, setTradeParams] = useState<{
     entryZone: [number, number] | null;
     stopLoss: number | null;
     targets: number[];
     invalidationLevel: number | null;
-    side: 'BUY' | 'SELL' | null;
+    side: "BUY" | "SELL" | null;
   }>({
     entryZone: null,
     stopLoss: null,
@@ -151,26 +175,34 @@ function StrategyChart({ strategy }: { strategy: any }) {
     side: null,
   });
 
+  const MAX_BARS = 2000;
+
   // Fetch bars
   useEffect(() => {
     const fetchBars = async () => {
       try {
-        setLoading(true);
+        fetchingMoreRef.current = true;
+        const isInitialLoad = bars.length === 0;
+        setLoading(isInitialLoad);
+        setLoadingMore(!isInitialLoad);
         const response = await fetch(
-          `${API_BASE}/api/portfolio/strategies/${strategy.id}/bars?limit=200`
+          `${API_BASE}/api/portfolio/strategies/${strategy.id}/bars?limit=${barLimit}`,
         );
-        if (!response.ok) throw new Error('Failed to fetch chart data');
+        if (!response.ok) throw new Error("Failed to fetch chart data");
         const data = await response.json();
+        setLastResponseCount(typeof data.count === "number" ? data.count : (data.bars || []).length);
         setBars(data.bars || []);
         setError(null);
       } catch (err: any) {
-        setError(err.message || 'Failed to load chart');
+        setError(err.message || "Failed to load chart");
       } finally {
+        fetchingMoreRef.current = false;
         setLoading(false);
+        setLoadingMore(false);
       }
     };
     fetchBars();
-  }, [strategy.id]);
+  }, [strategy.id, barLimit, bars.length]);
 
   // Initialize chart
   useEffect(() => {
@@ -181,19 +213,36 @@ function StrategyChart({ strategy }: { strategy: any }) {
         width: chartContainerRef.current.clientWidth,
         height: 500,
         layout: {
-          background: { color: '#1a1a1a' },
-          textColor: '#d1d5db',
+          background: { color: "#1a1a1a" },
+          textColor: "#d1d5db",
         },
         grid: {
-          vertLines: { color: '#2b2b2b' },
-          horzLines: { color: '#2b2b2b' },
+          vertLines: { color: "#2b2b2b" },
+          horzLines: { color: "#2b2b2b" },
         },
         crosshair: { mode: 1 },
-        rightPriceScale: { borderColor: '#2b2b2b' },
+        rightPriceScale: { borderColor: "#2b2b2b" },
         timeScale: {
-          borderColor: '#2b2b2b',
+          borderColor: "#2b2b2b",
           timeVisible: true,
           secondsVisible: false,
+          tickMarkFormatter: (timestamp: number) => {
+            const date = new Date(timestamp * 1000);
+            return new Intl.DateTimeFormat("en-US", {
+              hour: "numeric",
+            }).format(date);
+          },
+        },
+        localization: {
+          timeFormatter: (timestamp: number) => {
+            const date = new Date(timestamp * 1000);
+            return new Intl.DateTimeFormat("en-US", {
+              month: "short",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+            }).format(date);
+          },
         },
       });
 
@@ -201,12 +250,12 @@ function StrategyChart({ strategy }: { strategy: any }) {
 
       // Add candlestick data
       const candlestickSeries = chart.addSeries(CandlestickSeries, {
-        upColor: '#22c55e',
-        downColor: '#ef4444',
-        borderUpColor: '#22c55e',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#22c55e',
-        wickDownColor: '#ef4444',
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
       });
 
       const chartData: CandlestickData[] = bars
@@ -222,31 +271,31 @@ function StrategyChart({ strategy }: { strategy: any }) {
       candlestickSeries.setData(chartData);
 
       // Parse YAML for trade parameters
-      const yamlLines = strategy.yamlContent.split('\n');
+      const yamlLines = strategy.yamlContent.split("\n");
       let inOrderPlans = false;
       let entryZone: [number, number] | null = null;
       let stopLoss: number | null = null;
       let targets: number[] = [];
       let invalidationLevel: number | null = null;
-      let side: 'BUY' | 'SELL' | null = null;
+      let side: "BUY" | "SELL" | null = null;
 
       for (let i = 0; i < yamlLines.length; i++) {
         const line = yamlLines[i].trim();
 
-        if (line.startsWith('orderPlans:')) {
+        if (line.startsWith("orderPlans:")) {
           inOrderPlans = true;
           continue;
         }
 
         if (inOrderPlans) {
-          if (line.startsWith('side:')) {
+          if (line.startsWith("side:")) {
             const match = line.match(/side:\s*(.+)/);
-            if (match) side = match[1].trim() as 'BUY' | 'SELL';
+            if (match) side = match[1].trim() as "BUY" | "SELL";
           }
 
-          if (line.startsWith('entryZone:')) {
+          if (line.startsWith("entryZone:")) {
             const nextLine = yamlLines[i + 1]?.trim();
-            if (nextLine?.startsWith('[')) {
+            if (nextLine?.startsWith("[")) {
               const match = nextLine.match(/\[([0-9.]+),\s*([0-9.]+)\]/);
               if (match) {
                 entryZone = [parseFloat(match[1]), parseFloat(match[2])];
@@ -254,14 +303,17 @@ function StrategyChart({ strategy }: { strategy: any }) {
             }
           }
 
-          if (line.startsWith('stopLoss:')) {
+          if (line.startsWith("stopLoss:")) {
             const match = line.match(/stopLoss:\s*([0-9.]+)/);
             if (match) stopLoss = parseFloat(match[1]);
           }
 
-          if (line.startsWith('targets:')) {
+          if (line.startsWith("targets:")) {
             let j = i + 1;
-            while (j < yamlLines.length && yamlLines[j].trim().startsWith('-')) {
+            while (
+              j < yamlLines.length &&
+              yamlLines[j].trim().startsWith("-")
+            ) {
               const targetMatch = yamlLines[j].match(/price:\s*([0-9.]+)/);
               if (targetMatch) {
                 targets.push(parseFloat(targetMatch[1]));
@@ -270,14 +322,19 @@ function StrategyChart({ strategy }: { strategy: any }) {
             }
           }
 
-          if (line.startsWith('invalidationLevel:')) {
+          if (line.startsWith("invalidationLevel:")) {
             const match = line.match(/invalidationLevel:\s*([0-9.]+)/);
             if (match) invalidationLevel = parseFloat(match[1]);
           }
 
-          if (line.match(/^[a-z]+:/) && !line.startsWith('side:') &&
-              !line.startsWith('entryZone:') && !line.startsWith('stopLoss:') &&
-              !line.startsWith('targets:') && !line.startsWith('invalidationLevel:')) {
+          if (
+            line.match(/^[a-z]+:/) &&
+            !line.startsWith("side:") &&
+            !line.startsWith("entryZone:") &&
+            !line.startsWith("stopLoss:") &&
+            !line.startsWith("targets:") &&
+            !line.startsWith("invalidationLevel:")
+          ) {
             break;
           }
         }
@@ -289,22 +346,28 @@ function StrategyChart({ strategy }: { strategy: any }) {
       if (entryZone) {
         const [lower, upper] = entryZone;
         const entryLowerSeries = chart.addSeries(LineSeries, {
-          color: '#22c55e',
+          color: "#22c55e",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
         const entryUpperSeries = chart.addSeries(LineSeries, {
-          color: '#22c55e',
+          color: "#22c55e",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
 
-        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: lower }));
-        const lineDataUpper: LineData[] = chartData.map(d => ({ time: d.time, value: upper }));
+        const lineData: LineData[] = chartData.map((d) => ({
+          time: d.time,
+          value: lower,
+        }));
+        const lineDataUpper: LineData[] = chartData.map((d) => ({
+          time: d.time,
+          value: upper,
+        }));
         entryLowerSeries.setData(lineData);
         entryUpperSeries.setData(lineDataUpper);
       }
@@ -313,26 +376,32 @@ function StrategyChart({ strategy }: { strategy: any }) {
       if (stopLoss !== null) {
         const stopLossValue = stopLoss;
         const stopSeries = chart.addSeries(LineSeries, {
-          color: '#ef4444',
+          color: "#ef4444",
           lineWidth: 2,
           lineStyle: LineStyle.Solid,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: stopLossValue }));
+        const lineData: LineData[] = chartData.map((d) => ({
+          time: d.time,
+          value: stopLossValue,
+        }));
         stopSeries.setData(lineData);
       }
 
       // Add target lines
       targets.forEach((target, idx) => {
         const targetSeries = chart.addSeries(LineSeries, {
-          color: '#3b82f6',
+          color: "#3b82f6",
           lineWidth: 2,
           lineStyle: LineStyle.Dotted,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: target }));
+        const lineData: LineData[] = chartData.map((d) => ({
+          time: d.time,
+          value: target,
+        }));
         targetSeries.setData(lineData);
       });
 
@@ -340,29 +409,51 @@ function StrategyChart({ strategy }: { strategy: any }) {
       if (invalidationLevel !== null) {
         const invalidationValue = invalidationLevel;
         const invalidSeries = chart.addSeries(LineSeries, {
-          color: '#f97316',
+          color: "#f97316",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map(d => ({ time: d.time, value: invalidationValue }));
+        const lineData: LineData[] = chartData.map((d) => ({
+          time: d.time,
+          value: invalidationValue,
+        }));
         invalidSeries.setData(lineData);
       }
 
       chart.timeScale().fitContent();
 
+      const timeScale = chart.timeScale();
+      const handleRangeChange = (range: { from: number; to: number } | null) => {
+        if (!range || fetchingMoreRef.current) return;
+
+        const isAtLeftEdge = range.from < 5;
+        const isAtLimit = bars.length >= barLimitRef.current;
+
+        if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
+          const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
+          if (nextLimit > barLimitRef.current) {
+            barLimitRef.current = nextLimit;
+            setBarLimit(nextLimit);
+          }
+        }
+      };
+
+      timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
+
       return () => {
+        timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
         chart.remove();
       };
     } catch (err: any) {
       setError(err.message);
     }
-  }, [bars, strategy.yamlContent]);
+  }, [bars, strategy.yamlContent, barLimit]);
 
   if (loading) {
     return (
-      <div style={{ padding: '40px', textAlign: 'center', color: '#737373' }}>
+      <div style={{ padding: "40px", textAlign: "center", color: "#737373" }}>
         Loading chart...
       </div>
     );
@@ -370,61 +461,120 @@ function StrategyChart({ strategy }: { strategy: any }) {
 
   if (error) {
     return (
-      <div style={{ padding: '20px', color: '#ef4444', textAlign: 'center' }}>
+      <div style={{ padding: "20px", color: "#ef4444", textAlign: "center" }}>
         Error: {error}
       </div>
     );
   }
 
   return (
-    <div style={{ position: 'relative' }}>
-      <div ref={chartContainerRef} style={{ width: '100%', minHeight: '500px' }} />
+    <div>
+      <div
+        ref={chartContainerRef}
+        style={{ width: "100%", minHeight: "500px" }}
+      />
+      {(firstBarDayLabel || lastBarDayLabel) && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginTop: "6px",
+            color: "#d1d5db",
+            fontSize: "11px",
+          }}
+        >
+          <span>{firstBarDayLabel ?? ""}</span>
+          <span>{lastBarDayLabel ?? ""}</span>
+        </div>
+      )}
+      <div style={{ marginTop: "6px", color: "#737373", fontSize: "12px" }}>
+        Requested bars: {barLimit}
+        {lastResponseCount !== null && (
+          <span style={{ marginLeft: "8px" }}>
+            Returned: {lastResponseCount}
+          </span>
+        )}
+      </div>
+      {loadingMore && (
+        <div style={{ marginTop: "6px", color: "#737373", fontSize: "12px" }}>
+          Loading more bars...
+        </div>
+      )}
 
       {/* Legend */}
       {tradeParams.entryZone && (
-        <div style={{
-          marginTop: '16px',
-          padding: '16px',
-          backgroundColor: '#2b2b2b',
-          borderRadius: '8px',
-          fontSize: '13px',
-          color: '#d1d5db',
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: '12px', fontSize: '14px' }}>
+        <div
+          style={{
+            marginTop: "16px",
+            padding: "16px",
+            backgroundColor: "#2b2b2b",
+            borderRadius: "8px",
+            fontSize: "13px",
+            color: "#d1d5db",
+          }}
+        >
+          <div
+            style={{ fontWeight: 600, marginBottom: "12px", fontSize: "14px" }}
+          >
             Trade Levels
             {tradeParams.side && (
-              <span style={{
-                marginLeft: '12px',
-                padding: '4px 8px',
-                backgroundColor: tradeParams.side === 'BUY' ? '#22c55e' : '#ef4444',
-                color: 'white',
-                borderRadius: '4px',
-                fontSize: '12px',
-              }}>
+              <span
+                style={{
+                  marginLeft: "12px",
+                  padding: "4px 8px",
+                  backgroundColor:
+                    tradeParams.side === "BUY" ? "#22c55e" : "#ef4444",
+                  color: "white",
+                  borderRadius: "4px",
+                  fontSize: "12px",
+                }}
+              >
                 {tradeParams.side}
               </span>
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: "12px",
+            }}
+          >
             {tradeParams.entryZone && (
               <div>
-                <div style={{ color: '#22c55e', fontWeight: 600 }}>Entry Zone (dashed green)</div>
-                <div>${tradeParams.entryZone[0].toFixed(2)} - ${tradeParams.entryZone[1].toFixed(2)}</div>
+                <div style={{ color: "#22c55e", fontWeight: 600 }}>
+                  Entry Zone (dashed green)
+                </div>
+                <div>
+                  ${tradeParams.entryZone[0].toFixed(2)} - $
+                  {tradeParams.entryZone[1].toFixed(2)}
+                </div>
               </div>
             )}
 
             {tradeParams.stopLoss && (
               <div>
-                <div style={{ color: '#ef4444', fontWeight: 600 }}>Stop Loss (solid red)</div>
+                <div style={{ color: "#ef4444", fontWeight: 600 }}>
+                  Stop Loss (solid red)
+                </div>
                 <div>
                   ${tradeParams.stopLoss.toFixed(2)}
                   {tradeParams.entryZone && tradeParams.side && (
-                    <span style={{ marginLeft: '8px', color: '#f87171' }}>
-                      ({tradeParams.side === 'BUY'
-                        ? ((tradeParams.stopLoss - tradeParams.entryZone[1]) / tradeParams.entryZone[1] * 100).toFixed(1)
-                        : ((tradeParams.entryZone[0] - tradeParams.stopLoss) / tradeParams.entryZone[0] * 100).toFixed(1)
-                      }%)
+                    <span style={{ marginLeft: "8px", color: "#f87171" }}>
+                      (
+                      {tradeParams.side === "BUY"
+                        ? (
+                            ((tradeParams.stopLoss - tradeParams.entryZone[1]) /
+                              tradeParams.entryZone[1]) *
+                            100
+                          ).toFixed(1)
+                        : (
+                            ((tradeParams.entryZone[0] - tradeParams.stopLoss) /
+                              tradeParams.entryZone[0]) *
+                            100
+                          ).toFixed(1)}
+                      %)
                     </span>
                   )}
                 </div>
@@ -433,15 +583,26 @@ function StrategyChart({ strategy }: { strategy: any }) {
 
             {tradeParams.targets.map((target, idx) => (
               <div key={idx}>
-                <div style={{ color: '#3b82f6', fontWeight: 600 }}>Target {idx + 1} (dotted blue)</div>
+                <div style={{ color: "#3b82f6", fontWeight: 600 }}>
+                  Target {idx + 1} (dotted blue)
+                </div>
                 <div>
                   ${target.toFixed(2)}
                   {tradeParams.entryZone && tradeParams.side && (
-                    <span style={{ marginLeft: '8px', color: '#60a5fa' }}>
-                      (+{tradeParams.side === 'BUY'
-                        ? ((target - tradeParams.entryZone[1]) / tradeParams.entryZone[1] * 100).toFixed(1)
-                        : ((tradeParams.entryZone[0] - target) / tradeParams.entryZone[0] * 100).toFixed(1)
-                      }%)
+                    <span style={{ marginLeft: "8px", color: "#60a5fa" }}>
+                      (+
+                      {tradeParams.side === "BUY"
+                        ? (
+                            ((target - tradeParams.entryZone[1]) /
+                              tradeParams.entryZone[1]) *
+                            100
+                          ).toFixed(1)
+                        : (
+                            ((tradeParams.entryZone[0] - target) /
+                              tradeParams.entryZone[0]) *
+                            100
+                          ).toFixed(1)}
+                      %)
                     </span>
                   )}
                 </div>
@@ -450,7 +611,9 @@ function StrategyChart({ strategy }: { strategy: any }) {
 
             {tradeParams.invalidationLevel && (
               <div>
-                <div style={{ color: '#f97316', fontWeight: 600 }}>Invalidation (dashed orange)</div>
+                <div style={{ color: "#f97316", fontWeight: 600 }}>
+                  Invalidation (dashed orange)
+                </div>
                 <div>${tradeParams.invalidationLevel.toFixed(2)}</div>
               </div>
             )}
@@ -467,7 +630,9 @@ export default function HomePage() {
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "dashboard" | "logs" | "audit">("chat");
+  const [activeTab, setActiveTab] = useState<
+    "chat" | "dashboard" | "logs" | "audit"
+  >("chat");
   const [attachedImages, setAttachedImages] = useState<
     { data: string; mimeType: string }[]
   >([]);
@@ -475,7 +640,9 @@ export default function HomePage() {
 
   // Chat history state
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
-  const [currentChatSessionId, setCurrentChatSessionId] = useState<string | null>(null);
+  const [currentChatSessionId, setCurrentChatSessionId] = useState<
+    string | null
+  >(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isViewingOldChat, setIsViewingOldChat] = useState(false);
@@ -499,7 +666,10 @@ export default function HomePage() {
     return getClient(
       (chunk) => {
         // Track the full agent message for saving
-        pendingAgentMessageRef.current = mergeChunk(pendingAgentMessageRef.current, chunk);
+        pendingAgentMessageRef.current = mergeChunk(
+          pendingAgentMessageRef.current,
+          chunk,
+        );
 
         setMessages((prev) => {
           const copy = [...prev];
@@ -554,7 +724,7 @@ export default function HomePage() {
             },
           },
         ]);
-      }
+      },
     );
   }, []);
 
@@ -605,17 +775,19 @@ export default function HomePage() {
   const loadChatSession = useCallback(async (chatSessionId: string) => {
     try {
       const response = await fetch(
-        `${API_BASE}/api/chat/sessions/${chatSessionId}?includeMessages=true`
+        `${API_BASE}/api/chat/sessions/${chatSessionId}?includeMessages=true`,
       );
 
       if (response.ok) {
         const data = await response.json();
         // Convert DB messages to frontend format
-        const loadedMessages: ChatMessage[] = data.session.messages.map((msg: any) => ({
-          role: msg.role.toLowerCase() as "user" | "agent",
-          content: msg.content,
-          imageUrls: msg.imageUrls || [],
-        }));
+        const loadedMessages: ChatMessage[] = data.session.messages.map(
+          (msg: any) => ({
+            role: msg.role.toLowerCase() as "user" | "agent",
+            content: msg.content,
+            imageUrls: msg.imageUrls || [],
+          }),
+        );
         setMessages(loadedMessages);
         setCurrentChatSessionId(chatSessionId);
         setIsViewingOldChat(true); // Mark as viewing old chat
@@ -626,22 +798,25 @@ export default function HomePage() {
     }
   }, []);
 
-  const saveMessage = useCallback(async (
-    chatSessionId: string,
-    role: "USER" | "AGENT",
-    content: string,
-    images?: { data: string; mimeType: string }[]
-  ) => {
-    try {
-      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, content, images }),
-      });
-    } catch (error) {
-      console.error("[Chat] Failed to save message:", error);
-    }
-  }, []);
+  const saveMessage = useCallback(
+    async (
+      chatSessionId: string,
+      role: "USER" | "AGENT",
+      content: string,
+      images?: { data: string; mimeType: string }[],
+    ) => {
+      try {
+        await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role, content, images }),
+        });
+      } catch (error) {
+        console.error("[Chat] Failed to save message:", error);
+      }
+    },
+    [],
+  );
 
   const handleNewSession = useCallback(() => {
     // Clear current state
@@ -658,62 +833,73 @@ export default function HomePage() {
     }
   }, []);
 
-  const handleDeleteChat = useCallback(async (chatSessionId: string) => {
-    try {
-      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
-        method: "DELETE",
-      });
+  const handleDeleteChat = useCallback(
+    async (chatSessionId: string) => {
+      try {
+        await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
+          method: "DELETE",
+        });
 
-      // If deleted current chat, start fresh
-      if (chatSessionId === currentChatSessionId) {
-        setMessages([]);
-        setCurrentChatSessionId(null);
-        localStorage.removeItem("chat_session_id");
+        // If deleted current chat, start fresh
+        if (chatSessionId === currentChatSessionId) {
+          setMessages([]);
+          setCurrentChatSessionId(null);
+          localStorage.removeItem("chat_session_id");
+        }
+
+        // Refresh sidebar
+        fetchChatSessions();
+      } catch (error) {
+        console.error("[Chat] Failed to delete session:", error);
+      }
+    },
+    [currentChatSessionId, fetchChatSessions],
+  );
+
+  const handleRenameSession = useCallback(
+    async (chatSessionId: string, newTitle: string) => {
+      try {
+        await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: newTitle }),
+        });
+
+        // Refresh sidebar to show new title
+        fetchChatSessions();
+      } catch (error) {
+        console.error("[Chat] Failed to rename session:", error);
+      }
+    },
+    [fetchChatSessions],
+  );
+
+  const handleSearch = useCallback(
+    async (query: string) => {
+      setSearchQuery(query);
+      if (!query.trim()) {
+        // If empty query, fetch all sessions
+        fetchChatSessions();
+        return;
       }
 
-      // Refresh sidebar
-      fetchChatSessions();
-    } catch (error) {
-      console.error("[Chat] Failed to delete session:", error);
-    }
-  }, [currentChatSessionId, fetchChatSessions]);
-
-  const handleRenameSession = useCallback(async (chatSessionId: string, newTitle: string) => {
-    try {
-      await fetch(`${API_BASE}/api/chat/sessions/${chatSessionId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: newTitle }),
-      });
-
-      // Refresh sidebar to show new title
-      fetchChatSessions();
-    } catch (error) {
-      console.error("[Chat] Failed to rename session:", error);
-    }
-  }, [fetchChatSessions]);
-
-  const handleSearch = useCallback(async (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim()) {
-      // If empty query, fetch all sessions
-      fetchChatSessions();
-      return;
-    }
-
-    setIsLoadingHistory(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/chat/search?q=${encodeURIComponent(query)}`);
-      if (response.ok) {
-        const data = await response.json();
-        setChatSessions(data.results);
+      setIsLoadingHistory(true);
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/chat/search?q=${encodeURIComponent(query)}`,
+        );
+        if (response.ok) {
+          const data = await response.json();
+          setChatSessions(data.results);
+        }
+      } catch (error) {
+        console.error("[Chat] Failed to search sessions:", error);
+      } finally {
+        setIsLoadingHistory(false);
       }
-    } catch (error) {
-      console.error("[Chat] Failed to search sessions:", error);
-    } finally {
-      setIsLoadingHistory(false);
-    }
-  }, [fetchChatSessions]);
+    },
+    [fetchChatSessions],
+  );
 
   // Load chat history on mount
   useEffect(() => {
@@ -744,7 +930,10 @@ export default function HomePage() {
     // Check if we have a stored session
     const storedSessionId = localStorage.getItem("acp_session_id");
 
-    console.log("[HomePage] Initiating connection, storedSession:", storedSessionId);
+    console.log(
+      "[HomePage] Initiating connection, storedSession:",
+      storedSessionId,
+    );
     hasConnectedRef.current = true;
 
     setStatus("connecting");
@@ -753,7 +942,8 @@ export default function HomePage() {
     // Always start session on page load
     // If reconnecting to an existing session, the gateway will handle it
     // If session is dead, this creates a new one
-    const defaultCwd = process.env.NEXT_PUBLIC_ACP_CWD || "/Users/pradeeptadash/sandbox";
+    const defaultCwd =
+      process.env.NEXT_PUBLIC_ACP_CWD || "/Users/pradeeptadash/sandbox";
     client.startSession(defaultCwd);
 
     // Cleanup function - only reset on actual unmount
@@ -796,7 +986,8 @@ export default function HomePage() {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
     const isMessageUpdate =
       messages.length === prevMessagesLengthRef.current && messages.length > 0;
-    const isFirstMessage = prevMessagesLengthRef.current === 0 && messages.length > 0;
+    const isFirstMessage =
+      prevMessagesLengthRef.current === 0 && messages.length > 0;
     prevMessagesLengthRef.current = messages.length;
 
     const scrollDistanceFromBottom =
@@ -811,7 +1002,9 @@ export default function HomePage() {
 
     if (shouldScroll) {
       requestAnimationFrame(() => {
-        endElement.scrollIntoView({ behavior: isFirstMessage ? "instant" : "smooth" });
+        endElement.scrollIntoView({
+          behavior: isFirstMessage ? "instant" : "smooth",
+        });
       });
       setShowScrollButton(false);
       if (status !== "streaming" && userJustSentMessageRef.current) {
@@ -828,7 +1021,7 @@ export default function HomePage() {
     textareaRef.current.style.height = "auto";
     textareaRef.current.style.height = `${Math.min(
       textareaRef.current.scrollHeight,
-      200
+      200,
     )}px`;
   }, [input]);
 
@@ -887,13 +1080,19 @@ export default function HomePage() {
     client.sendPrompt(text, userImages);
   };
 
-  const handleUseTradeCheckAnalysis = (analysis: TradeCheckAnalysis, regime: MarketRegime) => {
+  const handleUseTradeCheckAnalysis = (
+    analysis: TradeCheckAnalysis,
+    regime: MarketRegime,
+  ) => {
     const { prompt } = createStrategyPrompt(analysis, regime);
     setInput(prompt);
     // Auto-scroll to show the filled prompt
     setTimeout(() => {
       if (textareaRef.current) {
-        textareaRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        textareaRef.current.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
         textareaRef.current.focus();
       }
     }, 100);
@@ -933,8 +1132,8 @@ export default function HomePage() {
             };
             reader.onerror = reject;
             reader.readAsDataURL(file);
-          })
-      )
+          }),
+      ),
     );
     setAttachedImages((prev) => [...prev, ...newImages]);
   };
@@ -983,164 +1182,178 @@ export default function HomePage() {
       </header>
 
       {activeTab === "chat" && (
-      <div className="chat-with-sidebar">
-        <ChatHistorySidebar
-          sessions={chatSessions}
-          currentSessionId={currentChatSessionId}
-          isOpen={isSidebarOpen}
-          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
-          onSelectSession={loadChatSession}
-          onDeleteSession={handleDeleteChat}
-          onRenameSession={handleRenameSession}
-          onSearch={handleSearch}
-          isLoading={isLoadingHistory}
-          searchQuery={searchQuery}
-        />
-        <section className="chat-shell">
-          {isViewingOldChat && (
-            <div className="chat-view-only-banner">
-              <strong>Viewing past conversation.</strong> This is read-only. Click "New Session" in the navbar to start a new conversation.
-            </div>
-          )}
-          <div className="messages" ref={messagesContainerRef}>
-            {messages.length === 0 ? (
-              <div className="empty-state">Start a conversation…</div>
-            ) : (
-              <>
-                {messages.slice(-100).map((msg, idx) => (
-                  <MessageComponent
-                    key={`msg-${messages.length - 100 + idx}`}
-                    message={msg}
-                  />
-                ))}
-              </>
-            )}
-            {status === "streaming" && messages[messages.length - 1]?.role === "user" && (
-              <div className="message agent typing-indicator">
-                <div className="typing-dots">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
+        <div className="chat-with-sidebar">
+          <ChatHistorySidebar
+            sessions={chatSessions}
+            currentSessionId={currentChatSessionId}
+            isOpen={isSidebarOpen}
+            onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+            onSelectSession={loadChatSession}
+            onDeleteSession={handleDeleteChat}
+            onRenameSession={handleRenameSession}
+            onSearch={handleSearch}
+            isLoading={isLoadingHistory}
+            searchQuery={searchQuery}
+          />
+          <section className="chat-shell">
+            {isViewingOldChat && (
+              <div className="chat-view-only-banner">
+                <strong>Viewing past conversation.</strong> This is read-only.
+                Click "New Session" in the navbar to start a new conversation.
               </div>
             )}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {showScrollButton && (
-            <button className="scroll-button" onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })}>
-              Jump to latest
-            </button>
-          )}
-
-          <div className="composer">
-            <div
-              className={`composer-inner ${
-                isDragging ? "composer-dragging" : ""
-              }`}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-            >
-              {attachedImages.length > 0 && (
-                <div className="composer-images">
-                  {attachedImages.map((img, imageIdx) => (
-                    <div key={imageIdx} className="composer-image">
-                      <img
-                        src={`data:${img.mimeType};base64,${img.data}`}
-                        alt="Preview"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(imageIdx)}
-                      >
-                        ×
-                      </button>
-                    </div>
+            <div className="messages" ref={messagesContainerRef}>
+              {messages.length === 0 ? (
+                <div className="empty-state">Start a conversation…</div>
+              ) : (
+                <>
+                  {messages.slice(-100).map((msg, idx) => (
+                    <MessageComponent
+                      key={`msg-${messages.length - 100 + idx}`}
+                      message={msg}
+                    />
                   ))}
-                </div>
+                </>
               )}
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={isViewingOldChat ? "Viewing past conversation (read-only)" : "Message the advisor..."}
-                rows={1}
-                disabled={isViewingOldChat}
-              />
+              {status === "streaming" &&
+                messages[messages.length - 1]?.role === "user" && (
+                  <div className="message agent typing-indicator">
+                    <div className="typing-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {showScrollButton && (
               <button
-                type="button"
-                className="composer-ai-analyze"
-                onClick={() => setShowTradeCheckModal(true)}
-                disabled={isViewingOldChat}
-                title="AI Trade Analysis"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '20px',
-                  cursor: isViewingOldChat ? 'not-allowed' : 'pointer',
-                  padding: '8px 12px',
-                  opacity: isViewingOldChat ? 0.5 : 1,
-                }}
-              >
-                🤖
-              </button>
-              <label className="composer-attach">
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  disabled={isViewingOldChat}
-                  onChange={async (event) => {
-                    if (!event.target.files) return;
-                    const files = Array.from(event.target.files);
-                    const imageFiles = files.filter((file) =>
-                      file.type.startsWith("image/")
-                    );
-                    if (!imageFiles.length) return;
-                    const newImages = await Promise.all(
-                      imageFiles.map(
-                        (file) =>
-                          new Promise<{ data: string; mimeType: string }>(
-                            (resolve, reject) => {
-                              const reader = new FileReader();
-                              reader.onload = () => {
-                                const base64 = (reader.result as string).split(
-                                  ","
-                                )[1];
-                                resolve({ data: base64, mimeType: file.type });
-                              };
-                              reader.onerror = reject;
-                              reader.readAsDataURL(file);
-                            }
-                          )
-                      )
-                    );
-                    setAttachedImages((prev) => [...prev, ...newImages]);
-                    event.target.value = "";
-                  }}
-                />
-                +
-              </label>
-              <button
-                onClick={sendMessage}
-                disabled={
-                  isViewingOldChat ||
-                  status === "connecting" ||
-                  status === "missing_url" ||
-                  (!input.trim() && attachedImages.length === 0)
+                className="scroll-button"
+                onClick={() =>
+                  messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
                 }
               >
-                Send
+                Jump to latest
               </button>
+            )}
+
+            <div className="composer">
+              <div
+                className={`composer-inner ${
+                  isDragging ? "composer-dragging" : ""
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                {attachedImages.length > 0 && (
+                  <div className="composer-images">
+                    {attachedImages.map((img, imageIdx) => (
+                      <div key={imageIdx} className="composer-image">
+                        <img
+                          src={`data:${img.mimeType};base64,${img.data}`}
+                          alt="Preview"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeImage(imageIdx)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    isViewingOldChat
+                      ? "Viewing past conversation (read-only)"
+                      : "Message the advisor..."
+                  }
+                  rows={1}
+                  disabled={isViewingOldChat}
+                />
+                <button
+                  type="button"
+                  className="composer-ai-analyze"
+                  onClick={() => setShowTradeCheckModal(true)}
+                  disabled={isViewingOldChat}
+                  title="AI Trade Analysis"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    fontSize: "20px",
+                    cursor: isViewingOldChat ? "not-allowed" : "pointer",
+                    padding: "8px 12px",
+                    opacity: isViewingOldChat ? 0.5 : 1,
+                  }}
+                >
+                  🤖
+                </button>
+                <label className="composer-attach">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={isViewingOldChat}
+                    onChange={async (event) => {
+                      if (!event.target.files) return;
+                      const files = Array.from(event.target.files);
+                      const imageFiles = files.filter((file) =>
+                        file.type.startsWith("image/"),
+                      );
+                      if (!imageFiles.length) return;
+                      const newImages = await Promise.all(
+                        imageFiles.map(
+                          (file) =>
+                            new Promise<{ data: string; mimeType: string }>(
+                              (resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const base64 = (
+                                    reader.result as string
+                                  ).split(",")[1];
+                                  resolve({
+                                    data: base64,
+                                    mimeType: file.type,
+                                  });
+                                };
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                              },
+                            ),
+                        ),
+                      );
+                      setAttachedImages((prev) => [...prev, ...newImages]);
+                      event.target.value = "";
+                    }}
+                  />
+                  +
+                </label>
+                <button
+                  onClick={sendMessage}
+                  disabled={
+                    isViewingOldChat ||
+                    status === "connecting" ||
+                    status === "missing_url" ||
+                    (!input.trim() && attachedImages.length === 0)
+                  }
+                >
+                  Send
+                </button>
+              </div>
+              <div className="composer-hint">
+                Press Enter to send • Shift+Enter for a new line
+              </div>
             </div>
-            <div className="composer-hint">
-              Press Enter to send • Shift+Enter for a new line
-            </div>
-          </div>
-        </section>
-      </div>
+          </section>
+        </div>
       )}
 
       {activeTab === "dashboard" && (
@@ -1178,9 +1391,10 @@ function Dashboard() {
   const [error, setError] = useState<string | null>(null);
 
   // Filter states
-  const [strategyStatusFilter, setStrategyStatusFilter] = useState<string>('ALL');
-  const [tradeStatusFilter, setTradeStatusFilter] = useState<string>('ALL');
-  const [symbolFilter, setSymbolFilter] = useState<string>('');
+  const [strategyStatusFilter, setStrategyStatusFilter] =
+    useState<string>("ALL");
+  const [tradeStatusFilter, setTradeStatusFilter] = useState<string>("ALL");
+  const [symbolFilter, setSymbolFilter] = useState<string>("");
 
   // Modal states
   const [selectedStrategy, setSelectedStrategy] = useState<any>(null);
@@ -1189,8 +1403,8 @@ function Dashboard() {
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [showReopenModal, setShowReopenModal] = useState(false);
-  const [closeReason, setCloseReason] = useState('');
-  const [reopenReason, setReopenReason] = useState('');
+  const [closeReason, setCloseReason] = useState("");
+  const [reopenReason, setReopenReason] = useState("");
   const [isClosing, setIsClosing] = useState(false);
   const [isReopening, setIsReopening] = useState(false);
 
@@ -1200,7 +1414,10 @@ function Dashboard() {
   const [backtestError, setBacktestError] = useState<string | null>(null);
 
   // Notification state
-  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [notification, setNotification] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
 
   // Evaluation error state
   const [evaluationErrors, setEvaluationErrors] = useState<any[]>([]);
@@ -1209,14 +1426,16 @@ function Dashboard() {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const response = await fetch('http://localhost:3002/api/portfolio/overview');
-        if (!response.ok) throw new Error('Failed to fetch portfolio data');
+        const response = await fetch(
+          "http://localhost:3002/api/portfolio/overview",
+        );
+        if (!response.ok) throw new Error("Failed to fetch portfolio data");
         const data = await response.json();
         setPortfolioData(data);
         setError(null);
       } catch (err: any) {
-        setError(err.message || 'Failed to load portfolio data');
-        console.error('Portfolio fetch error:', err);
+        setError(err.message || "Failed to load portfolio data");
+        console.error("Portfolio fetch error:", err);
       } finally {
         setLoading(false);
       }
@@ -1231,13 +1450,15 @@ function Dashboard() {
   useEffect(() => {
     const fetchEvaluationErrors = async () => {
       try {
-        const response = await fetch('http://localhost:3002/api/logs?component=StrategyEvaluator&level=ERROR&limit=10');
+        const response = await fetch(
+          "http://localhost:3002/api/logs?component=StrategyEvaluator&level=ERROR&limit=10",
+        );
         if (response.ok) {
           const data = await response.json();
           setEvaluationErrors(data.logs || []);
         }
       } catch (err) {
-        console.error('Failed to fetch evaluation errors:', err);
+        console.error("Failed to fetch evaluation errors:", err);
       }
     };
 
@@ -1249,38 +1470,52 @@ function Dashboard() {
   // Close strategy handler
   const handleCloseStrategy = async () => {
     if (!selectedStrategy || !closeReason.trim()) {
-      setNotification({ type: 'error', message: 'Please provide a reason for closing the strategy' });
+      setNotification({
+        type: "error",
+        message: "Please provide a reason for closing the strategy",
+      });
       return;
     }
 
     setIsClosing(true);
     try {
-      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/close`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: closeReason }),
-      });
+      const response = await fetch(
+        `http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/close`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: closeReason }),
+        },
+      );
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to close strategy');
+        throw new Error(data.error || "Failed to close strategy");
       }
 
       // Success - show notification and refresh data
-      setNotification({ type: 'success', message: `Strategy "${selectedStrategy.name}" closed successfully` });
+      setNotification({
+        type: "success",
+        message: `Strategy "${selectedStrategy.name}" closed successfully`,
+      });
       setShowCloseModal(false);
       setShowStrategyModal(false);
-      setCloseReason('');
+      setCloseReason("");
 
       // Refresh portfolio data
-      const refreshResponse = await fetch('http://localhost:3002/api/portfolio/overview');
+      const refreshResponse = await fetch(
+        "http://localhost:3002/api/portfolio/overview",
+      );
       if (refreshResponse.ok) {
         const refreshData = await refreshResponse.json();
         setPortfolioData(refreshData);
       }
     } catch (error: any) {
-      setNotification({ type: 'error', message: error.message || 'Failed to close strategy' });
+      setNotification({
+        type: "error",
+        message: error.message || "Failed to close strategy",
+      });
     } finally {
       setIsClosing(false);
     }
@@ -1289,38 +1524,52 @@ function Dashboard() {
   // Reopen strategy handler
   const handleReopenStrategy = async () => {
     if (!selectedStrategy || !reopenReason.trim()) {
-      setNotification({ type: 'error', message: 'Please provide a reason for reopening the strategy' });
+      setNotification({
+        type: "error",
+        message: "Please provide a reason for reopening the strategy",
+      });
       return;
     }
 
     setIsReopening(true);
     try {
-      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/reopen`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reopenReason }),
-      });
+      const response = await fetch(
+        `http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/reopen`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: reopenReason }),
+        },
+      );
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to reopen strategy');
+        throw new Error(data.error || "Failed to reopen strategy");
       }
 
       // Success - show notification and refresh data
-      setNotification({ type: 'success', message: `Strategy "${selectedStrategy.name}" reopened successfully. Status: PENDING` });
+      setNotification({
+        type: "success",
+        message: `Strategy "${selectedStrategy.name}" reopened successfully. Status: PENDING`,
+      });
       setShowReopenModal(false);
       setShowStrategyModal(false);
-      setReopenReason('');
+      setReopenReason("");
 
       // Refresh portfolio data
-      const refreshResponse = await fetch('http://localhost:3002/api/portfolio/overview');
+      const refreshResponse = await fetch(
+        "http://localhost:3002/api/portfolio/overview",
+      );
       if (refreshResponse.ok) {
         const refreshData = await refreshResponse.json();
         setPortfolioData(refreshData);
       }
     } catch (error: any) {
-      setNotification({ type: 'error', message: error.message || 'Failed to reopen strategy' });
+      setNotification({
+        type: "error",
+        message: error.message || "Failed to reopen strategy",
+      });
     } finally {
       setIsReopening(false);
     }
@@ -1335,24 +1584,33 @@ function Dashboard() {
     setBacktestResult(null);
 
     try {
-      const response = await fetch(`http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/backtest`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const response = await fetch(
+        `http://localhost:3002/api/portfolio/strategies/${selectedStrategy.id}/backtest`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
         },
-      });
+      );
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Failed to run backtest');
+        throw new Error(data.error || "Failed to run backtest");
       }
 
       const data = await response.json();
       setBacktestResult(data.backtest);
-      setNotification({ type: 'success', message: 'Backtest completed successfully' });
+      setNotification({
+        type: "success",
+        message: "Backtest completed successfully",
+      });
     } catch (error: any) {
-      setBacktestError(error.message || 'Failed to run backtest');
-      setNotification({ type: 'error', message: error.message || 'Failed to run backtest' });
+      setBacktestError(error.message || "Failed to run backtest");
+      setNotification({
+        type: "error",
+        message: error.message || "Failed to run backtest",
+      });
     } finally {
       setIsBacktesting(false);
     }
@@ -1374,7 +1632,9 @@ function Dashboard() {
           <span></span>
           <span></span>
         </div>
-        <div style={{ marginTop: '12px', color: '#737373' }}>Loading portfolio data...</div>
+        <div style={{ marginTop: "12px", color: "#737373" }}>
+          Loading portfolio data...
+        </div>
       </div>
     );
   }
@@ -1382,23 +1642,32 @@ function Dashboard() {
   if (error) {
     return (
       <div className="dashboard-error">
-        <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>Unable to Load Dashboard</div>
-        <div style={{ fontSize: '14px', color: '#737373' }}>{error}</div>
-        <div style={{ fontSize: '12px', color: '#737373', marginTop: '12px' }}>
-          Make sure the portfolio API server is running: npm run portfolio:api:dev
+        <div style={{ fontSize: "16px", fontWeight: 600, marginBottom: "8px" }}>
+          Unable to Load Dashboard
+        </div>
+        <div style={{ fontSize: "14px", color: "#737373" }}>{error}</div>
+        <div style={{ fontSize: "12px", color: "#737373", marginTop: "12px" }}>
+          Make sure the portfolio API server is running: npm run
+          portfolio:api:dev
         </div>
       </div>
     );
   }
 
-  const { pnl, strategies, recentTrades, orderStats, auditTrail } = portfolioData || {};
+  const { pnl, strategies, recentTrades, orderStats, auditTrail } =
+    portfolioData || {};
 
   // Filter strategies
-  const filteredStrategies = strategies?.filter((strategy: any) => {
-    const matchesStatus = strategyStatusFilter === 'ALL' || strategy.status === strategyStatusFilter;
-    const matchesSymbol = !symbolFilter || strategy.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
-    return matchesStatus && matchesSymbol;
-  }) || [];
+  const filteredStrategies =
+    strategies?.filter((strategy: any) => {
+      const matchesStatus =
+        strategyStatusFilter === "ALL" ||
+        strategy.status === strategyStatusFilter;
+      const matchesSymbol =
+        !symbolFilter ||
+        strategy.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
+      return matchesStatus && matchesSymbol;
+    }) || [];
 
   const getStrategyTimestamp = (strategy: any) => {
     return (
@@ -1412,49 +1681,81 @@ function Dashboard() {
   };
 
   const sortedStrategies = [...filteredStrategies].sort((a: any, b: any) => {
-    const aTime = getStrategyTimestamp(a) ? new Date(getStrategyTimestamp(a)).getTime() : 0;
-    const bTime = getStrategyTimestamp(b) ? new Date(getStrategyTimestamp(b)).getTime() : 0;
+    const aTime = getStrategyTimestamp(a)
+      ? new Date(getStrategyTimestamp(a)).getTime()
+      : 0;
+    const bTime = getStrategyTimestamp(b)
+      ? new Date(getStrategyTimestamp(b)).getTime()
+      : 0;
     return bTime - aTime;
   });
 
   // Filter trades
-  const filteredTrades = recentTrades?.filter((trade: any) => {
-    const matchesStatus = tradeStatusFilter === 'ALL' || trade.status === tradeStatusFilter;
-    const matchesSymbol = !symbolFilter || trade.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
-    return matchesStatus && matchesSymbol;
-  }) || [];
+  const filteredTrades =
+    recentTrades?.filter((trade: any) => {
+      const matchesStatus =
+        tradeStatusFilter === "ALL" || trade.status === tradeStatusFilter;
+      const matchesSymbol =
+        !symbolFilter ||
+        trade.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
+      return matchesStatus && matchesSymbol;
+    }) || [];
 
   return (
     <div className="dashboard">
       {/* Evaluation Error Banner */}
       {evaluationErrors.length > 0 && (
-        <div style={{
-          background: '#fee',
-          border: '1px solid #fcc',
-          borderRadius: '8px',
-          padding: '16px',
-          marginBottom: '20px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '20px', marginRight: '8px' }}>⚠️</span>
-            <strong style={{ fontSize: '16px', color: '#c00' }}>Strategy Evaluation Errors</strong>
+        <div
+          style={{
+            background: "#fee",
+            border: "1px solid #fcc",
+            borderRadius: "8px",
+            padding: "16px",
+            marginBottom: "20px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              marginBottom: "8px",
+            }}
+          >
+            <span style={{ fontSize: "20px", marginRight: "8px" }}>⚠️</span>
+            <strong style={{ fontSize: "16px", color: "#c00" }}>
+              Strategy Evaluation Errors
+            </strong>
           </div>
           {evaluationErrors.slice(0, 3).map((error: any, idx: number) => (
-            <div key={idx} style={{
-              fontSize: '14px',
-              color: '#666',
-              marginTop: '8px',
-              paddingLeft: '28px',
-            }}>
-              <strong>{error.metadata?.symbol || 'Unknown'}:</strong> {error.metadata?.reason || error.message}
-              <span style={{ color: '#999', marginLeft: '8px', fontSize: '12px' }}>
+            <div
+              key={idx}
+              style={{
+                fontSize: "14px",
+                color: "#666",
+                marginTop: "8px",
+                paddingLeft: "28px",
+              }}
+            >
+              <strong>{error.metadata?.symbol || "Unknown"}:</strong>{" "}
+              {error.metadata?.reason || error.message}
+              <span
+                style={{ color: "#999", marginLeft: "8px", fontSize: "12px" }}
+              >
                 {new Date(error.createdAt).toLocaleTimeString()}
               </span>
             </div>
           ))}
           {evaluationErrors.length > 3 && (
-            <div style={{ fontSize: '12px', color: '#999', marginTop: '8px', paddingLeft: '28px' }}>
-              +{evaluationErrors.length - 3} more errors. Check System Logs tab for details.
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#999",
+                marginTop: "8px",
+                paddingLeft: "28px",
+              }}
+            >
+              +{evaluationErrors.length - 3} more errors. Check System Logs tab
+              for details.
             </div>
           )}
         </div>
@@ -1466,8 +1767,10 @@ function Dashboard() {
         <div className="dashboard-cards">
           <div className="dashboard-card">
             <div className="card-label">Realized P&L</div>
-            <div className={`card-value ${(pnl?.realizedPnL || 0) >= 0 ? 'positive' : 'negative'}`}>
-              ${pnl?.realizedPnL?.toFixed(2) || '0.00'}
+            <div
+              className={`card-value ${(pnl?.realizedPnL || 0) >= 0 ? "positive" : "negative"}`}
+            >
+              ${pnl?.realizedPnL?.toFixed(2) || "0.00"}
             </div>
           </div>
           <div className="dashboard-card">
@@ -1476,12 +1779,18 @@ function Dashboard() {
           </div>
           <div className="dashboard-card">
             <div className="card-label">Active Strategies</div>
-            <div className="card-value">{strategies?.filter((s: any) => s.status === 'ACTIVE').length || 0}</div>
+            <div className="card-value">
+              {strategies?.filter((s: any) => s.status === "ACTIVE").length ||
+                0}
+            </div>
           </div>
           <div className="dashboard-card">
             <div className="card-label">Total Orders</div>
             <div className="card-value">
-              {Object.values(orderStats || {}).reduce((a: number, b: unknown) => a + (b as number), 0)}
+              {Object.values(orderStats || {}).reduce(
+                (a: number, b: unknown) => a + (b as number),
+                0,
+              )}
             </div>
           </div>
         </div>
@@ -1568,30 +1877,40 @@ function Dashboard() {
                         <td className="strategy-cell">{strategy.name}</td>
                         <td className="symbol-cell">{strategy.symbol}</td>
                         <td>
-                          <span className={`status-badge ${strategy.status.toLowerCase()}`}>
+                          <span
+                            className={`status-badge ${strategy.status.toLowerCase()}`}
+                          >
                             {strategy.status}
                           </span>
                         </td>
                         <td className="time-cell">
                           {getStrategyTimestamp(strategy)
-                            ? new Date(getStrategyTimestamp(strategy)).toLocaleString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit',
+                            ? new Date(
+                                getStrategyTimestamp(strategy),
+                              ).toLocaleString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
                               })
-                            : '-'}
+                            : "-"}
                         </td>
                         <td>{strategy.totalTrades}</td>
                         <td>{strategy.winRate.toFixed(1)}%</td>
-                        <td className={strategy.totalPnL >= 0 ? 'positive' : 'negative'}>
+                        <td
+                          className={
+                            strategy.totalPnL >= 0 ? "positive" : "negative"
+                          }
+                        >
                           ${strategy.totalPnL.toFixed(2)}
                         </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7} className="empty-row">No strategies match the filter</td>
+                      <td colSpan={7} className="empty-row">
+                        No strategies match the filter
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -1639,24 +1958,30 @@ function Dashboard() {
                     filteredTrades.slice(0, 10).map((trade: any) => (
                       <tr key={trade.id}>
                         <td className="time-cell">
-                          {trade.filledAt ? new Date(trade.filledAt).toLocaleString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          }) : '-'}
+                          {trade.filledAt
+                            ? new Date(trade.filledAt).toLocaleString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
+                            : "-"}
                         </td>
                         <td className="strategy-cell">{trade.strategyName}</td>
                         <td className="symbol-cell">{trade.symbol}</td>
                         <td>
-                          <span className={`side-badge ${trade.side.toLowerCase()}`}>
+                          <span
+                            className={`side-badge ${trade.side.toLowerCase()}`}
+                          >
                             {trade.side}
                           </span>
                         </td>
                         <td>{trade.qty}</td>
-                        <td>${trade.price?.toFixed(2) || '-'}</td>
+                        <td>${trade.price?.toFixed(2) || "-"}</td>
                         <td>
-                          <span className={`status-badge ${trade.status.toLowerCase()}`}>
+                          <span
+                            className={`status-badge ${trade.status.toLowerCase()}`}
+                          >
                             {trade.status}
                           </span>
                         </td>
@@ -1664,7 +1989,9 @@ function Dashboard() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7} className="empty-row">No trades match the filter</td>
+                      <td colSpan={7} className="empty-row">
+                        No trades match the filter
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -1675,22 +2002,34 @@ function Dashboard() {
       )}
 
       {/* Empty State */}
-      {(!strategies || strategies.length === 0) && (!recentTrades || recentTrades.length === 0) && (
-        <div className="dashboard-empty">
-          <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>No Trading Data Yet</div>
-          <div style={{ fontSize: '14px', color: '#737373' }}>
-            Start trading strategies to see portfolio metrics and performance data here.
+      {(!strategies || strategies.length === 0) &&
+        (!recentTrades || recentTrades.length === 0) && (
+          <div className="dashboard-empty">
+            <div
+              style={{ fontSize: "16px", fontWeight: 600, marginBottom: "8px" }}
+            >
+              No Trading Data Yet
+            </div>
+            <div style={{ fontSize: "14px", color: "#737373" }}>
+              Start trading strategies to see portfolio metrics and performance
+              data here.
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Strategy Detail Modal */}
       {showStrategyModal && selectedStrategy && (
-        <div className="modal-overlay" onClick={() => setShowStrategyModal(false)}>
+        <div
+          className="modal-overlay"
+          onClick={() => setShowStrategyModal(false)}
+        >
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title">{selectedStrategy.name}</h2>
-              <button className="modal-close" onClick={() => setShowStrategyModal(false)}>
+              <button
+                className="modal-close"
+                onClick={() => setShowStrategyModal(false)}
+              >
                 ×
               </button>
             </div>
@@ -1699,19 +2038,25 @@ function Dashboard() {
                 <div className="modal-row">
                   <div className="modal-field">
                     <div className="modal-label">Symbol</div>
-                    <div className="modal-value symbol-cell">{selectedStrategy.symbol}</div>
+                    <div className="modal-value symbol-cell">
+                      {selectedStrategy.symbol}
+                    </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Status</div>
                     <div className="modal-value">
-                      <span className={`status-badge ${selectedStrategy.status.toLowerCase()}`}>
+                      <span
+                        className={`status-badge ${selectedStrategy.status.toLowerCase()}`}
+                      >
                         {selectedStrategy.status}
                       </span>
                     </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Timeframe</div>
-                    <div className="modal-value">{selectedStrategy.timeframe}</div>
+                    <div className="modal-value">
+                      {selectedStrategy.timeframe}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1721,19 +2066,27 @@ function Dashboard() {
                 <div className="modal-row">
                   <div className="modal-field">
                     <div className="modal-label">Total Trades</div>
-                    <div className="modal-value">{selectedStrategy.totalTrades}</div>
+                    <div className="modal-value">
+                      {selectedStrategy.totalTrades}
+                    </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Wins / Losses</div>
-                    <div className="modal-value">{selectedStrategy.wins} / {selectedStrategy.losses}</div>
+                    <div className="modal-value">
+                      {selectedStrategy.wins} / {selectedStrategy.losses}
+                    </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Win Rate</div>
-                    <div className="modal-value">{selectedStrategy.winRate.toFixed(1)}%</div>
+                    <div className="modal-value">
+                      {selectedStrategy.winRate.toFixed(1)}%
+                    </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Total P&L</div>
-                    <div className={`modal-value ${selectedStrategy.totalPnL >= 0 ? 'positive' : 'negative'}`}>
+                    <div
+                      className={`modal-value ${selectedStrategy.totalPnL >= 0 ? "positive" : "negative"}`}
+                    >
                       ${selectedStrategy.totalPnL.toFixed(2)}
                     </div>
                   </div>
@@ -1744,7 +2097,9 @@ function Dashboard() {
                 <div className="modal-section">
                   <h3 className="modal-section-title">Latest Recommendation</h3>
                   <div className="modal-value">
-                    <span className={`status-badge ${selectedStrategy.latestRecommendation.toLowerCase()}`}>
+                    <span
+                      className={`status-badge ${selectedStrategy.latestRecommendation.toLowerCase()}`}
+                    >
                       {selectedStrategy.latestRecommendation}
                     </span>
                   </div>
@@ -1757,27 +2112,34 @@ function Dashboard() {
                   <div className="modal-field">
                     <div className="modal-label">Activated At</div>
                     <div className="modal-value">
-                      {new Date(selectedStrategy.activatedAt).toLocaleString('en-US', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
+                      {new Date(selectedStrategy.activatedAt).toLocaleString(
+                        "en-US",
+                        {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        },
+                      )}
                     </div>
                   </div>
                 </div>
               )}
 
-                      {/* Embedded Chart Section */}
+              {/* Embedded Chart Section */}
               <div className="modal-section">
-                <h3 className="modal-section-title">Price Chart with Trade Levels</h3>
+                <h3 className="modal-section-title">
+                  Price Chart with Trade Levels
+                </h3>
                 <StrategyChart strategy={selectedStrategy} />
               </div>
 
-      {selectedStrategy.yamlContent && (
+              {selectedStrategy.yamlContent && (
                 <div className="modal-section">
-                  <h3 className="modal-section-title">Strategy Configuration</h3>
+                  <h3 className="modal-section-title">
+                    Strategy Configuration
+                  </h3>
                   <pre className="yaml-content">
                     <code>{selectedStrategy.yamlContent}</code>
                   </pre>
@@ -1786,152 +2148,237 @@ function Dashboard() {
 
               {/* Backtest Section */}
               <div className="modal-section">
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                  <h3 className="modal-section-title" style={{ margin: 0 }}>Backtest (Last 180 Bars)</h3>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <h3 className="modal-section-title" style={{ margin: 0 }}>
+                    Backtest (Last 180 Bars)
+                  </h3>
                   <button
                     className="backtest-button"
                     onClick={handleRunBacktest}
                     disabled={isBacktesting}
                     style={{
-                      padding: '8px 16px',
-                      backgroundColor: isBacktesting ? '#d4d4d4' : '#f55036',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '14px',
+                      padding: "8px 16px",
+                      backgroundColor: isBacktesting ? "#d4d4d4" : "#f55036",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "14px",
                       fontWeight: 600,
-                      cursor: isBacktesting ? 'not-allowed' : 'pointer',
-                      transition: 'background-color 0.2s',
+                      cursor: isBacktesting ? "not-allowed" : "pointer",
+                      transition: "background-color 0.2s",
                     }}
                   >
-                    {isBacktesting ? 'Running...' : 'Run Backtest'}
+                    {isBacktesting ? "Running..." : "Run Backtest"}
                   </button>
                 </div>
 
                 {backtestError && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#fef2f2',
-                    border: '1px solid #fecaca',
-                    borderRadius: '6px',
-                    color: '#991b1b',
-                    fontSize: '14px',
-                  }}>
+                  <div
+                    style={{
+                      padding: "12px",
+                      backgroundColor: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      borderRadius: "6px",
+                      color: "#991b1b",
+                      fontSize: "14px",
+                    }}
+                  >
                     {backtestError}
                   </div>
                 )}
 
                 {backtestResult && (
                   <div className="backtest-results">
-                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                    <div className="modal-row" style={{ marginBottom: "16px" }}>
                       <div className="modal-field">
                         <div className="modal-label">Bars Processed</div>
-                        <div className="modal-value">{backtestResult.barsProcessed}</div>
+                        <div className="modal-value">
+                          {backtestResult.barsProcessed}
+                        </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Final State</div>
                         <div className="modal-value">
-                          <span className={`status-badge ${backtestResult.finalState.toLowerCase()}`}>
+                          <span
+                            className={`status-badge ${backtestResult.finalState.toLowerCase()}`}
+                          >
                             {backtestResult.finalState}
                           </span>
                         </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Price Change</div>
-                        <div className={`modal-value ${backtestResult.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
-                          {backtestResult.priceChangePercent >= 0 ? '+' : ''}{backtestResult.priceChangePercent.toFixed(2)}%
+                        <div
+                          className={`modal-value ${backtestResult.priceChangePercent >= 0 ? "positive" : "negative"}`}
+                        >
+                          {backtestResult.priceChangePercent >= 0 ? "+" : ""}
+                          {backtestResult.priceChangePercent.toFixed(2)}%
                         </div>
                       </div>
                     </div>
 
-                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                    <div className="modal-row" style={{ marginBottom: "16px" }}>
                       <div className="modal-field">
                         <div className="modal-label">Total Trades</div>
-                        <div className="modal-value">{backtestResult.totalTrades}</div>
+                        <div className="modal-value">
+                          {backtestResult.totalTrades}
+                        </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Win Rate</div>
-                        <div className="modal-value">{backtestResult.winRate.toFixed(1)}%</div>
+                        <div className="modal-value">
+                          {backtestResult.winRate.toFixed(1)}%
+                        </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Realized P&L</div>
-                        <div className={`modal-value ${backtestResult.realizedPnL >= 0 ? 'positive' : 'negative'}`}>
+                        <div
+                          className={`modal-value ${backtestResult.realizedPnL >= 0 ? "positive" : "negative"}`}
+                        >
                           ${backtestResult.realizedPnL.toFixed(2)}
                         </div>
                       </div>
                     </div>
 
-                    <div className="modal-row" style={{ marginBottom: '16px' }}>
+                    <div className="modal-row" style={{ marginBottom: "16px" }}>
                       <div className="modal-field">
                         <div className="modal-label">Orders Placed</div>
-                        <div className="modal-value">{backtestResult.ordersPlaced}</div>
+                        <div className="modal-value">
+                          {backtestResult.ordersPlaced}
+                        </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Orders Filled</div>
-                        <div className="modal-value">{backtestResult.ordersFilled}</div>
+                        <div className="modal-value">
+                          {backtestResult.ordersFilled}
+                        </div>
                       </div>
                       <div className="modal-field">
                         <div className="modal-label">Stop Loss Hits</div>
-                        <div className="modal-value" style={{ color: backtestResult.stopLossHits > 0 ? '#dc2626' : 'inherit' }}>
+                        <div
+                          className="modal-value"
+                          style={{
+                            color:
+                              backtestResult.stopLossHits > 0
+                                ? "#dc2626"
+                                : "inherit",
+                          }}
+                        >
                           {backtestResult.stopLossHits}
                         </div>
                       </div>
                     </div>
 
                     {backtestResult.invalidations > 0 && (
-                      <div style={{
-                        padding: '12px',
-                        backgroundColor: '#fef9c3',
-                        border: '1px solid #fde047',
-                        borderRadius: '6px',
-                        marginBottom: '16px',
-                      }}>
-                        <div style={{ fontWeight: 600, marginBottom: '8px', color: '#854d0e' }}>
+                      <div
+                        style={{
+                          padding: "12px",
+                          backgroundColor: "#fef9c3",
+                          border: "1px solid #fde047",
+                          borderRadius: "6px",
+                          marginBottom: "16px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            marginBottom: "8px",
+                            color: "#854d0e",
+                          }}
+                        >
                           Invalidations: {backtestResult.invalidations}
                         </div>
-                        <div style={{ fontSize: '13px', color: '#a16207' }}>
-                          {backtestResult.invalidationReasons.map((reason: string, idx: number) => (
-                            <div key={idx} style={{ marginBottom: '4px' }}>• {reason}</div>
-                          ))}
+                        <div style={{ fontSize: "13px", color: "#a16207" }}>
+                          {backtestResult.invalidationReasons.map(
+                            (reason: string, idx: number) => (
+                              <div key={idx} style={{ marginBottom: "4px" }}>
+                                • {reason}
+                              </div>
+                            ),
+                          )}
                         </div>
                       </div>
                     )}
 
                     {backtestResult.stateTransitions.length > 0 && (
                       <div>
-                        <div style={{ fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>
-                          State Transitions ({backtestResult.stateTransitions.length})
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            marginBottom: "8px",
+                            fontSize: "14px",
+                          }}
+                        >
+                          State Transitions (
+                          {backtestResult.stateTransitions.length})
                         </div>
-                        <div style={{
-                          maxHeight: '200px',
-                          overflowY: 'auto',
-                          border: '1px solid #ebe6dd',
-                          borderRadius: '6px',
-                          padding: '8px',
-                          fontSize: '13px',
-                        }}>
-                          {backtestResult.stateTransitions.map((transition: any, idx: number) => (
-                            <div key={idx} style={{
-                              padding: '6px',
-                              borderBottom: idx < backtestResult.stateTransitions.length - 1 ? '1px solid #f5f5f4' : 'none',
-                            }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                <div>
-                                  <span style={{ fontWeight: 600 }}>Bar {transition.bar}:</span>{' '}
-                                  <span className={`status-badge ${transition.from.toLowerCase()}`} style={{ fontSize: '11px', padding: '2px 6px' }}>
-                                    {transition.from}
-                                  </span>
-                                  {' → '}
-                                  <span className={`status-badge ${transition.to.toLowerCase()}`} style={{ fontSize: '11px', padding: '2px 6px' }}>
-                                    {transition.to}
-                                  </span>
-                                </div>
-                                <div style={{ color: '#737373' }}>
-                                  ${transition.price.toFixed(2)}
+                        <div
+                          style={{
+                            maxHeight: "200px",
+                            overflowY: "auto",
+                            border: "1px solid #ebe6dd",
+                            borderRadius: "6px",
+                            padding: "8px",
+                            fontSize: "13px",
+                          }}
+                        >
+                          {backtestResult.stateTransitions.map(
+                            (transition: any, idx: number) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  padding: "6px",
+                                  borderBottom:
+                                    idx <
+                                    backtestResult.stateTransitions.length - 1
+                                      ? "1px solid #f5f5f4"
+                                      : "none",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                  }}
+                                >
+                                  <div>
+                                    <span style={{ fontWeight: 600 }}>
+                                      Bar {transition.bar}:
+                                    </span>{" "}
+                                    <span
+                                      className={`status-badge ${transition.from.toLowerCase()}`}
+                                      style={{
+                                        fontSize: "11px",
+                                        padding: "2px 6px",
+                                      }}
+                                    >
+                                      {transition.from}
+                                    </span>
+                                    {" → "}
+                                    <span
+                                      className={`status-badge ${transition.to.toLowerCase()}`}
+                                      style={{
+                                        fontSize: "11px",
+                                        padding: "2px 6px",
+                                      }}
+                                    >
+                                      {transition.to}
+                                    </span>
+                                  </div>
+                                  <div style={{ color: "#737373" }}>
+                                    ${transition.price.toFixed(2)}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          ))}
+                            ),
+                          )}
                         </div>
                       </div>
                     )}
@@ -1942,7 +2389,7 @@ function Dashboard() {
 
             {/* Modal Actions Footer */}
             <div className="modal-footer">
-              {selectedStrategy.status === 'ACTIVE' && (
+              {selectedStrategy.status === "ACTIVE" && (
                 <button
                   className="close-strategy-button"
                   onClick={() => {
@@ -1952,7 +2399,7 @@ function Dashboard() {
                   Close Strategy
                 </button>
               )}
-              {selectedStrategy.status === 'CLOSED' && (
+              {selectedStrategy.status === "CLOSED" && (
                 <button
                   className="reopen-strategy-button"
                   onClick={() => {
@@ -1973,7 +2420,10 @@ function Dashboard() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title">Audit Log Details</h2>
-              <button className="modal-close" onClick={() => setShowAuditModal(false)}>
+              <button
+                className="modal-close"
+                onClick={() => setShowAuditModal(false)}
+              >
                 ×
               </button>
             </div>
@@ -1983,7 +2433,9 @@ function Dashboard() {
                   <div className="modal-field">
                     <div className="modal-label">Event Type</div>
                     <div className="modal-value">
-                      <span className={`status-badge ${selectedAuditLog.eventType.toLowerCase()}`}>
+                      <span
+                        className={`status-badge ${selectedAuditLog.eventType.toLowerCase()}`}
+                      >
                         {selectedAuditLog.eventType}
                       </span>
                     </div>
@@ -1991,14 +2443,17 @@ function Dashboard() {
                   <div className="modal-field">
                     <div className="modal-label">Timestamp</div>
                     <div className="modal-value">
-                      {new Date(selectedAuditLog.createdAt).toLocaleString('en-US', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit'
-                      })}
+                      {new Date(selectedAuditLog.createdAt).toLocaleString(
+                        "en-US",
+                        {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        },
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2009,11 +2464,15 @@ function Dashboard() {
                 <div className="modal-row">
                   <div className="modal-field">
                     <div className="modal-label">Strategy Name</div>
-                    <div className="modal-value">{selectedAuditLog.strategyName}</div>
+                    <div className="modal-value">
+                      {selectedAuditLog.strategyName}
+                    </div>
                   </div>
                   <div className="modal-field">
                     <div className="modal-label">Symbol</div>
-                    <div className="modal-value symbol-cell">{selectedAuditLog.symbol}</div>
+                    <div className="modal-value symbol-cell">
+                      {selectedAuditLog.symbol}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2025,13 +2484,17 @@ function Dashboard() {
                     {selectedAuditLog.orderId && (
                       <div className="modal-field">
                         <div className="modal-label">Order ID</div>
-                        <div className="modal-value audit-id">{selectedAuditLog.orderId}</div>
+                        <div className="modal-value audit-id">
+                          {selectedAuditLog.orderId}
+                        </div>
                       </div>
                     )}
                     {selectedAuditLog.brokerOrderId && (
                       <div className="modal-field">
                         <div className="modal-label">Broker Order ID</div>
-                        <div className="modal-value audit-id">{selectedAuditLog.brokerOrderId}</div>
+                        <div className="modal-value audit-id">
+                          {selectedAuditLog.brokerOrderId}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2046,7 +2509,9 @@ function Dashboard() {
                       <div className="modal-field">
                         <div className="modal-label">Old Status</div>
                         <div className="modal-value">
-                          <span className={`status-badge ${selectedAuditLog.oldStatus.toLowerCase()}`}>
+                          <span
+                            className={`status-badge ${selectedAuditLog.oldStatus.toLowerCase()}`}
+                          >
                             {selectedAuditLog.oldStatus}
                           </span>
                         </div>
@@ -2056,7 +2521,9 @@ function Dashboard() {
                       <div className="modal-field">
                         <div className="modal-label">New Status</div>
                         <div className="modal-value">
-                          <span className={`status-badge ${selectedAuditLog.newStatus.toLowerCase()}`}>
+                          <span
+                            className={`status-badge ${selectedAuditLog.newStatus.toLowerCase()}`}
+                          >
                             {selectedAuditLog.newStatus}
                           </span>
                         </div>
@@ -2073,13 +2540,17 @@ function Dashboard() {
                     {selectedAuditLog.quantity && (
                       <div className="modal-field">
                         <div className="modal-label">Quantity</div>
-                        <div className="modal-value">{selectedAuditLog.quantity}</div>
+                        <div className="modal-value">
+                          {selectedAuditLog.quantity}
+                        </div>
                       </div>
                     )}
                     {selectedAuditLog.price && (
                       <div className="modal-field">
                         <div className="modal-label">Price</div>
-                        <div className="modal-value">${selectedAuditLog.price.toFixed(2)}</div>
+                        <div className="modal-value">
+                          ${selectedAuditLog.price.toFixed(2)}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2099,7 +2570,9 @@ function Dashboard() {
                 <div className="modal-section">
                   <h3 className="modal-section-title">Metadata</h3>
                   <pre className="yaml-content">
-                    <code>{JSON.stringify(selectedAuditLog.metadata, null, 2)}</code>
+                    <code>
+                      {JSON.stringify(selectedAuditLog.metadata, null, 2)}
+                    </code>
                   </pre>
                 </div>
               )}
@@ -2111,18 +2584,26 @@ function Dashboard() {
       {/* Close Strategy Confirmation Modal */}
       {showCloseModal && selectedStrategy && (
         <div className="modal-overlay" onClick={() => setShowCloseModal(false)}>
-          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content modal-small"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h2 className="modal-title">Close Strategy</h2>
-              <button className="modal-close" onClick={() => setShowCloseModal(false)}>
+              <button
+                className="modal-close"
+                onClick={() => setShowCloseModal(false)}
+              >
                 ×
               </button>
             </div>
             <div className="modal-body">
               <div className="modal-section">
-                <p style={{ marginBottom: '16px', color: '#737373' }}>
-                  You are about to close <strong>{selectedStrategy.name}</strong> ({selectedStrategy.symbol}).
-                  This action will stop all trading activity for this strategy.
+                <p style={{ marginBottom: "16px", color: "#737373" }}>
+                  You are about to close{" "}
+                  <strong>{selectedStrategy.name}</strong> (
+                  {selectedStrategy.symbol}). This action will stop all trading
+                  activity for this strategy.
                 </p>
                 <div className="modal-field">
                   <div className="modal-label">Reason for closing *</div>
@@ -2142,7 +2623,7 @@ function Dashboard() {
                 className="modal-button cancel-button"
                 onClick={() => {
                   setShowCloseModal(false);
-                  setCloseReason('');
+                  setCloseReason("");
                 }}
                 disabled={isClosing}
               >
@@ -2153,7 +2634,7 @@ function Dashboard() {
                 onClick={handleCloseStrategy}
                 disabled={isClosing || !closeReason.trim()}
               >
-                {isClosing ? 'Closing...' : 'Close Strategy'}
+                {isClosing ? "Closing..." : "Close Strategy"}
               </button>
             </div>
           </div>
@@ -2162,19 +2643,31 @@ function Dashboard() {
 
       {/* Reopen Strategy Confirmation Modal */}
       {showReopenModal && selectedStrategy && (
-        <div className="modal-overlay" onClick={() => setShowReopenModal(false)}>
-          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal-overlay"
+          onClick={() => setShowReopenModal(false)}
+        >
+          <div
+            className="modal-content modal-small"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h2 className="modal-title">Reopen Strategy</h2>
-              <button className="modal-close" onClick={() => setShowReopenModal(false)}>
+              <button
+                className="modal-close"
+                onClick={() => setShowReopenModal(false)}
+              >
                 ×
               </button>
             </div>
             <div className="modal-body">
               <div className="modal-section">
-                <p style={{ marginBottom: '16px', color: '#737373' }}>
-                  You are about to reopen <strong>{selectedStrategy.name}</strong> ({selectedStrategy.symbol}).
-                  The strategy will be set to PENDING status and the orchestrator will automatically activate it.
+                <p style={{ marginBottom: "16px", color: "#737373" }}>
+                  You are about to reopen{" "}
+                  <strong>{selectedStrategy.name}</strong> (
+                  {selectedStrategy.symbol}). The strategy will be set to
+                  PENDING status and the orchestrator will automatically
+                  activate it.
                 </p>
                 <div className="modal-field">
                   <div className="modal-label">Reason for reopening *</div>
@@ -2194,7 +2687,7 @@ function Dashboard() {
                 className="modal-button cancel-button"
                 onClick={() => {
                   setShowReopenModal(false);
-                  setReopenReason('');
+                  setReopenReason("");
                 }}
                 disabled={isReopening}
               >
@@ -2205,7 +2698,7 @@ function Dashboard() {
                 onClick={handleReopenStrategy}
                 disabled={isReopening || !reopenReason.trim()}
               >
-                {isReopening ? 'Reopening...' : 'Reopen Strategy'}
+                {isReopening ? "Reopening..." : "Reopen Strategy"}
               </button>
             </div>
           </div>
@@ -2216,7 +2709,10 @@ function Dashboard() {
       {notification && (
         <div className={`notification ${notification.type}`}>
           <span>{notification.message}</span>
-          <button className="notification-close" onClick={() => setNotification(null)}>
+          <button
+            className="notification-close"
+            onClick={() => setNotification(null)}
+          >
             ×
           </button>
         </div>
