@@ -115,12 +115,23 @@ export async function fetchHistoricalFromIbkr(params: {
 
     ibEmitter.once("connected", () => {
       connected = true;
-      const contract: Contract = {
-        symbol,
-        secType: SecType.STK,
-        exchange: "SMART",
-        currency: "USD",
-      };
+
+      // VIX is an index, not a stock - requires special handling
+      const isVIX = symbol.toUpperCase() === "VIX";
+
+      const contract: Contract = isVIX
+        ? {
+            symbol: "VIX",
+            secType: SecType.IND,
+            exchange: "CBOE",
+            currency: "USD",
+          }
+        : {
+            symbol,
+            secType: SecType.STK,
+            exchange: "SMART",
+            currency: "USD",
+          };
 
       // Get bar size and what to show from mappings
       const barSize = IBKR_BAR_SIZE[period];

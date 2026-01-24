@@ -1217,6 +1217,107 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }, 500);
       }
 
+    } else if (pathname.match(/^\/api\/chart-data\/[^/]+$/) && req.method === 'GET') {
+      // GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m
+      // Returns historical OHLCV data compatible with TradeCheck backend format
+      // Auto-fetches and caches missing data using BarCacheServiceV2
+      try {
+        const symbol = pathname.split('/')[3]; // Extract symbol from /api/chart-data/:symbol
+        const startDate = url.searchParams.get('start_date');
+        const endDate = url.searchParams.get('end_date');
+        const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
+        const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
+        const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+
+        if (!symbol) {
+          sendJSON(res, { error: 'Symbol is required' }, 400);
+          return;
+        }
+
+        if (!startDate || !endDate) {
+          sendJSON(res, { error: 'start_date and end_date query parameters are required (format: YYYY-MM-DD)' }, 400);
+          return;
+        }
+
+        // Convert dates to timestamps
+        const startTimestamp = new Date(startDate + 'T00:00:00Z').getTime();
+        const endTimestamp = new Date(endDate + 'T23:59:59.999Z').getTime();
+
+        if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
+          sendJSON(res, { error: 'Invalid date format. Use YYYY-MM-DD' }, 400);
+          return;
+        }
+
+        // Calculate number of bars needed based on date range and period
+        const daysDiff = Math.ceil((endTimestamp - startTimestamp) / (1000 * 60 * 60 * 24));
+        let estimatedBars: number;
+
+        // Estimate bars per day based on period (for RTH: 6.5 hours = 390 minutes per day)
+        const minutesPerDay = session === 'rth' ? 390 : 1440; // RTH vs 24h
+        switch (period) {
+          case '5m':
+            estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 5);
+            break;
+          case '15m':
+            estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 15);
+            break;
+          case '1h':
+            estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 60);
+            break;
+          case '1d':
+            estimatedBars = daysDiff;
+            break;
+          default:
+            estimatedBars = 100; // Fallback
+        }
+
+        // Add buffer for safety (50% more)
+        const limit = Math.ceil(estimatedBars * 1.5);
+
+        console.log(`[portfolio-api] Fetching ${symbol} bars: ${period}, session=${session}, limit=${limit}, days=${daysDiff}`);
+
+        // Use BarCacheServiceV2 to fetch (auto-caches if missing)
+        const barCache = getBarCacheService();
+        const cachedBars = await barCache.getBars(
+          symbol.toUpperCase(),
+          period,
+          limit,
+          { session, what }
+        );
+
+        console.log(`[portfolio-api] Retrieved ${cachedBars.length} bars for ${symbol}`);
+
+        // Filter bars to requested date range and convert to TradeCheck format
+        const bars = cachedBars
+          .filter(bar => bar.timestamp >= startTimestamp && bar.timestamp <= endTimestamp)
+          .map(bar => ({
+            timestamp: bar.timestamp,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume
+          }));
+
+        sendJSON(res, {
+          symbol: symbol.toUpperCase(),
+          start_date: startDate,
+          end_date: endDate,
+          period,
+          session,
+          what,
+          bar_count: bars.length,
+          bars
+        });
+
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching chart data:', error);
+        sendJSON(res, {
+          error: error.message || 'Failed to fetch chart data',
+          details: error.stack
+        }, 500);
+      }
+
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
