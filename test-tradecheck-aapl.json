@@ -1,0 +1,51 @@
+{
+  "market_regime": {
+    "spy_trend": "bearish",
+    "spy_vwap_position": "below",
+    "spy_daily_change_pct": "1.13",
+    "qqq_trend": "bearish",
+    "qqq_relative_strength": "inline",
+    "vix_level": "15.64",
+    "vix_status": "normal",
+    "overall_bias": "risk_off",
+    "regime_note": "SPY in downtrend"
+  },
+  "analyses": [
+    {
+      "id": "713d983b-db1f-4ed9-b5a6-c7b831f5f406",
+      "ticker": "AAPL",
+      "setup_type": "short",
+      "key_levels": {
+        "support": ["248.8", "248.0", "246.0", "245.0"],
+        "resistance": ["249.3", "250.0", "250.8", "252.0"],
+        "vwap": "249.28",
+        "ema_9": "248.33",
+        "ema_20": "248.53",
+        "ema_50": "249.01",
+        "ema_200": null
+      },
+      "patterns": [
+        "lower_highs",
+        "consolidation",
+        "vwap_reject",
+        "bear_flag"
+      ],
+      "trade_plan": {
+        "entry": "248.85",
+        "stop_loss": "249.35",
+        "targets": ["247.85", "246.85"],
+        "invalidation_level": "249.35",
+        "invalidation_condition": "Exit/invalid if price reclaims VWAP (~249.28) and holds above 249.35 on a 5-min close (preferably with rising volume), indicating the breakdown failed."
+      },
+      "risk_reward": {
+        "risk_per_share": "0.5",
+        "reward_per_share": "1.0",
+        "ratio": "2.0",
+        "quality": "high"
+      },
+      "reasoning": "Market regime is risk_off with SPY bearish, favoring short continuation. On the 5-min chart AAPL sold off hard, then based/consolidated and is now trading below key moving averages (EMA50/200 ~249 area) and below VWAP (249.28), consistent with a bear-flag style pause after a down leg.",
+      "confidence": 6,
+      "counter_argument": "MACD histogram turning positive plus low RSI/Stoch can precede a mean-reversion bounce; if AAPL reclaims VWAP and the 249–250 area (EMA50/200 zone) with improving breadth/market bounce, shorts can get squeezed and the bear-flag thesis fails quickly."
+    }
+  ]
+}

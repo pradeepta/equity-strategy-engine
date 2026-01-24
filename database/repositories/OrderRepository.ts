@@ -130,16 +130,39 @@ export class OrderRepository {
       });
       const newFilledQty = order.filledQty + qty;
       const isFullyFilled = newFilledQty >= order.qty;
+      const newStatus = isFullyFilled ? "FILLED" : "PARTIALLY_FILLED";
 
-      return tx.order.update({
+      const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data: {
           filledQty: newFilledQty,
-          status: isFullyFilled ? "FILLED" : "PARTIALLY_FILLED",
+          status: newStatus,
           avgFillPrice: price, // Simplified; should calculate weighted average
           filledAt: isFullyFilled ? new Date() : undefined,
         },
       });
+
+      // Create audit log for fill event
+      await tx.orderAuditLog.create({
+        data: {
+          orderId,
+          brokerOrderId: order.brokerOrderId || undefined,
+          strategyId: order.strategyId,
+          eventType: isFullyFilled ? "FILLED" : "PARTIALLY_FILLED",
+          oldStatus: order.status,
+          newStatus: newStatus,
+          quantity: qty,
+          price: price,
+          metadata: {
+            commission: commission || 0,
+            filledQty: newFilledQty,
+            totalQty: order.qty,
+            fillPercentage: ((newFilledQty / order.qty) * 100).toFixed(2),
+          },
+        },
+      });
+
+      return updatedOrder;
     });
   }
 

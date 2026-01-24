@@ -88,6 +88,17 @@ export class TwsAdapter extends BaseBrokerAdapter {
         const orderRejectionCodes = [201, 202, 104, 110, 103, 105, 161, 162, 200, 203, 399];
 
         if (!this.connected && code === 502) {
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'TWS connection failed',
+            metadata: {
+              host: this.host,
+              port: this.port,
+              code,
+              message: err.message,
+            },
+          });
           reject(new Error(`Cannot connect to TWS at ${this.host}:${this.port}. Make sure TWS/IB Gateway is running.`));
         } else if (orderRejectionCodes.includes(code)) {
           // Track order-specific rejection
@@ -181,6 +192,16 @@ export class TwsAdapter extends BaseBrokerAdapter {
       this.client.on('disconnected', () => {
         console.log('Disconnected from TWS');
         this.connected = false;
+        this.auditEvent?.({
+          component: 'TwsAdapter',
+          level: 'warn',
+          message: 'TWS connection lost',
+          metadata: {
+            host: this.host,
+            port: this.port,
+            timestamp: new Date().toISOString(),
+          },
+        });
       });
 
       // Connect to TWS
@@ -190,6 +211,16 @@ export class TwsAdapter extends BaseBrokerAdapter {
       // Timeout after 10 seconds
       setTimeout(() => {
         if (!this.connected) {
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'TWS connection timeout',
+            metadata: {
+              host: this.host,
+              port: this.port,
+              timeoutMs: 10000,
+            },
+          });
           reject(new Error('Connection timeout. Make sure TWS/IB Gateway is running and accepting connections.'));
         }
       }, 10000);
@@ -291,6 +322,21 @@ export class TwsAdapter extends BaseBrokerAdapter {
     } catch (e) {
       const err = e as Error;
       console.error(`✗ Failed to submit bracket: ${err.message}`);
+
+      // Audit log for order submission failure
+      this.auditEvent?.({
+        component: 'TwsAdapter',
+        level: 'error',
+        message: 'Order plan submission failed',
+        metadata: {
+          symbol: plan.symbol,
+          planId: plan.id,
+          error: err.message,
+          submittedOrdersCount: submittedOrders.length,
+          rollback: submittedOrders.length > 0,
+          stackTrace: err.stack,
+        },
+      });
 
       if (submittedOrders.length > 0) {
         console.warn('⚠️  Rolling back submitted orders due to failure...');
@@ -753,6 +799,19 @@ export class TwsAdapter extends BaseBrokerAdapter {
           const reason = `Direct cancellation failed: ${err.message}`;
           console.error(`✗ ${reason}`);
           result.failed.push({ orderId: order.id, reason });
+          // Audit log for cancellation failure
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'Order cancellation failed (direct)',
+            metadata: {
+              symbol,
+              orderId: order.id,
+              twsOrderId: orderIdNum,
+              error: err.message,
+              phase: 'A_SEND_REQUEST',
+            },
+          });
           // FAIL FAST: Throw immediately on first failure
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
@@ -771,6 +830,19 @@ export class TwsAdapter extends BaseBrokerAdapter {
           const reason = `Mapped cancellation failed: ${err.message}`;
           console.error(`✗ ${reason}`);
           result.failed.push({ orderId: order.id, reason });
+          // Audit log for cancellation failure
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'Order cancellation failed (mapped)',
+            metadata: {
+              symbol,
+              orderId: order.id,
+              twsOrderId: ibOrderId,
+              error: err.message,
+              phase: 'A_SEND_REQUEST',
+            },
+          });
           // FAIL FAST: Throw immediately on first failure
           throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
         }
@@ -779,6 +851,20 @@ export class TwsAdapter extends BaseBrokerAdapter {
         const reason = 'Order not found in TWS (not in pendingOrders or orderIdMap)';
         console.error(`✗ Order ${order.id}: ${reason}`);
         result.failed.push({ orderId: order.id, reason });
+        // Audit log for cancellation failure
+        this.auditEvent?.({
+          component: 'TwsAdapter',
+          level: 'error',
+          message: 'Order cancellation failed - order not found',
+          metadata: {
+            symbol,
+            orderId: order.id,
+            reason,
+            phase: 'A_SEND_REQUEST',
+            pendingOrdersCount: this.pendingOrders.size,
+            orderIdMapSize: this.orderIdMap.size,
+          },
+        });
         // FAIL FAST: Throw immediately when order not found
         throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
       }
@@ -810,6 +896,20 @@ export class TwsAdapter extends BaseBrokerAdapter {
           const reason = 'Cancellation timeout - order may still be active';
           console.error(`⚠️  ${originalId} (TWS ${twsOrderId}): ${reason}`);
           result.failed.push({ orderId: originalId, reason });
+          // Audit log for cancellation verification timeout
+          this.auditEvent?.({
+            component: 'TwsAdapter',
+            level: 'error',
+            message: 'Order cancellation verification timeout',
+            metadata: {
+              symbol,
+              orderId: originalId,
+              twsOrderId,
+              reason,
+              phase: 'B_VERIFY_CANCELLATION',
+              verificationTimeoutMs: 10000,
+            },
+          });
           // FAIL FAST: Don't proceed if cancellation wasn't confirmed
           throw new Error(`Failed to verify cancellation of order ${originalId}: ${reason}`);
         }

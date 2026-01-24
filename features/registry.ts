@@ -5,8 +5,12 @@ import { FeatureDescriptor, FeatureComputeContext, FeatureValue } from '../spec/
 import {
   computeVWAP,
   computeEMA,
+  computeSMA,
   computeLOD,
+  computeHOD,
   computeVolumeZScore,
+  computeVolumeSMA,
+  computeVolumeEMA,
   computeRSI,
   computeBBUpper,
   computeBBMiddle,
@@ -14,6 +18,16 @@ import {
   computeMACDLine,
   computeMACDSignal,
   computeMACDHistogram,
+  computeMACDHistogramRising,
+  computeMACDHistogramFalling,
+  computeMACDBullishCrossover,
+  computeMACDBearishCrossover,
+  computeRSIRising,
+  computeRSIFalling,
+  computePriceRising,
+  computePriceFalling,
+  computeGreenBar,
+  computeRedBar,
   computeSMA150,
   computeSMA200,
   computeSMA50Rising,
@@ -22,6 +36,13 @@ import {
   computeFiftyTwoWeekHigh,
   computeFiftyTwoWeekLow,
   computeCupHandleConfidence,
+  computeATR,
+  computeADX,
+  computeStochasticK,
+  computeStochasticD,
+  computeOBV,
+  computeCCI,
+  computeWilliamsR,
 } from './indicators';
 import { computeAbsorption, computeDelta } from './microstructure';
 
@@ -153,7 +174,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 20),
+      computeEMA([...ctx.history, ctx.bar], 'close', 20),
   });
 
   // EMA50 (50-bar Exponential Moving Average)
@@ -162,7 +183,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 50),
+      computeEMA([...ctx.history, ctx.bar], 'close', 50),
   });
 
   // LOD (Low of Day)
@@ -186,6 +207,14 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['volume'],
     compute: computeVolumeZScore,
+  });
+
+  // Volume SMA (Simple Moving Average of Volume)
+  registry.registerFeature('volume_sma', {
+    name: 'volume_sma',
+    type: 'indicator',
+    dependencies: ['volume'],
+    compute: (ctx: FeatureComputeContext) => computeVolumeSMA(ctx, 20),
   });
 
   // Microstructure: Delta (stub)
@@ -260,6 +289,88 @@ export function createStandardRegistry(): FeatureRegistry {
     compute: computeMACDHistogram,
   });
 
+  // ========== MOMENTUM HELPERS (Crossovers & Changes) ==========
+
+  // MACD Histogram Rising (current > previous)
+  registry.registerFeature('macd_histogram_rising', {
+    name: 'macd_histogram_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDHistogramRising,
+  });
+
+  // MACD Histogram Falling (current < previous)
+  registry.registerFeature('macd_histogram_falling', {
+    name: 'macd_histogram_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDHistogramFalling,
+  });
+
+  // MACD Bullish Crossover (MACD crossed above signal)
+  registry.registerFeature('macd_bullish_crossover', {
+    name: 'macd_bullish_crossover',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDBullishCrossover,
+  });
+
+  // MACD Bearish Crossover (MACD crossed below signal)
+  registry.registerFeature('macd_bearish_crossover', {
+    name: 'macd_bearish_crossover',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeMACDBearishCrossover,
+  });
+
+  // RSI Rising (current > previous)
+  registry.registerFeature('rsi_rising', {
+    name: 'rsi_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeRSIRising,
+  });
+
+  // RSI Falling (current < previous)
+  registry.registerFeature('rsi_falling', {
+    name: 'rsi_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeRSIFalling,
+  });
+
+  // Price Rising (close > previous close)
+  registry.registerFeature('price_rising', {
+    name: 'price_rising',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computePriceRising,
+  });
+
+  // Price Falling (close < previous close)
+  registry.registerFeature('price_falling', {
+    name: 'price_falling',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computePriceFalling,
+  });
+
+  // Green Bar (close > open)
+  registry.registerFeature('green_bar', {
+    name: 'green_bar',
+    type: 'indicator',
+    dependencies: ['close', 'open'],
+    compute: computeGreenBar,
+  });
+
+  // Red Bar (close < open)
+  registry.registerFeature('red_bar', {
+    name: 'red_bar',
+    type: 'indicator',
+    dependencies: ['close', 'open'],
+    compute: computeRedBar,
+  });
+
   // ========== SEPA INDICATORS (Mark Minervini Growth Screener) ==========
 
   // SMA50 (50-day Simple Moving Average) - needed for comparisons
@@ -268,7 +379,7 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>
-      computeEMA(ctx.history, 'close', 50), // Use EMA50 as SMA50 proxy
+      computeSMA([...ctx.history, ctx.bar], 50),
   });
 
   // SMA150 (150-day Simple Moving Average)
@@ -333,6 +444,78 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['close'],
     compute: computeCupHandleConfidence,
+  });
+
+  // HOD (High of Day)
+  registry.registerFeature('hod', {
+    name: 'hod',
+    type: 'indicator',
+    dependencies: [],
+    compute: computeHOD,
+  });
+
+  // Volume EMA
+  registry.registerFeature('volume_ema', {
+    name: 'volume_ema',
+    type: 'indicator',
+    dependencies: ['volume'],
+    compute: (ctx: FeatureComputeContext) => computeVolumeEMA(ctx, 20),
+  });
+
+  // ATR (Average True Range)
+  registry.registerFeature('atr', {
+    name: 'atr',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeATR(ctx, 14),
+  });
+
+  // ADX (Average Directional Index)
+  registry.registerFeature('adx', {
+    name: 'adx',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeADX(ctx, 14),
+  });
+
+  // Stochastic K
+  registry.registerFeature('stochastic_k', {
+    name: 'stochastic_k',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: computeStochasticK,
+  });
+
+  // Stochastic D
+  registry.registerFeature('stochastic_d', {
+    name: 'stochastic_d',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: computeStochasticD,
+  });
+
+  // OBV (On Balance Volume)
+  registry.registerFeature('obv', {
+    name: 'obv',
+    type: 'indicator',
+    dependencies: ['close', 'volume'],
+    compute: computeOBV,
+  });
+
+  // CCI (Commodity Channel Index)
+  registry.registerFeature('cci', {
+    name: 'cci',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeCCI(ctx, 20),
+  });
+
+  // Williams %R
+  registry.registerFeature('williams_r', {
+    name: 'williams_r',
+    type: 'indicator',
+    dependencies: ['high', 'low', 'close'],
+    compute: (ctx: FeatureComputeContext) => computeWilliamsR(ctx, 14),
   });
 
   return registry;

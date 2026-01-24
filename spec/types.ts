@@ -57,7 +57,7 @@ export type Operator =
   | '!';
 
 export interface ExprNode {
-  type: 'binary' | 'unary' | 'call' | 'literal' | 'identifier';
+  type: 'binary' | 'unary' | 'call' | 'literal' | 'identifier' | 'member' | 'array_access';
   operator?: Operator;
   left?: ExprNode;
   right?: ExprNode;
@@ -66,12 +66,19 @@ export interface ExprNode {
   arguments?: ExprNode[];
   value?: number | boolean | string;
   name?: string;
+  // For member access (dot notation)
+  object?: ExprNode;
+  property?: string;
+  // For array indexing
+  index?: ExprNode;
 }
 
 export interface EvaluationContext {
   features: Map<string, FeatureValue>;
   builtins: Map<string, FeatureValue>;
   functions: Map<string, (args: FeatureValue[]) => FeatureValue>;
+  // Feature history for array indexing: featureName -> [oldest...newest]
+  featureHistory?: Map<string, FeatureValue[]>;
 }
 
 // ============================================================================

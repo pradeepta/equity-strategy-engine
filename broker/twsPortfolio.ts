@@ -40,6 +40,11 @@ export class PortfolioDataFetcher {
 
       this.client.on('connected', () => {
         console.log(`✓ Connected to TWS for portfolio data at ${this.host}:${this.port}`);
+        // Set market data type (1=Live[paid], 2=Frozen[safe], 3=Delayed-15min[intraday], 4=Delayed-Frozen)
+        // Default to 2 (frozen) - most conservative for risk management
+        const marketDataType = parseInt(process.env.TWS_MARKET_DATA_TYPE || '2');
+        this.client.reqMarketDataType(marketDataType);
+        console.log(`✓ Using market data type: ${marketDataType} (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen)`);
         this.connected = true;
         resolve();
       });

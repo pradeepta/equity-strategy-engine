@@ -3,10 +3,30 @@
  * Handles all database operations for strategies including versioning and lifecycle
  */
 
-import { PrismaClient, Strategy, StrategyStatus, StrategyVersion, VersionChangeType } from '@prisma/client';
+import { PrismaClient, Strategy, StrategyStatus, StrategyVersion, VersionChangeType, Prisma } from '@prisma/client';
 
 export class StrategyRepository {
   constructor(private prisma: PrismaClient) {}
+
+  /**
+   * Create strategy audit log entry
+   */
+  async createAuditLog(params: {
+    strategyId: string;
+    eventType: 'CREATED' | 'ACTIVATED' | 'CLOSED' | 'ARCHIVED' | 'FAILED' | 'YAML_UPDATED' | 'ROLLED_BACK' | 'SWAPPED_IN' | 'SWAPPED_OUT' | 'DELETED' | 'STATUS_CHANGED';
+    oldStatus?: StrategyStatus;
+    newStatus?: StrategyStatus;
+    changedBy?: string;
+    changeReason?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    await this.prisma.strategyAuditLog.create({
+      data: {
+        ...params,
+        metadata: (params.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+      },
+    });
+  }
 
   /**
    * Create new strategy (DRAFT status by default)
@@ -68,6 +88,22 @@ export class StrategyRepository {
           description: params.description,
           changeReason: params.changeReason || 'Initial version',
           changeType: 'CREATED',
+        },
+      });
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId: strategy.id,
+          eventType: 'CREATED',
+          newStatus: 'DRAFT',
+          changedBy: params.userId,
+          changeReason: params.changeReason || 'Initial version',
+          metadata: {
+            symbol: params.symbol,
+            name: params.name,
+            timeframe: params.timeframe,
+          } as Prisma.InputJsonValue,
         },
       });
 
@@ -162,6 +198,22 @@ export class StrategyRepository {
         },
       });
 
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'YAML_UPDATED',
+          oldStatus: strategy.status,
+          newStatus: strategy.status,
+          changedBy: strategy.userId,
+          changeReason,
+          metadata: {
+            versionNumber: nextVersion,
+            changeType,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
       // Update strategy
       return tx.strategy.update({
         where: { id: strategyId },
@@ -173,54 +225,216 @@ export class StrategyRepository {
   /**
    * Activate strategy (DRAFT/PENDING -> ACTIVE)
    */
-  async activate(strategyId: string): Promise<Strategy> {
-    return this.prisma.strategy.update({
-      where: { id: strategyId },
-      data: {
-        status: 'ACTIVE',
-        activatedAt: new Date(),
-      },
+  async activate(
+    strategyId: string,
+    changedBy: string = 'system',
+    options?: {
+      isSwap?: boolean;
+      replacedStrategyId?: string;
+      swapReason?: string;
+      evaluationScore?: number;
+    }
+  ): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      // Determine event type and reason based on context
+      const eventType = options?.isSwap ? 'SWAPPED_IN' : 'ACTIVATED';
+      const changeReason = options?.isSwap
+        ? `Swapped in: ${options.swapReason || 'Replacing strategy'}`
+        : 'Strategy activated by orchestrator';
+
+      // Build metadata
+      const metadata: Record<string, unknown> | undefined = options?.isSwap
+        ? {
+            replacedStrategyId: options.replacedStrategyId,
+            evaluationScore: options.evaluationScore,
+          }
+        : undefined;
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType,
+          oldStatus: strategy.status,
+          newStatus: 'ACTIVE',
+          changedBy,
+          changeReason,
+          metadata: metadata as Prisma.InputJsonValue | undefined,
+        },
+      });
+
+      // Update strategy
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'ACTIVE',
+          activatedAt: new Date(),
+        },
+      });
     });
   }
 
   /**
    * Close strategy (ACTIVE -> CLOSED)
    */
-  async close(strategyId: string, reason?: string): Promise<Strategy> {
-    return this.prisma.strategy.update({
-      where: { id: strategyId },
-      data: {
-        status: 'CLOSED',
-        closedAt: new Date(),
-        closeReason: reason,
-      },
+  async close(
+    strategyId: string,
+    reason?: string,
+    changedBy: string = 'system',
+    options?: {
+      isSwap?: boolean;
+      newStrategyId?: string;
+      evaluationScore?: number;
+    }
+  ): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      // Determine event type based on context
+      const eventType = options?.isSwap ? 'SWAPPED_OUT' : 'CLOSED';
+      const changeReason = options?.isSwap
+        ? `Swapped out: ${reason || 'Replaced by better strategy'}`
+        : reason || 'Strategy closed';
+
+      // Build metadata
+      const metadata: Record<string, unknown> | undefined = options?.isSwap
+        ? {
+            swapReason: reason,
+            newStrategyId: options.newStrategyId,
+            evaluationScore: options.evaluationScore,
+          }
+        : undefined;
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType,
+          oldStatus: strategy.status,
+          newStatus: 'CLOSED',
+          changedBy,
+          changeReason,
+          metadata: metadata as Prisma.InputJsonValue | undefined,
+        },
+      });
+
+      // Update strategy
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'CLOSED',
+          closedAt: new Date(),
+          closeReason: reason,
+        },
+      });
+    });
+  }
+
+  /**
+   * Reopen closed strategy (CLOSED -> PENDING)
+   */
+  async reopen(strategyId: string, reason?: string, changedBy: string = 'user'): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      if (strategy.status !== 'CLOSED') {
+        throw new Error('Only CLOSED strategies can be reopened');
+      }
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'STATUS_CHANGED',
+          oldStatus: strategy.status,
+          newStatus: 'PENDING',
+          changedBy,
+          changeReason: reason || 'Strategy reopened via UI',
+        },
+      });
+
+      // Update strategy to PENDING (orchestrator will pick it up)
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'PENDING',
+          closedAt: null,
+          closeReason: null,
+        },
+      });
     });
   }
 
   /**
    * Archive strategy (any status -> ARCHIVED)
    */
-  async archive(strategyId: string, reason?: string): Promise<Strategy> {
-    return this.prisma.strategy.update({
-      where: { id: strategyId },
-      data: {
-        status: 'ARCHIVED',
-        archivedAt: new Date(),
-        closeReason: reason,
-      },
+  async archive(strategyId: string, reason?: string, changedBy: string = 'system'): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'ARCHIVED',
+          oldStatus: strategy.status,
+          newStatus: 'ARCHIVED',
+          changedBy,
+          changeReason: reason || 'Strategy archived',
+        },
+      });
+
+      // Update strategy
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'ARCHIVED',
+          archivedAt: new Date(),
+          closeReason: reason,
+        },
+      });
     });
   }
 
   /**
    * Mark strategy as failed (validation/compilation error)
    */
-  async markFailed(strategyId: string, error: string): Promise<Strategy> {
-    return this.prisma.strategy.update({
-      where: { id: strategyId },
-      data: {
-        status: 'FAILED',
-        closeReason: error,
-      },
+  async markFailed(strategyId: string, error: string, changedBy: string = 'system'): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'FAILED',
+          oldStatus: strategy.status,
+          newStatus: 'FAILED',
+          changedBy,
+          changeReason: error,
+        },
+      });
+
+      // Update strategy
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: {
+          status: 'FAILED',
+          closeReason: error,
+        },
+      });
     });
   }
 
@@ -237,8 +451,13 @@ export class StrategyRepository {
   /**
    * Rollback to specific version
    */
-  async rollbackToVersion(strategyId: string, versionNumber: number): Promise<Strategy> {
+  async rollbackToVersion(strategyId: string, versionNumber: number, changedBy: string = 'system'): Promise<Strategy> {
     return this.prisma.$transaction(async (tx) => {
+      // Get the current strategy
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
       // Get the target version
       const version = await tx.strategyVersion.findUniqueOrThrow({
         where: {
@@ -270,6 +489,22 @@ export class StrategyRepository {
         },
       });
 
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'ROLLED_BACK',
+          oldStatus: strategy.status,
+          newStatus: strategy.status,
+          changedBy,
+          changeReason: `Rolled back to version ${versionNumber}`,
+          metadata: {
+            targetVersionNumber: versionNumber,
+            newVersionNumber: nextVersion,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
       // Update strategy with rolled-back content
       return tx.strategy.update({
         where: { id: strategyId },
@@ -286,10 +521,50 @@ export class StrategyRepository {
   /**
    * Soft delete strategy
    */
-  async softDelete(strategyId: string): Promise<Strategy> {
-    return this.prisma.strategy.update({
-      where: { id: strategyId },
-      data: { deletedAt: new Date() },
+  async softDelete(strategyId: string, changedBy: string = 'system'): Promise<Strategy> {
+    return this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.strategy.findUniqueOrThrow({
+        where: { id: strategyId },
+      });
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId,
+          eventType: 'DELETED',
+          oldStatus: strategy.status,
+          newStatus: strategy.status,
+          changedBy,
+          changeReason: 'Strategy soft deleted',
+        },
+      });
+
+      // Soft delete
+      return tx.strategy.update({
+        where: { id: strategyId },
+        data: { deletedAt: new Date() },
+      });
+    });
+  }
+
+  /**
+   * Get audit log for a strategy
+   */
+  async getAuditLog(strategyId: string, limit: number = 100) {
+    return this.prisma.strategyAuditLog.findMany({
+      where: { strategyId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Get all audit logs (for admin/debugging)
+   */
+  async getAllAuditLogs(limit: number = 100) {
+    return this.prisma.strategyAuditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
     });
   }
 

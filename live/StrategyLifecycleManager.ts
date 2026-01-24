@@ -12,7 +12,9 @@ import { EvaluationRequest, EvaluationResponse } from "../evaluation/types";
 import { StrategyRepository } from "../database/repositories/StrategyRepository";
 import { ExecutionHistoryRepository } from "../database/repositories/ExecutionHistoryRepository";
 import { OrderRepository } from "../database/repositories/OrderRepository";
+import { SystemLogRepository } from "../database/repositories/SystemLogRepository";
 import { OperationQueueService } from "./queue/OperationQueueService";
+import { isMarketOpen } from "../utils/marketHours";
 import * as YAML from "yaml";
 
 export class StrategyLifecycleManager {
@@ -22,6 +24,7 @@ export class StrategyLifecycleManager {
   private strategyRepo: StrategyRepository;
   private execHistoryRepo: ExecutionHistoryRepository;
   private orderRepo: OrderRepository;
+  private systemLogRepo: SystemLogRepository;
   private operationQueue: OperationQueueService;
   private orchestrator?: any; // Reference to orchestrator for locking
   private exitOrdersInFlight: Set<string> = new Set();
@@ -33,6 +36,7 @@ export class StrategyLifecycleManager {
     strategyRepo: StrategyRepository,
     execHistoryRepo: ExecutionHistoryRepository,
     orderRepo: OrderRepository,
+    systemLogRepo: SystemLogRepository,
     operationQueue: OperationQueueService
   ) {
     this.multiStrategyManager = manager;
@@ -41,6 +45,7 @@ export class StrategyLifecycleManager {
     this.strategyRepo = strategyRepo;
     this.execHistoryRepo = execHistoryRepo;
     this.orderRepo = orderRepo;
+    this.systemLogRepo = systemLogRepo;
     this.operationQueue = operationQueue;
   }
 
@@ -93,10 +98,18 @@ export class StrategyLifecycleManager {
         },
         performance: {
           barsActive: performance.barsActive,
+          barsActiveSinceActivation: performance.barsActiveSinceActivation,
           ordersPlaced: performance.ordersPlaced,
           currentState: state.currentState,
+          activatedAt: performance.activatedAt,
         },
       };
+
+      console.log(`🔍 [DEBUG] Sending evaluation for ${instance.symbol}:`);
+      console.log(`   barsActive (total): ${performance.barsActive}`);
+      console.log(`   barsActiveSinceActivation (real-time): ${performance.barsActiveSinceActivation}`);
+      console.log(`   activatedAt: ${performance.activatedAt.toISOString()}`);
+      console.log(`   timeframe: ${instance.getTimeframe()}`);
 
       // Send to evaluation endpoint
       const response = await this.evaluatorClient.evaluate(request);
@@ -105,6 +118,24 @@ export class StrategyLifecycleManager {
       console.log(`   Recommendation: ${response.recommendation}`);
       console.log(`   Confidence: ${(response.confidence * 100).toFixed(0)}%`);
       console.log(`   Reason: ${response.reason}`);
+
+      // Log evaluation errors to database for UI display
+      if (response.reason.includes("Evaluation error")) {
+        await this.systemLogRepo.create({
+          level: "ERROR",
+          component: "StrategyEvaluator",
+          message: `Evaluation failed for ${instance.symbol}`,
+          metadata: {
+            errorCode: "EVAL_ERROR",
+            symbol: instance.symbol,
+            strategyId: instance.strategyId,
+            strategyName: instance.strategyName,
+            reason: response.reason,
+            confidence: response.confidence,
+            recommendation: response.recommendation,
+          },
+        });
+      }
 
       const evaluation = await this.execHistoryRepo.logEvaluation({
         strategyId: instance.strategyId,
@@ -185,15 +216,16 @@ export class StrategyLifecycleManager {
     };
 
     try {
-      // Lock the symbol to prevent concurrent operations (distributed lock)
+      // Lock the strategy to prevent concurrent operations (distributed lock)
       // Using 5-second timeout instead of 30 seconds to fail fast on contention
+      // Now uses strategy ID instead of symbol to allow parallel swaps
       if (this.orchestrator) {
-        const lockAcquired = await this.orchestrator.lockSymbol(
-          instance.symbol
+        const lockAcquired = await this.orchestrator.lockStrategy(
+          instance.strategyId
         );
         if (!lockAcquired) {
           console.warn(
-            `⚠️  Failed to acquire lock for ${instance.symbol}. Another swap is in progress.`
+            `⚠️  Failed to acquire lock for strategy ${instance.strategyId}. Another swap is in progress.`
           );
           // Don't throw - mark as failed and let retry queue handle it
           await failOperation(
@@ -277,12 +309,71 @@ export class StrategyLifecycleManager {
         return;
       }
 
+      const suggestedMeta = this.parseSuggestedMeta(
+        response.suggestedStrategy.yamlContent
+      );
+      const suggestedSymbolRaw = suggestedMeta?.symbol?.trim();
+      const suggestedSymbol = suggestedSymbolRaw || instance.symbol;
+      const suggestedTimeframe =
+        suggestedMeta?.timeframe?.trim() || instance.getTimeframe();
+      const crossSymbol =
+        suggestedSymbol.toUpperCase() !== instance.symbol.toUpperCase();
+      const allowCrossSymbolSwap =
+        this.orchestrator?.config?.allowCrossSymbolSwap === true;
+
+      if (crossSymbol && !allowCrossSymbolSwap) {
+        const errorMsg = `Swap suggested for ${instance.symbol} but evaluator returned ${suggestedSymbol}. Cross-symbol swaps disabled.`;
+        console.error(`❌ ${errorMsg}`);
+        await this.execHistoryRepo.markActionTaken(
+          evaluationId,
+          `Swap aborted: ${errorMsg}`
+        );
+        await this.execHistoryRepo.logEvent({
+          strategyId: oldStrategyId,
+          eventType: "ERROR",
+          swapReason: errorMsg,
+          metadata: {
+            symbol: instance.symbol,
+            operationId,
+            suggestedSymbol,
+          },
+        });
+        await failOperation(errorMsg);
+        return;
+      }
+
+      if (crossSymbol) {
+        if (this.multiStrategyManager.getStrategyBySymbol(suggestedSymbol)) {
+          const errorMsg = `Cross-symbol swap blocked: strategy for ${suggestedSymbol} already loaded.`;
+          console.error(`❌ ${errorMsg}`);
+          await this.execHistoryRepo.markActionTaken(
+            evaluationId,
+            `Swap aborted: ${errorMsg}`
+          );
+          await this.execHistoryRepo.logEvent({
+            strategyId: oldStrategyId,
+            eventType: "ERROR",
+            swapReason: errorMsg,
+            metadata: {
+              symbol: instance.symbol,
+              operationId,
+              suggestedSymbol,
+            },
+          });
+          await failOperation(errorMsg);
+          return;
+        }
+        console.warn(
+          `⚠️ Cross-symbol swap enabled: ${instance.symbol} -> ${suggestedSymbol}`
+        );
+      }
+
       // Create new strategy in database (DRAFT until swap succeeds)
       const newStrategy = await this.strategyRepo.createWithVersion({
         userId: instance.userId,
-        symbol: instance.symbol,
+        symbol: suggestedSymbol,
         name: response.suggestedStrategy.name,
-        timeframe: instance.getTimeframe(),
+        timeframe: suggestedTimeframe,
         yamlContent: response.suggestedStrategy.yamlContent,
         changeReason: "Auto-swap by evaluator",
       });
@@ -310,10 +401,19 @@ export class StrategyLifecycleManager {
       }
 
       // Activate new strategy only after runtime swap succeeds
-      await this.strategyRepo.activate(newStrategy.id);
+      await this.strategyRepo.activate(newStrategy.id, 'evaluator', {
+        isSwap: true,
+        replacedStrategyId: oldStrategyId,
+        swapReason: response.reason,
+        evaluationScore: response.confidence,
+      });
 
       // Close old strategy in database after successful swap
-      await this.strategyRepo.close(oldStrategyId, response.reason);
+      await this.strategyRepo.close(oldStrategyId, response.reason, 'evaluator', {
+        isSwap: true,
+        newStrategyId: newStrategy.id,
+        evaluationScore: response.confidence,
+      });
       await this.execHistoryRepo.logDeactivation(
         oldStrategyId,
         response.reason
@@ -330,6 +430,7 @@ export class StrategyLifecycleManager {
           symbol: instance.symbol,
           oldStrategyId,
           newStrategyId: newStrategy.id,
+          newSymbol: suggestedSymbol,
         },
       });
 
@@ -362,9 +463,9 @@ export class StrategyLifecycleManager {
       });
       throw error;
     } finally {
-      // Always unlock the symbol, even if swap failed
+      // Always unlock the strategy, even if swap failed
       if (this.orchestrator) {
-        await this.orchestrator.unlockSymbol(instance.symbol);
+        await this.orchestrator.unlockStrategy(instance.strategyId);
       }
     }
   }
@@ -615,6 +716,23 @@ export class StrategyLifecycleManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private parseSuggestedMeta(
+    yamlContent: string
+  ): { symbol?: string; timeframe?: string } | null {
+    try {
+      const parsed = YAML.parse(yamlContent) as any;
+      return {
+        symbol: parsed?.meta?.symbol,
+        timeframe: parsed?.meta?.timeframe,
+      };
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to parse suggested strategy meta: ${String(error)}`
+      );
+      return null;
+    }
+  }
+
   private logEvaluationDebug(
     instance: StrategyInstance,
     state: { currentBar: any; features: Map<string, any> }
@@ -724,37 +842,10 @@ export class StrategyLifecycleManager {
     }
   }
 
+  /**
+   * Check if market is open (delegates to shared utility)
+   */
   private isMarketOpenNow(): boolean {
-    try {
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        weekday: "short",
-        hour: "numeric",
-        minute: "numeric",
-        hour12: false,
-      });
-
-      const parts = formatter.formatToParts(new Date());
-      const weekday = parts.find((p) => p.type === "weekday")?.value || "";
-      const hour = parseInt(
-        parts.find((p) => p.type === "hour")?.value || "0",
-        10
-      );
-      const minute = parseInt(
-        parts.find((p) => p.type === "minute")?.value || "0",
-        10
-      );
-
-      if (["Sat", "Sun"].includes(weekday)) {
-        return false;
-      }
-
-      const minutes = hour * 60 + minute;
-      const open = 9 * 60 + 30;
-      const close = 16 * 60;
-      return minutes >= open && minutes < close;
-    } catch {
-      return false;
-    }
+    return isMarketOpen();
   }
 }

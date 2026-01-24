@@ -45,9 +45,11 @@ export interface EvaluationRequest {
     recentBars: Bar[];  // Last 20 bars for context
   };
   performance: {
-    barsActive: number;
+    barsActive: number;  // Total bars processed (including historical replay)
+    barsActiveSinceActivation: number;  // Bars processed after activation timestamp
     ordersPlaced: number;
     currentState: StrategyState;
+    activatedAt: Date;  // When strategy was activated (for real-time calculation)
   };
 }
 

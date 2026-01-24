@@ -287,7 +287,6 @@ UPDATE "Strategy" SET status = 'PENDING' WHERE id = 'your-strategy-id';
 ### Before (Filesystem)
 
 - Strategies stored in `./strategies/live/` directory
-- FilesystemWatcher polls directory every 30s
 - No version history
 - No centralized tracking
 - Manual file management

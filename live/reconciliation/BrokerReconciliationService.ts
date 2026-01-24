@@ -57,6 +57,18 @@ export class BrokerReconciliationService {
   ): Promise<ReconciliationReport> {
     console.log('\n🔍 Starting broker reconciliation...');
 
+    // Audit log for reconciliation start
+    await this.systemLogRepo?.create({
+      level: 'INFO',
+      component: 'BrokerReconciliationService',
+      message: 'Reconciliation started (startup)',
+      metadata: {
+        symbols,
+        symbolCount: symbols.length,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
     const report: ReconciliationReport = {
       timestamp: new Date(),
       orphanedOrders: [],
@@ -103,6 +115,22 @@ export class BrokerReconciliationService {
     console.log(`  Missing orders (in database): ${report.missingOrders.length}`);
     console.log(`  Status mismatches: ${report.statusMismatches.length}`);
     console.log(`  Actions taken: ${report.actionsToken.length}`);
+
+    // Audit log for reconciliation completion
+    await this.systemLogRepo?.create({
+      level: report.orphanedOrders.length > 0 || report.missingOrders.length > 0 ? 'WARN' : 'INFO',
+      component: 'BrokerReconciliationService',
+      message: 'Reconciliation completed (startup)',
+      metadata: {
+        orphanedOrdersCount: report.orphanedOrders.length,
+        missingOrdersCount: report.missingOrders.length,
+        statusMismatchesCount: report.statusMismatches.length,
+        actionsTakenCount: report.actionsToken.length,
+        symbolsProcessed: symbols.length,
+        timestamp: new Date().toISOString(),
+        hasDiscrepancies: report.orphanedOrders.length > 0 || report.missingOrders.length > 0,
+      },
+    });
 
     return report;
   }
@@ -303,6 +331,18 @@ export class BrokerReconciliationService {
   ): Promise<ReconciliationReport> {
     console.log('\n🔍 Running periodic reconciliation check...');
 
+    // Audit log for periodic reconciliation start
+    await this.systemLogRepo?.create({
+      level: 'INFO',
+      component: 'BrokerReconciliationService',
+      message: 'Reconciliation started (periodic)',
+      metadata: {
+        symbols,
+        symbolCount: symbols.length,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
     const report: ReconciliationReport = {
       timestamp: new Date(),
       orphanedOrders: [],
@@ -368,6 +408,20 @@ export class BrokerReconciliationService {
     } else {
       console.log('✓ No discrepancies found');
     }
+
+    // Audit log for periodic reconciliation completion
+    await this.systemLogRepo?.create({
+      level: report.orphanedOrders.length > 0 || report.missingOrders.length > 0 ? 'WARN' : 'INFO',
+      component: 'BrokerReconciliationService',
+      message: 'Reconciliation completed (periodic)',
+      metadata: {
+        orphanedOrdersCount: report.orphanedOrders.length,
+        missingOrdersCount: report.missingOrders.length,
+        symbolsProcessed: symbols.length,
+        timestamp: new Date().toISOString(),
+        hasDiscrepancies: report.orphanedOrders.length > 0 || report.missingOrders.length > 0,
+      },
+    });
 
     return report;
   }

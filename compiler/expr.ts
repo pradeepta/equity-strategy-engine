@@ -90,6 +90,24 @@ function normalizeNode(raw: any): ExprNode {
     };
   }
 
+  if (raw.type === 'MemberExpression') {
+    if (raw.computed) {
+      // Array access: feature[1], macd.histogram[0]
+      return {
+        type: 'array_access',
+        object: normalizeNode(raw.object),
+        index: normalizeNode(raw.property),
+      };
+    } else {
+      // Dot access: macd.histogram
+      return {
+        type: 'member',
+        object: normalizeNode(raw.object),
+        property: raw.property.name,
+      };
+    }
+  }
+
   throw new Error(`Unknown node type: ${raw.type}`);
 }
 
@@ -114,6 +132,14 @@ export function extractIdentifiers(node: ExprNode): Set<string> {
           walk(arg);
         }
       }
+    } else if (n.type === 'member') {
+      // For dot notation: macd.histogram
+      if (n.object) walk(n.object);
+      // Property is a string, not a node, so don't walk it
+    } else if (n.type === 'array_access') {
+      // For array access: feature[1]
+      if (n.object) walk(n.object);
+      if (n.index) walk(n.index);
     }
   }
 

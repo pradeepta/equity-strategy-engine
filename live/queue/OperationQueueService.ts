@@ -346,6 +346,31 @@ export class OperationQueueService {
   }
 
   /**
+   * Invalidate completed CLOSE operations for a strategy
+   * Called when a strategy is reopened to allow it to be closed again
+   */
+  async invalidateCloseOperations(strategyId: string): Promise<number> {
+    const result = await this.prisma.operationQueue.updateMany({
+      where: {
+        strategyId,
+        operationType: "CLOSE_STRATEGY",
+        status: "COMPLETED",
+      },
+      data: {
+        status: "CANCELLED",
+        errorMessage: "Invalidated due to strategy reopen",
+      },
+    });
+
+    if (result.count > 0) {
+      console.log(
+        `Invalidated ${result.count} completed CLOSE operation(s) for strategy ${strategyId}`
+      );
+    }
+    return result.count;
+  }
+
+  /**
    * Clean up old completed/failed operations (older than retentionDays)
    */
   async cleanup(retentionDays: number = 7): Promise<number> {

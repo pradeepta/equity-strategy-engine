@@ -1,6 +1,6 @@
 /**
  * Database Poller
- * Replaces FilesystemWatcher - polls database for new/pending strategies instead of filesystem
+ * Polls database for new/pending strategies
  */
 
 import { Strategy } from '@prisma/client';
@@ -10,7 +10,7 @@ export class DatabasePoller {
   private strategyRepo: StrategyRepository;
   private userId: string;
   private pollInterval: number;
-  private knownStrategies: Set<string> = new Set(); // Track strategy IDs
+  private knownStrategies: Set<string> = new Set(); // Track strategy IDs that are PENDING/ACTIVE
   private callbacks: Array<(strategy: Strategy) => void> = [];
   private intervalId?: NodeJS.Timeout;
   private running: boolean = false;
@@ -80,7 +80,18 @@ export class DatabasePoller {
       // Query for pending strategies
       const pendingStrategies = await this.strategyRepo.findPending(this.userId);
 
-      // Check for new strategies we haven't seen before
+      // Build set of currently pending strategy IDs
+      const currentPendingIds = new Set(pendingStrategies.map(s => s.id));
+
+      // Remove strategies from knownStrategies if they're no longer pending
+      // (they were either activated or closed, so if they become PENDING again, we'll detect them)
+      for (const knownId of this.knownStrategies) {
+        if (!currentPendingIds.has(knownId)) {
+          this.knownStrategies.delete(knownId);
+        }
+      }
+
+      // Check for new strategies we haven't seen before (or that were closed and reopened)
       for (const strategy of pendingStrategies) {
         if (!this.knownStrategies.has(strategy.id)) {
           console.log(`📋 New strategy detected: ${strategy.name} (${strategy.symbol})`);

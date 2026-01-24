@@ -27,7 +27,10 @@ export class StrategyEngine {
   private state: StrategyRuntimeState;
   private timers: TimerManager;
   private barHistory: Bar[] = [];
+  private featureHistory: Map<string, FeatureValue[]> = new Map();
   private replayMode: boolean = false;
+  private readonly MAX_BAR_HISTORY: number; // Keep last N bars in memory
+  private readonly MAX_FEATURE_HISTORY = 100; // Keep last 100 bars of history
 
   constructor(
     private ir: CompiledIR,
@@ -36,6 +39,11 @@ export class StrategyEngine {
     private brokerEnv: BrokerEnvironment
   ) {
     this.timers = new TimerManager();
+
+    // Read MAX_BAR_HISTORY from environment variable (default: 200 bars)
+    // Most indicators (e.g., SMA200) need at most 200 bars
+    this.MAX_BAR_HISTORY = parseInt(process.env.ENGINE_MAX_BAR_HISTORY || '200', 10);
+
     this.state = {
       symbol: ir.symbol,
       currentState: ir.initialState,
@@ -61,6 +69,11 @@ export class StrategyEngine {
       this.state.barCount++;
       this.state.currentBar = bar;
       this.barHistory.push(bar);
+
+      // Keep only last MAX_BAR_HISTORY bars to prevent unbounded memory growth
+      if (this.barHistory.length > this.MAX_BAR_HISTORY) {
+        this.barHistory.shift(); // Remove oldest bar
+      }
 
       // Compute features for this bar
       await this.computeFeatures(bar);
@@ -103,6 +116,18 @@ export class StrategyEngine {
         }
 
         newFeatures.set(feature.name, value);
+
+        // Store feature history for array indexing support
+        if (!this.featureHistory.has(feature.name)) {
+          this.featureHistory.set(feature.name, []);
+        }
+        const history = this.featureHistory.get(feature.name)!;
+        history.push(value);
+
+        // Keep only last MAX_FEATURE_HISTORY bars to manage memory
+        if (history.length > this.MAX_FEATURE_HISTORY) {
+          history.shift();
+        }
       } catch (e) {
         const err = e as Error;
         this.log('error', `Failed to compute ${feature.name}: ${err.message}`);
@@ -124,6 +149,47 @@ export class StrategyEngine {
       if (await this.evaluateCondition(transition.when)) {
         // Transition triggered!
         this.log('info', `Transition: ${transition.from} -> ${transition.to}`);
+
+        // Detect invalidation event (MANAGING -> EXITED)
+        const isInvalidation = transition.from === 'MANAGING' && transition.to === 'EXITED';
+
+        // Audit log for state transitions (especially important in replay mode)
+        if (this.replayMode) {
+          this.brokerEnv.auditEvent?.({
+            component: 'StrategyEngine',
+            level: 'info',
+            message: `Replay mode state transition: ${transition.from} -> ${transition.to}`,
+            metadata: {
+              symbol: this.ir.symbol,
+              barCount: this.state.barCount,
+              fromState: transition.from,
+              toState: transition.to,
+              replayMode: true,
+              timestamp: this.state.currentBar?.timestamp,
+              price: this.state.currentBar?.close,
+              invalidation: isInvalidation,
+            },
+          });
+        }
+
+        // Audit log for invalidation events (in both live and replay mode)
+        if (isInvalidation) {
+          this.brokerEnv.auditEvent?.({
+            component: 'StrategyEngine',
+            level: 'warn',
+            message: 'Strategy invalidated - exit condition triggered',
+            metadata: {
+              symbol: this.ir.symbol,
+              barCount: this.state.barCount,
+              replayMode: this.replayMode,
+              timestamp: this.state.currentBar?.timestamp,
+              price: this.state.currentBar?.close,
+              openOrdersCount: this.state.openOrders.length,
+              features: Object.fromEntries(this.state.features),
+            },
+          });
+        }
+
         this.state.currentState = transition.to;
 
         // Execute actions
@@ -152,6 +218,7 @@ export class StrategyEngine {
           ['volume', this.state.currentBar?.volume || 0],
           ['price', this.state.currentBar?.close || 0],
         ]),
+        featureHistory: this.featureHistory,
         functions: new Map<string, (args: FeatureValue[]) => FeatureValue>([
           [
             'in_range',
@@ -227,6 +294,19 @@ export class StrategyEngine {
               'info',
               `Replay mode active - skipping order plan submission${action.planId ? ` (${action.planId})` : ''}`
             );
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'info',
+              message: 'Replay mode - simulated order plan submission',
+              metadata: {
+                symbol: this.ir.symbol,
+                planId: action.planId,
+                barCount: this.state.barCount,
+                replayMode: true,
+                price: this.state.currentBar?.close,
+                timestamp: this.state.currentBar?.timestamp,
+              },
+            });
             return;
           }
           if (action.planId) {
@@ -385,6 +465,18 @@ export class StrategyEngine {
         case 'cancel_entries':
           if (this.replayMode) {
             this.log('info', 'Replay mode active - skipping order cancellation');
+            this.brokerEnv.auditEvent?.({
+              component: 'StrategyEngine',
+              level: 'info',
+              message: 'Replay mode - simulated order cancellation',
+              metadata: {
+                symbol: this.ir.symbol,
+                barCount: this.state.barCount,
+                replayMode: true,
+                openOrdersCount: this.state.openOrders.length,
+                timestamp: this.state.currentBar?.timestamp,
+              },
+            });
             return;
           }
           if (this.brokerEnv.allowCancelEntries !== true) {
