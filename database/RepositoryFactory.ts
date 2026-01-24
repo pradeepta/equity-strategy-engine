@@ -11,7 +11,6 @@ import { OrderRepository } from './repositories/OrderRepository';
 import { ExecutionHistoryRepository } from './repositories/ExecutionHistoryRepository';
 import { SystemLogRepository } from './repositories/SystemLogRepository';
 import { ChatRepository } from './repositories/ChatRepository';
-import { BarRepository } from './repositories/BarRepository';
 import { OperationQueueService } from '../live/queue/OperationQueueService';
 
 export class RepositoryFactory {
@@ -21,7 +20,6 @@ export class RepositoryFactory {
   private execHistoryRepo?: ExecutionHistoryRepository;
   private systemLogRepo?: SystemLogRepository;
   private chatRepo?: ChatRepository;
-  private barRepo?: BarRepository;
   private operationQueueService?: OperationQueueService;
   private pool?: Pool;
 
@@ -93,16 +91,6 @@ export class RepositoryFactory {
       this.chatRepo = new ChatRepository(this.prisma);
     }
     return this.chatRepo;
-  }
-
-  /**
-   * Get Bar Repository instance (singleton per factory)
-   */
-  getBarRepo(): BarRepository {
-    if (!this.barRepo) {
-      this.barRepo = new BarRepository(this.prisma);
-    }
-    return this.barRepo;
   }
 
   /**
@@ -186,10 +174,6 @@ export function getSystemLogRepo(): SystemLogRepository {
 
 export function getChatRepo(): ChatRepository {
   return getRepositoryFactory().getChatRepo();
-}
-
-export function getBarRepo(): BarRepository {
-  return getRepositoryFactory().getBarRepo();
 }
 
 export function getOperationQueueService(): OperationQueueService {

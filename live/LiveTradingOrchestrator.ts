@@ -20,7 +20,6 @@ import { OrderAlertService } from "./alerts/OrderAlertService";
 import { LoggerFactory } from "../logging/logger";
 import { Logger } from "../logging/logger";
 import { BarCacheServiceV2 } from "./cache/BarCacheServiceV2";
-import { BarCacheMonitor } from "./cache/BarCacheMonitor";
 import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
@@ -51,7 +50,6 @@ export class LiveTradingOrchestrator {
   private reconciliationService: BrokerReconciliationService;
   private alertService: OrderAlertService;
   private barCacheService?: BarCacheServiceV2;
-  private barCacheMonitor?: BarCacheMonitor;
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
@@ -134,8 +132,6 @@ export class LiveTradingOrchestrator {
           what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
         }
       );
-      const barRepo = this.repositoryFactory.getBarRepo();
-      this.barCacheMonitor = new BarCacheMonitor(barRepo, this.barCacheService);
       logger.info('✓ Bar caching V2 enabled');
     }
 
@@ -274,12 +270,6 @@ export class LiveTradingOrchestrator {
     // Start database poller
     this.databasePoller.start();
 
-    // Start bar cache monitor (if enabled)
-    if (this.barCacheMonitor) {
-      this.barCacheMonitor.start();
-      logger.info("✓ Bar cache monitoring started");
-    }
-
     logger.info("════════════════════════════════════════════════════════════");
     logger.info("RUNNING MULTI-STRATEGY TRADING LOOP");
     logger.info("════════════════════════════════════════════════════════════");
@@ -304,12 +294,6 @@ export class LiveTradingOrchestrator {
 
     // Stop database poller
     this.databasePoller.stop();
-
-    // Stop bar cache monitor (if enabled)
-    if (this.barCacheMonitor) {
-      this.barCacheMonitor.stop();
-      logger.info("✓ Bar cache monitoring stopped");
-    }
 
     // Clear main loop interval
     if (this.mainLoopInterval) {
