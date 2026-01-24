@@ -33,7 +33,7 @@ psql -c "SELECT id, \"activatedAt\" FROM strategies WHERE status = 'ACTIVE';"
 - Define trading strategies in YAML DSL
 - Compile strategies to type-safe intermediate representation (IR)
 - Execute multiple strategies concurrently against live market data
-- Integrate with Interactive Brokers (TWS) and Alpaca brokers
+- Integrate with Interactive Brokers (TWS)
 - Enable AI-powered strategy evaluation and hot-swapping
 - Track orders, fills, and performance with PostgreSQL persistence
 
@@ -45,7 +45,6 @@ psql -c "SELECT id, \"activatedAt\" FROM strategies WHERE status = 'ACTIVE';"
 
 ### Core Entry Points
 - [live-multi.ts](live-multi.ts) - **Main orchestrator** for multi-strategy live trading (START HERE)
-- [live.ts](live.ts) - Single strategy runner (simpler, legacy)
 - [mcp-server.ts](mcp-server.ts) - MCP server exposing trading tools to AI
 - [portfolio-api-server.ts](portfolio-api-server.ts) - HTTP API for web dashboard
 
@@ -68,7 +67,6 @@ psql -c "SELECT id, \"activatedAt\" FROM strategies WHERE status = 'ACTIVE';"
 - [broker/twsAdapter.ts](broker/twsAdapter.ts) - Interactive Brokers TWS implementation
 - [broker/twsMarketData.ts](broker/twsMarketData.ts) - Market bar fetching
 - [broker/twsPortfolio.ts](broker/twsPortfolio.ts) - Portfolio snapshot
-- [broker/alpacaRest.ts](broker/alpacaRest.ts) - Alpaca broker implementation
 
 ### Database Layer
 - [database/RepositoryFactory.ts](database/RepositoryFactory.ts) - DI container for repositories
@@ -781,12 +779,6 @@ psql "$(grep "^DATABASE_URL" .env | cut -d'=' -f2- | tr -d '"')" -c "YOUR_QUERY_
 - `TWS_PORT=7497` (paper) or `7496` (live)
 - `TWS_CLIENT_ID=1` (default)
 
-**Broker (Alpaca):**
-- `BROKER=alpaca`
-- `ALPACA_API_KEY` - API key
-- `ALPACA_API_SECRET` - API secret
-- `ALPACA_BASE_URL` - Paper or live URL
-
 **Strategy Settings:**
 - `MAX_CONCURRENT_STRATEGIES=5` (default)
 - `STRATEGY_WATCH_INTERVAL_MS=5000` (default: 5 seconds)
@@ -1314,7 +1306,6 @@ WHERE "strategyId" = 'strategy_id_here'
 ### External Documentation
 - [Prisma Docs](https://www.prisma.io/docs) - Database ORM
 - [TWS API](https://interactivebrokers.github.io/tws-api/) - Interactive Brokers API
-- [Alpaca API](https://docs.alpaca.markets/) - Alpaca trading API
 - [MCP Protocol](https://modelcontextprotocol.io/) - Model Context Protocol
 
 ---

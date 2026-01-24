@@ -1,6 +1,6 @@
 /**
  * Database Poller
- * Replaces FilesystemWatcher - polls database for new/pending strategies instead of filesystem
+ * Polls database for new/pending strategies
  */
 
 import { Strategy } from '@prisma/client';

@@ -4,7 +4,7 @@
  */
 
 import { Pool } from 'pg';
-import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
+import { BarCacheServiceV2 } from '../live/cache/BarCacheServiceV2';
 import * as dotenv from 'dotenv';
 
 dotenv.config();

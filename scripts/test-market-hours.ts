@@ -2,7 +2,7 @@
  * Test script to demonstrate market hours awareness
  */
 
-import { getMarketHoursInfo, calculateTradingTime, formatTradingTimeInfo } from './utils/marketHours';
+import { getMarketHoursInfo, calculateTradingTime, formatTradingTimeInfo } from '../utils/marketHours';
 
 console.log('═══════════════════════════════════════════════════════════════');
 console.log('Market Hours Awareness Test');

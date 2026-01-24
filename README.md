@@ -1,6 +1,6 @@
 # Algorithmic Trading System
 
-A production-ready algorithmic trading system with database-backed strategy management, multi-strategy orchestration, and live trading support for **Interactive Brokers (TWS)** and Alpaca.
+A production-ready algorithmic trading system with database-backed strategy management, multi-strategy orchestration, and live trading support for **Interactive Brokers (TWS)**.
 
 **Key Features:**
 - Define strategies in YAML, compile to type-safe TypeScript
@@ -40,12 +40,12 @@ A production-ready algorithmic trading system with database-backed strategy mana
                            ↕
 ┌─────────────────────────────────────────────────────────────┐
 │                  Broker Adapters                             │
-│  ┌──────────────────┐  ┌──────────────────┐                │
-│  │   TWS Adapter    │  │  Alpaca Adapter  │                │
-│  │ - Market Data    │  │ - REST API       │                │
-│  │ - Bracket Orders │  │ - WebSocket      │                │
-│  │ - Portfolio Sync │  │ - Paper Trading  │                │
-│  └──────────────────┘  └──────────────────┘                │
+│  ┌──────────────────┐                                       │
+│  │   TWS Adapter    │                                       │
+│  │ - Market Data    │                                       │
+│  │ - Bracket Orders │                                       │
+│  │ - Portfolio Sync │                                       │
+│  └──────────────────┘                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,7 +82,6 @@ A production-ready algorithmic trading system with database-backed strategy mana
   - Bracket order submission
   - Portfolio synchronization
   - Order status tracking
-- **Alpaca**: REST API integration for paper/live trading
 
 ## Quick Start
 
@@ -90,7 +89,7 @@ A production-ready algorithmic trading system with database-backed strategy mana
 
 1. **PostgreSQL** (required for database-backed storage)
 2. **Node.js 18+** and npm
-3. **TWS/IB Gateway** or Alpaca account
+3. **TWS/IB Gateway** account
 
 ### Installation
 
@@ -599,8 +598,7 @@ stocks/
 │   └── StrategyInstance.ts           # Single strategy runtime
 ├── broker/
 │   ├── twsAdapter.ts                 # TWS order submission
-│   ├── twsMarketData.ts              # TWS bar fetching
-│   └── alpacaRest.ts                 # Alpaca integration
+│   └── twsMarketData.ts              # TWS bar fetching
 ├── database/
 │   ├── repositories/
 │   │   ├── StrategyRepository.ts     # Strategy CRUD

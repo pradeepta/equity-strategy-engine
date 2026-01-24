@@ -4,8 +4,8 @@
  */
 
 import * as fs from 'fs';
-import { StrategyCompiler } from './compiler/compile';
-import { createStandardRegistry } from './features/registry';
+import { StrategyCompiler } from '../compiler/compile';
+import { createStandardRegistry } from '../features/registry';
 
 function verifyStrategyCompiles(name: string, yamlPath: string): boolean {
   try {
@@ -34,16 +34,16 @@ async function main() {
   console.log('╚════════════════════════════════════════════════════════════════╝\n');
 
   const strategies = [
-    { name: 'RSI Mean Reversion v1 (NFLX)', path: './strategies/rsi-mean-reversion.yaml' },
-    { name: 'Bollinger Bands Bounce v1 (TSLA)', path: './strategies/bb-bounce.yaml' },
-    { name: 'MACD Momentum v1 (AAPL)', path: './strategies/macd-momentum.yaml' },
+    { name: 'RSI Mean Reversion v1 (NFLX)', path: '../strategies/rsi-mean-reversion.yaml' },
+    { name: 'Bollinger Bands Bounce v1 (TSLA)', path: '../strategies/bb-bounce.yaml' },
+    { name: 'MACD Momentum v1 (AAPL)', path: '../strategies/macd-momentum.yaml' },
   ];
 
   const existingStrategies = [
-    { name: 'NFLX Adaptive v2 (Baseline)', path: './strategies/nflx-adaptive.yaml' },
-    { name: 'TSLA Volatile v2 (Baseline)', path: './strategies/tsla-volatile.yaml' },
-    { name: 'AAPL Momentum v2 (Baseline)', path: './strategies/aapl-momentum.yaml' },
-    { name: 'SPY ETF v2 (Baseline)', path: './strategies/spy-etf.yaml' },
+    { name: 'NFLX Adaptive v2 (Baseline)', path: '../strategies/nflx-adaptive.yaml' },
+    { name: 'TSLA Volatile v2 (Baseline)', path: '../strategies/tsla-volatile.yaml' },
+    { name: 'AAPL Momentum v2 (Baseline)', path: '../strategies/aapl-momentum.yaml' },
+    { name: 'SPY ETF v2 (Baseline)', path: '../strategies/spy-etf.yaml' },
   ];
 
   console.log('═══════════════════════════════════════════════════════════════\n');

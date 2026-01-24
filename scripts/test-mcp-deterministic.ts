@@ -4,8 +4,8 @@
  * Test MCP integration for deterministic strategy generator
  */
 
-import { proposeDeterministic } from './src/strategy/mcp-integration';
-import type { Bar } from './src/strategy/metrics';
+import { proposeDeterministic } from '../src/strategy/mcp-integration';
+import type { Bar } from '../src/strategy/metrics';
 
 // Mock market data
 function generateTestBars(count: number): Bar[] {

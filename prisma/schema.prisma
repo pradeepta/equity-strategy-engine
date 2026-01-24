@@ -44,8 +44,8 @@ model Account {
   userId            String
 
   // Broker account details
-  broker            String     // 'tws' or 'alpaca'
-  accountId         String     // TWS: DU9999999, Alpaca: account ID
+  broker            String     // 'tws'
+  accountId         String     // TWS: DU9999999
   accountName       String?
 
   // Configuration
@@ -304,7 +304,7 @@ model Order {
   strategyId        String
 
   // Order identity
-  brokerOrderId     String?           // ID from broker (TWS/Alpaca)
+  brokerOrderId     String?           // ID from broker (TWS)
   planId            String            // From YAML orderPlans
   symbol            String
 
@@ -449,7 +449,7 @@ model SystemLog {
   id                String            @id @default(cuid())
 
   level             LogLevel
-  component         String            // FilesystemWatcher, StrategyLifecycleManager, live-server, etc.
+  component         String            // StrategyLifecycleManager, live-server, etc.
   message           String            @db.Text
   metadata          Json?
 

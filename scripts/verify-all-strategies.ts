@@ -4,11 +4,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { StrategyCompiler } from './compiler/compile';
-import { createStandardRegistry } from './features/registry';
+import { StrategyCompiler } from '../compiler/compile';
+import { createStandardRegistry } from '../features/registry';
 
 async function verifyAllStrategies() {
-  const strategiesDir = './strategies/variations';
+  const strategiesDir = '../strategies/variations';
   const files = fs.readdirSync(strategiesDir).filter((f) => f.endsWith('.yaml'));
 
   console.log('╔════════════════════════════════════════════════════════════════╗');
@@ -98,9 +98,9 @@ ${
 }
 `;
 
-  fs.writeFileSync('./VERIFICATION_REPORT.md', report);
+  fs.writeFileSync('../VERIFICATION_REPORT.md', report);
 
-  console.log('📋 Full report saved to: VERIFICATION_REPORT.md');
+  console.log('📋 Full report saved to: ../VERIFICATION_REPORT.md');
   console.log('\nReady for next phase:');
   console.log('  1. Backtest sample of strategies');
   console.log('  2. Identify top performers');

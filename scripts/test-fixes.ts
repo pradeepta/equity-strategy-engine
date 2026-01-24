@@ -5,8 +5,8 @@
  * 2. BB Squeeze strategies use proper BB features
  */
 
-import { proposeBestStrategy } from './src/strategy/generate';
-import type { Bar, Constraints } from './src/strategy/metrics';
+import { proposeBestStrategy } from '../src/strategy/generate';
+import type { Bar, Constraints } from '../src/strategy/metrics';
 
 function generateMockBars(count: number, startPrice: number, trend: number): Bar[] {
   const bars: Bar[] = [];

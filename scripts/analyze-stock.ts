@@ -384,7 +384,7 @@ risk:
 
 function saveStrategy(filename: string, yaml: string): string {
   const fs = require('fs');
-  const path = `./strategies/${filename}.yaml`;
+  const path = `../strategies/${filename}.yaml`;
   fs.writeFileSync(path, yaml);
   console.log(`\n✓ Strategy saved: ${path}\n`);
   return path;
