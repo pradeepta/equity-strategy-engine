@@ -1318,6 +1318,76 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }, 500);
       }
 
+    } else if (pathname.match(/^\/api\/bars\/[^/]+$/) && req.method === 'GET') {
+      // GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades
+      // Simple endpoint to fetch recent bars using BarCacheServiceV2
+      // Returns most recent N bars for a symbol
+      try {
+        const symbol = pathname.split('/')[3]; // Extract symbol from /api/bars/:symbol
+        const limitParam = url.searchParams.get('limit');
+        const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
+        const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
+        const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+
+        if (!symbol) {
+          sendJSON(res, { error: 'Symbol is required' }, 400);
+          return;
+        }
+
+        // Parse and validate limit
+        const limit = limitParam ? parseInt(limitParam, 10) : 100;
+        if (isNaN(limit) || limit < 1 || limit > 5000) {
+          sendJSON(res, { error: 'Invalid limit. Must be between 1 and 5000' }, 400);
+          return;
+        }
+
+        // Validate period
+        const validPeriods = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+        if (!validPeriods.includes(period)) {
+          sendJSON(res, { error: `Invalid period. Must be one of: ${validPeriods.join(', ')}` }, 400);
+          return;
+        }
+
+        console.log(`[portfolio-api] Fetching ${symbol} bars: limit=${limit}, period=${period}, session=${session}, what=${what}`);
+
+        // Use BarCacheServiceV2 to fetch (auto-caches if missing)
+        const barCache = getBarCacheService();
+        const bars = await barCache.getBars(
+          symbol.toUpperCase(),
+          period,
+          limit,
+          { session, what }
+        );
+
+        console.log(`[portfolio-api] Retrieved ${bars.length} bars for ${symbol}`);
+
+        // Calculate time range from bars
+        const timeRange = bars.length > 0
+          ? {
+              start: new Date(bars[0].timestamp).toISOString(),
+              end: new Date(bars[bars.length - 1].timestamp).toISOString()
+            }
+          : null;
+
+        sendJSON(res, {
+          symbol: symbol.toUpperCase(),
+          period,
+          session,
+          what,
+          limit,
+          count: bars.length,
+          timeRange,
+          bars
+        });
+
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching bars:', error);
+        sendJSON(res, {
+          error: error.message || 'Failed to fetch bars',
+          details: error.stack
+        }, 500);
+      }
+
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -1343,6 +1413,9 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
+  console.log(`  Market Data:`);
+  console.log(`    GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades - Fetch recent bars`);
+  console.log(`    GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m - Fetch bars by date range`);
   console.log(`  DSL & TradeCheck:`);
   console.log(`    GET  /api/dsl/schema - Get DSL schema (dynamically from feature registry)`);
   console.log(`    POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy`);
