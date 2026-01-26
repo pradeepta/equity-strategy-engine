@@ -764,6 +764,9 @@ model Analysis {
   rawChartPath             String?       @db.Text
   annotatedChartPath       String?       @db.Text
 
+  // ADD THIS:
+  confluence               Json?         // Confluence validation results
+
   // Relationships
   strategyTemplate         StrategyTemplate @relation(fields: [strategyId], references: [id], onDelete: Cascade)
   tradeOutcomes            TradeOutcome[]
