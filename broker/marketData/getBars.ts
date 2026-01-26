@@ -87,9 +87,11 @@ export async function getBars(
   const endDt = end && end !== "now" ? new Date(end) : new Date();
 
   // Align end to period boundary (avoid partial last bar)
-  const endAlignedEpoch =
-    Math.floor(endDt.getTime() / 1000 / periodSec) * periodSec;
-  const endAligned = new Date(endAlignedEpoch * 1000);
+  // Unless includeForming is true, in which case use current time to get forming bar
+  const includeForming = params.includeForming || false;
+  const endAligned = includeForming
+    ? endDt // Use current time as-is to include forming bar
+    : new Date(Math.floor(endDt.getTime() / 1000 / periodSec) * periodSec * 1000); // Round to period boundary
 
   let windowStart: Date;
   let windowEnd: Date = endAligned;
@@ -119,6 +121,7 @@ export async function getBars(
       attempt,
       windowStart: toISO(windowStart),
       windowEnd: toISO(windowEnd),
+      includeForming,
     });
 
     // 1) Read from cache
@@ -147,6 +150,7 @@ export async function getBars(
         what,
         barCount: finalBars.length,
         sources,
+        includeForming,
       });
 
       return {
@@ -161,7 +165,7 @@ export async function getBars(
             : toISO(windowEnd),
           count: finalBars.length,
           source: Array.from(new Set(sources)),
-          partial_last_bar: false,
+          partial_last_bar: includeForming, // Mark as partial when including forming bar
         },
         bars: finalBars,
       };
@@ -190,6 +194,7 @@ export async function getBars(
       session,
       windowEnd, // Pass explicit window end for deterministic cache filling
       durationSeconds,
+      includeForming, // Pass through includeForming for real-time bar updates
     });
 
     sources.push("ibkr");
@@ -263,6 +268,7 @@ export async function getBars(
         what,
         barCount: finalBars.length,
         requestedLimit: limit,
+        includeForming,
       });
 
       return {
@@ -277,7 +283,7 @@ export async function getBars(
             : toISO(windowEnd),
           count: finalBars.length,
           source: Array.from(new Set(sources)),
-          partial_last_bar: false,
+          partial_last_bar: includeForming, // Mark as partial when including forming bar
         },
         bars: finalBars,
       };

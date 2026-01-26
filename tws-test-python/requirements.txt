@@ -1,0 +1,5 @@
+# Official Interactive Brokers TWS API for Python
+# Download from: https://interactivebrokers.github.io/tws-api/
+# Or install via: pip install ibapi
+
+ibapi>=9.81.1

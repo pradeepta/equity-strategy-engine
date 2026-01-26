@@ -118,6 +118,7 @@ export class BarCacheServiceV2 {
       session?: 'rth' | 'all';
       what?: 'trades' | 'midpoint' | 'bid' | 'ask';
       end?: string;
+      includeForming?: boolean;
     } = {}
   ): Promise<LegacyBar[]> {
     const startTime = Date.now();
@@ -157,6 +158,7 @@ export class BarCacheServiceV2 {
       session,
       what,
       end,
+      includeForming: options.includeForming || false,
     });
 
     // Convert to legacy format

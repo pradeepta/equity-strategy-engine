@@ -9,6 +9,7 @@ import { createStandardRegistry } from '../features/registry';
 import { StrategyEngine } from '../runtime/engine';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult, Order } from '../spec/types';
+import { RealtimeBarClient } from './streaming/RealtimeBarClient';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -28,6 +29,9 @@ export class StrategyInstance {
   private lastProcessedBarTimestamp: number | null = null;
   private activatedAt: Date;  // When strategy was activated
   private barsProcessedSinceActivation: number = 0;  // Real-time bars only
+  private streamingClient: RealtimeBarClient | null = null;  // Real-time bar streaming
+  private isStreaming: boolean = false;  // Track streaming state
+  private lastStateName: string | null = null;  // Track state changes
 
   constructor(
     strategyId: string,
@@ -111,7 +115,158 @@ export class StrategyInstance {
       if (bar.timestamp >= this.activatedAt.getTime()) {
         this.barsProcessedSinceActivation++;
       }
+
+      // Check if state changed and update streaming accordingly
+      const currentState = this.engine.getState();
+      const currentStateName = currentState.currentState;
+
+      if (currentStateName !== this.lastStateName) {
+        console.log(`[${this.symbol}] State transition: ${this.lastStateName || 'init'} → ${currentStateName}`);
+        this.lastStateName = currentStateName;
+
+        // Start or stop streaming based on new state
+        await this.updateStreamingForState(currentStateName);
+
+        // Check if reached terminal state (no outgoing transitions)
+        if (this.isTerminalState(currentStateName)) {
+          console.log(`[${this.symbol}] ⚠️  Reached terminal state: ${currentStateName} (strategy will be auto-closed)`);
+          // Trigger auto-close callback if available
+          if (this.brokerEnv.auditEvent) {
+            this.brokerEnv.auditEvent({
+              component: 'StrategyInstance',
+              level: 'info',
+              message: `Strategy reached terminal state: ${currentStateName}`,
+              metadata: {
+                strategyId: this.strategyId,
+                symbol: this.symbol,
+                terminalState: currentStateName,
+                autoClose: true,
+              },
+            });
+          }
+        }
+      }
     }
+  }
+
+  /**
+   * Check if a state is terminal (no outgoing transitions)
+   */
+  private isTerminalState(stateName: string): boolean {
+    // A state is terminal if there are no transitions FROM it
+    const hasOutgoingTransitions = this.ir.transitions.some(
+      (t) => t.from === stateName
+    );
+    return !hasOutgoingTransitions;
+  }
+
+  /**
+   * Check if a state requires real-time bar streaming
+   */
+  private needsStreaming(stateName: string): boolean {
+    // States that benefit from real-time updates:
+    // - "armed": Waiting for trigger condition
+    // - "managing": Position open, monitoring for exit
+    // - "placed": Order placed, waiting for fill
+    // - "trigger": Already triggered, about to enter position
+    // - "exited": Trade complete, may re-arm for next opportunity
+    //
+    // Note: Strategies should stream in ALL active states except "idle"
+    // to ensure they receive real-time bar updates for condition evaluation
+    const streamingStates = ['armed', 'managing', 'placed', 'trigger', 'position_open', 'position_monitoring', 'exited'];
+
+    return streamingStates.some((s) => stateName.toLowerCase().includes(s.toLowerCase()));
+  }
+
+  /**
+   * Update streaming subscription based on current state
+   */
+  private async updateStreamingForState(stateName: string): Promise<void> {
+    const shouldStream = this.needsStreaming(stateName);
+
+    if (shouldStream && !this.isStreaming) {
+      await this.startStreaming();
+    } else if (!shouldStream && this.isStreaming) {
+      await this.stopStreaming();
+    }
+  }
+
+  /**
+   * Start real-time bar streaming for this strategy's symbol
+   */
+  private async startStreaming(): Promise<void> {
+    if (this.isStreaming || !this.streamingClient) {
+      return;
+    }
+
+    try {
+      console.log(`[${this.symbol}] 📡 Starting real-time bar streaming (state: ${this.lastStateName})`);
+
+      await this.streamingClient.subscribe({
+        symbol: this.symbol,
+        period: this.ir.timeframe,
+        session: 'rth',
+        what: 'TRADES',
+      });
+
+      this.isStreaming = true;
+    } catch (error: any) {
+      console.error(`[${this.symbol}] ❌ Failed to start streaming: ${error.message}`);
+    }
+  }
+
+  /**
+   * Stop real-time bar streaming for this strategy's symbol
+   */
+  private async stopStreaming(): Promise<void> {
+    if (!this.isStreaming || !this.streamingClient) {
+      return;
+    }
+
+    try {
+      console.log(`[${this.symbol}] 🛑 Stopping real-time bar streaming (state: ${this.lastStateName})`);
+
+      await this.streamingClient.unsubscribe(this.symbol);
+
+      this.isStreaming = false;
+    } catch (error: any) {
+      console.error(`[${this.symbol}] ❌ Failed to stop streaming: ${error.message}`);
+    }
+  }
+
+  /**
+   * Set streaming client (called by orchestrator)
+   */
+  setStreamingClient(client: RealtimeBarClient): void {
+    this.streamingClient = client;
+  }
+
+  /**
+   * Get streaming status
+   */
+  getStreamingStatus(): { enabled: boolean; active: boolean } {
+    return {
+      enabled: this.streamingClient !== null,
+      active: this.isStreaming,
+    };
+  }
+
+  /**
+   * Check if strategy has reached a terminal state (no outgoing transitions)
+   * Orchestrator should close these strategies in the database
+   */
+  isInTerminalState(): boolean {
+    if (!this.lastStateName) {
+      return false;
+    }
+    return this.isTerminalState(this.lastStateName);
+  }
+
+  /**
+   * Get current FSM state name
+   */
+  getCurrentStateName(): string | null {
+    return this.lastStateName;
   }
 
   /**
@@ -195,6 +350,12 @@ export class StrategyInstance {
    */
   async shutdown(): Promise<void> {
     console.log(`Shutting down strategy: ${this.strategyName} for ${this.symbol}`);
+
+    // Stop streaming if active
+    if (this.isStreaming) {
+      await this.stopStreaming();
+    }
+
     this.initialized = false;
   }
 
@@ -266,6 +427,18 @@ export class StrategyInstance {
    * Check if enough time has elapsed to fetch new bars for this strategy's timeframe
    */
   shouldFetchBars(timeframeMs: number): boolean {
+    // If orchestrator loop interval override is set, always fetch bars on every loop iteration
+    const loopOverride = process.env.ORCHESTRATOR_LOOP_INTERVAL_MS;
+    if (loopOverride) {
+      const interval = parseInt(loopOverride, 10);
+      if (!isNaN(interval) && interval > 0) {
+        const now = Date.now();
+        const elapsed = now - this.lastBarFetchTime;
+        return elapsed >= interval; // Use override interval instead of timeframe
+      }
+    }
+
+    // Normal behavior: respect strategy timeframe
     const now = Date.now();
     const elapsed = now - this.lastBarFetchTime;
     return elapsed >= timeframeMs;
