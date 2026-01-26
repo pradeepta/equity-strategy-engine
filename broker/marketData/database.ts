@@ -60,58 +60,99 @@ export async function upsertBars(
   }
 ): Promise<void> {
   const { symbol, period, what, session, bars } = args;
-  if (bars.length === 0) return;
+  
+  // Validate input
+  if (!bars || !Array.isArray(bars) || bars.length === 0) {
+    return;
+  }
 
-  // Bulk insert with ON CONFLICT update
-  const values: any[] = [];
-  const chunks: string[] = [];
-
-  bars.forEach((b, i) => {
-    const base = i * 14;
-    chunks.push(
-      `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`
-    );
-    values.push(
-      symbol,
-      period,
-      what,
-      session,
-      b.barstart.toISOString(),
-      b.barend.toISOString(),
-      b.o,
-      b.h,
-      b.l,
-      b.c,
-      b.v,
-      b.wap ?? null,
-      b.tradeCount != null ? Math.round(b.tradeCount) : null, // Round to integer for database
-      new Date().toISOString()
+  // Filter out any invalid bars and validate required fields
+  const validBars = bars.filter((b) => {
+    return (
+      b &&
+      b.barstart instanceof Date &&
+      b.barend instanceof Date &&
+      Number.isFinite(b.o) &&
+      Number.isFinite(b.h) &&
+      Number.isFinite(b.l) &&
+      Number.isFinite(b.c) &&
+      Number.isFinite(b.v)
     );
   });
 
-  const query = `
-    INSERT INTO bars (
-      symbol, period, what, session,
-      barstart, barend,
-      open, high, low, close, volume,
-      wap, trade_count,
-      ingested_at
-    )
-    VALUES ${chunks.join(",")}
-    ON CONFLICT (symbol, period, what, session, barstart)
-    DO UPDATE SET
-      barend = EXCLUDED.barend,
-      open = EXCLUDED.open,
-      high = EXCLUDED.high,
-      low = EXCLUDED.low,
-      close = EXCLUDED.close,
-      volume = EXCLUDED.volume,
-      wap = EXCLUDED.wap,
-      trade_count = EXCLUDED.trade_count,
-      ingested_at = EXCLUDED.ingested_at
-  `;
+  if (validBars.length === 0) {
+    return;
+  }
 
-  await pool.query(query, values);
+  // PostgreSQL has a limit of ~65535 parameters per query
+  // With 14 parameters per bar, that's ~4680 bars max per batch
+  // Use 4000 bars per batch to be safe
+  const BATCH_SIZE = 4000;
+  const PARAMS_PER_BAR = 14;
+
+  // Process in batches
+  for (let batchStart = 0; batchStart < validBars.length; batchStart += BATCH_SIZE) {
+    const batchEnd = Math.min(batchStart + BATCH_SIZE, validBars.length);
+    const batch = validBars.slice(batchStart, batchEnd);
+
+    const values: any[] = [];
+    const chunks: string[] = [];
+
+    batch.forEach((b, i) => {
+      const base = i * PARAMS_PER_BAR;
+      chunks.push(
+        `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`
+      );
+      values.push(
+        symbol,
+        period,
+        what,
+        session,
+        b.barstart.toISOString(),
+        b.barend.toISOString(),
+        b.o,
+        b.h,
+        b.l,
+        b.c,
+        b.v,
+        b.wap ?? null,
+        b.tradeCount != null ? Math.round(b.tradeCount) : null, // Round to integer for database
+        new Date().toISOString()
+      );
+    });
+
+    // Safety check: ensure values array matches expected parameter count
+    const expectedParamCount = batch.length * PARAMS_PER_BAR;
+    if (values.length !== expectedParamCount) {
+      throw new Error(
+        `Parameter count mismatch: expected ${expectedParamCount} parameters, got ${values.length}`
+      );
+    }
+
+    const query = `
+      INSERT INTO bars (
+        symbol, period, what, session,
+        barstart, barend,
+        open, high, low, close, volume,
+        wap, trade_count,
+        ingested_at
+      )
+      VALUES ${chunks.join(",")}
+      ON CONFLICT (symbol, period, what, session, barstart)
+      DO UPDATE SET
+        barend = EXCLUDED.barend,
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        wap = EXCLUDED.wap,
+        trade_count = EXCLUDED.trade_count,
+        ingested_at = EXCLUDED.ingested_at
+    `;
+
+    await pool.query(query, values);
+  }
 }
 
 export function rowsToBars(rows: DbRow[]): Bar[] {

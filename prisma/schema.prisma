@@ -708,3 +708,88 @@ enum ChatRole {
   USER
   AGENT
 }
+
+// ============================================================================
+// TRADING STRATEGY TEMPLATES & ANALYSIS
+// ============================================================================
+
+model StrategyTemplate {
+  id                String      @id @default(cuid())
+  name              String
+  description       String?     @db.Text
+
+  // Relationships
+  analyses          Analysis[]
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@index([name])
+  @@map("strategy_templates")
+}
+
+model Analysis {
+  id                      String        @id @default(cuid())
+  strategyId              String        // References StrategyTemplate
+  createdAt               DateTime      @default(now())
+
+  // Analysis details
+  ticker                  String        @db.VarChar(10)
+  analysisDate            DateTime      @db.Date
+  dateRangeStart          DateTime      @db.Date
+  dateRangeEnd            DateTime      @db.Date
+  setupType               String        @db.VarChar(20)
+
+  // Trade parameters
+  entryPrice              Decimal?      @db.Decimal(10, 2)
+  stopLoss                Decimal?      @db.Decimal(10, 2)
+  targets                 Json?
+  invalidationLevel       Decimal?      @db.Decimal(10, 2)
+  invalidationCondition   String?       @db.Text
+  rrRatio                 Decimal?      @db.Decimal(5, 2)
+
+  // Quality metrics
+  quality                 String?       @db.VarChar(10)
+  confidence              Int?
+
+  // Analysis content
+  reasoning                String?       @db.Text
+  counterArgument          String?       @db.Text
+  patterns                 Json?
+  marketRegime             Json?
+  keyLevels                Json?
+  fullResponse             Json?
+
+  // Chart paths
+  rawChartPath             String?       @db.Text
+  annotatedChartPath       String?       @db.Text
+
+  // Relationships
+  strategyTemplate         StrategyTemplate @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  tradeOutcomes            TradeOutcome[]
+
+  @@index([ticker])
+  @@index([createdAt])
+  @@index([setupType])
+  @@index([strategyId])
+  @@map("analyses")
+}
+
+model TradeOutcome {
+  id                String      @id @default(cuid())
+  analysisId        String
+  createdAt         DateTime    @default(now())
+
+  // Outcome details
+  outcome           String      @db.VarChar(20)
+  actualEntry       Decimal?    @db.Decimal(10, 2)
+  actualExit        Decimal?    @db.Decimal(10, 2)
+  actualRr          Decimal?    @db.Decimal(5, 2)
+  notes             String?     @db.Text
+
+  // Relationships
+  analysis          Analysis     @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId])
+  @@map("trade_outcomes")
+}
