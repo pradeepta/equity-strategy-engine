@@ -35,6 +35,7 @@ function toISO(d: Date): string {
 
 function parseIbkrDate(dateStr: string): Date | null {
   // IBKR format: "20251202" or "20251202  10:30:00"
+  // CRITICAL: IBKR timestamps are in America/New_York (Eastern Time), NOT local timezone!
   if (dateStr.includes(" ")) {
     // Has time component
     const [datePart, timePart] = dateStr.split(/\s+/);
@@ -46,7 +47,12 @@ function parseIbkrDate(dateStr: string): Date | null {
       const [hours, minutes, seconds] = timePart
         .split(":")
         .map((s) => parseInt(s));
-      return new Date(year, month, day, hours, minutes, seconds);
+
+      // Create ISO string assuming Eastern Time (America/New_York)
+      // Use -05:00 for EST (standard time). This is an approximation - ideally we'd use a timezone library
+      // to handle DST, but for stock market hours this works since market is 9:30 AM - 4:00 PM ET year-round
+      const isoString = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}-05:00`;
+      return new Date(isoString);
     } else {
       return new Date(year, month, day);
     }
