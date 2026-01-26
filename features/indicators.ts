@@ -56,13 +56,51 @@ function extractOHLCV(bars: Bar[]): { high: number[], low: number[], close: numb
   };
 }
 
+/**
+ * Filter bars to only include those from the current trading day.
+ * For intraday strategies, VWAP/HOD/LOD should reset at market open each day.
+ *
+ * @param bars - All available bars (history + current bar)
+ * @param currentBar - The current bar being processed
+ * @returns Bars from the same trading day (calendar date in ET) as currentBar
+ */
+function filterTradingDay(bars: Bar[], currentBar: Bar): Bar[] {
+  // Get current bar's date in ET timezone
+  const currentDate = new Date(currentBar.timestamp);
+
+  // Convert to ET timezone calendar date (America/New_York)
+  // This handles DST automatically (UTC-4 in summer, UTC-5 in winter)
+  const etDateStr = currentDate.toLocaleDateString('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+
+  // Filter bars to same calendar date in ET
+  return bars.filter(bar => {
+    const barDate = new Date(bar.timestamp);
+    const barDateStr = barDate.toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    return barDateStr === etDateStr;
+  });
+}
+
 // ============================================================================
 // VWAP (Volume Weighted Average Price)
 // Uses technicalindicators library
+// NOTE: For intraday strategies, VWAP resets daily (uses only today's bars)
 // ============================================================================
 
 export function computeVWAP(ctx: FeatureComputeContext): FeatureValue {
-  const bars = [...ctx.history, ctx.bar];
+  const allBars = [...ctx.history, ctx.bar];
+
+  // For intraday: only use bars from current trading day
+  const bars = filterTradingDay(allBars, ctx.bar);
 
   if (bars.length === 0) return ctx.bar.close;
 
@@ -101,10 +139,15 @@ export function computeEMA(
 
 // ============================================================================
 // LOD (Low of Day) - Keep custom (trivial, no library equivalent)
+// NOTE: For intraday strategies, LOD resets daily (uses only today's bars)
 // ============================================================================
 
 export function computeLOD(ctx: FeatureComputeContext): FeatureValue {
-  const bars = [...ctx.history, ctx.bar];
+  const allBars = [...ctx.history, ctx.bar];
+
+  // For intraday: only use bars from current trading day
+  const bars = filterTradingDay(allBars, ctx.bar);
+
   if (bars.length === 0) return ctx.bar.low;
   return Math.min(...bars.map((b) => b.low));
 }
@@ -910,10 +953,15 @@ export function computeWilliamsR(ctx: FeatureComputeContext, period: number = 14
 
 // ============================================================================
 // HOD (High of Day) - Keep custom (trivial, no library equivalent)
+// NOTE: For intraday strategies, HOD resets daily (uses only today's bars)
 // ============================================================================
 
 export function computeHOD(ctx: FeatureComputeContext): FeatureValue {
-  const bars = [...ctx.history, ctx.bar];
+  const allBars = [...ctx.history, ctx.bar];
+
+  // For intraday: only use bars from current trading day
+  const bars = filterTradingDay(allBars, ctx.bar);
+
   if (bars.length === 0) return ctx.bar.high;
   return Math.max(...bars.map((b) => b.high));
 }

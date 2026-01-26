@@ -161,11 +161,18 @@ export class StrategyEngine {
       const result = await this.evaluateConditionWithLogging(transition.when, conditionLabel);
 
       if (result) {
-        // Transition triggered!
-        this.log('info', `✅ ${conditionLabel} PASSED → Transition: ${transition.from} -> ${transition.to}`);
-
-        // Detect invalidation event (MANAGING -> EXITED)
+        // Detect special events
         const isInvalidation = transition.from === 'MANAGING' && transition.to === 'EXITED';
+        const isTrigger = transition.from === 'ARMED' && transition.to === 'PLACED';
+
+        // Transition triggered!
+        if (isInvalidation) {
+          this.log('info', `🚨 ${conditionLabel} TRIGGERED → Transition: ${transition.from} -> ${transition.to}`);
+        } else if (isTrigger) {
+          this.log('info', `📍 ${conditionLabel} TRIGGERED → Transition: ${transition.from} -> ${transition.to}`);
+        } else {
+          this.log('info', `✅ ${conditionLabel} PASSED → Transition: ${transition.from} -> ${transition.to}`);
+        }
 
         // Audit log for state transitions (especially important in replay mode)
         if (this.replayMode) {
@@ -241,14 +248,22 @@ export class StrategyEngine {
     try {
       const result = await this.evaluateCondition(condition);
 
-      // Log feature values used in this condition (only in non-replay mode)
-      if (!this.replayMode) {
+      // Always log feature values for important events (INVALIDATE, order placement), otherwise only in non-replay mode
+      const isTrigger = label === 'TRIGGER' || label.includes('->PLACED') || label === 'ARMED->PLACED';
+      const isInvalidate = label === 'INVALIDATE';
+      const shouldLog = !this.replayMode || isTrigger || isInvalidate;
+
+      if (shouldLog) {
         const relevantFeatures = this.extractRelevantFeatures(condition);
-        const featureValues: Record<string, number> = {};
+        const featureValues: Record<string, number | string> = {};
 
         for (const name of relevantFeatures) {
           if (this.state.features.has(name)) {
             featureValues[name] = this.state.features.get(name) as number;
+          } else if (this.state.timers.has(name)) {
+            // Include timer values (e.g., "entry_timer")
+            const timerValue = this.state.timers.get(name);
+            featureValues[name] = `${timerValue} bars`;
           } else if (this.state.currentBar) {
             const bar = this.state.currentBar;
             if (name === 'close') featureValues[name] = bar.close;
@@ -262,7 +277,13 @@ export class StrategyEngine {
 
         if (Object.keys(featureValues).length > 0) {
           const valuesStr = Object.entries(featureValues)
-            .map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(2) : v}`)
+            .map(([k, v]) => {
+              if (typeof v === 'number') {
+                return `${k}=${v.toFixed(2)}`;
+              } else {
+                return `${k}=${v}`;
+              }
+            })
             .join(', ');
           this.log('info', `  [${label}] Values: ${valuesStr} => ${result ? 'TRUE' : 'FALSE'}`);
         }
