@@ -239,6 +239,15 @@ export class StrategyCompiler {
       });
     }
 
+    // EXITED -> IDLE: re-arm for next trade opportunity
+    // Always re-arm on next bar after exit (allows multiple trades per session)
+    transitions.push({
+      from: 'EXITED',
+      to: 'IDLE',
+      when: { type: 'literal', value: true }, // Always re-arm on next bar
+      actions: [{ type: 'log', message: 'Re-arming for next trade setup' }],
+    });
+
     // ARMED -> IDLE: if timer expires without trigger
     transitions.push({
       from: 'ARMED',
