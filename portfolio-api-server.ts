@@ -3,21 +3,19 @@
  * Simple HTTP server that exposes portfolio metrics for the web dashboard
  */
 
-import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { getRepositoryFactory, getChatRepo } from './database/RepositoryFactory';
-import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
-import { BacktestEngine } from './backtest/BacktestEngine';
-import { getStorageProvider, generateImageKey } from './lib/storage';
-import OpenAI from 'openai';
-import { StrategyCompiler } from './compiler/compile';
-import { createStandardRegistry } from './features/registry';
-import { generateDSLDocumentation, generateConversionSystemPrompt } from './lib/dslDocGenerator';
+import { PrismaClient } from '@prisma/client';
 import 'dotenv/config';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import OpenAI from 'openai';
+import { Pool } from 'pg';
+import { BacktestEngine } from './backtest/BacktestEngine';
+import { StrategyCompiler } from './compiler/compile';
+import { getChatRepo, getRepositoryFactory } from './database/RepositoryFactory';
+import { createStandardRegistry } from './features/registry';
+import { generateConversionSystemPrompt, generateDSLDocumentation } from './lib/dslDocGenerator';
+import { generateImageKey, getStorageProvider } from './lib/storage';
+import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
 
 // Create PostgreSQL connection pool
 const pool = new Pool({
@@ -915,7 +913,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const body = await parseBody(req);
+      const factory = getRepositoryFactory();
+      const prisma = factory.getPrisma();
       const chatRepo = getChatRepo();
+
+      // Ensure user exists (create if missing)
+      await prisma.user.upsert({
+        where: { id: userId },
+        update: {}, // No update needed if exists
+        create: {
+          id: userId,
+          email: process.env.USER_EMAIL || `user-${userId}@example.com`,
+          name: process.env.USER_NAME || 'Trading User',
+        },
+      });
 
       const session = await chatRepo.createSession({
         userId,
