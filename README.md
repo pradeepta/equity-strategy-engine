@@ -97,12 +97,22 @@ A production-ready algorithmic trading system with database-backed strategy mana
 # Clone and install
 git clone <repo>
 cd stocks
-npm install
+npm install  # Automatically sets up Python venv for TWS bridge
 npm run build
 
 # Setup database
 createdb trading_db
 npx prisma migrate dev --name init
+```
+
+**Note:** The `npm install` postinstall hook automatically:
+- Generates Prisma client
+- Creates Python virtual environment in `tws-bridge-server/venv`
+- Installs Python dependencies from `tws-bridge-server/requirements.txt`
+
+If you need to manually setup the TWS bridge later:
+```bash
+npm run setup:tws
 ```
 
 ### Environment Configuration

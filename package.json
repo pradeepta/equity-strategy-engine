@@ -40,7 +40,8 @@
     "movers": "ts-node fetch-movers.ts",
     "clean": "rm -rf dist",
     "prepare": "npm run build",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate && bash tws-bridge-server/setup.sh",
+    "setup:tws": "bash tws-bridge-server/setup.sh"
   },
   "keywords": [
     "trading",
