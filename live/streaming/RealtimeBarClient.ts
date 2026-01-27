@@ -291,23 +291,38 @@ export class RealtimeBarClient extends EventEmitter {
 
     logger.debug(`🔄 Bar update: ${symbol} | ${bar.date} | C=$${bar.close} | V=${bar.volume}`);
 
-    // Parse TWS date format to Unix timestamp
-    // Format: "20260126  10:30:00"
-    const dateMatch = bar.date.match(/(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
-    if (!dateMatch) {
-      logger.error(`Failed to parse bar date: ${bar.date}`);
-      return;
-    }
+    // Parse date format to Unix timestamp
+    // Handle both formats:
+    // 1. ISO 8601 from Python bridge: "2026-01-27T19:15:00+00:00" (already UTC)
+    // 2. Legacy IBKR format: "20260126  10:30:00"
+    let timestamp: number;
 
-    const [, year, month, day, hour, minute, second] = dateMatch;
-    const timestamp = new Date(
-      parseInt(year),
-      parseInt(month) - 1, // JS months are 0-indexed
-      parseInt(day),
-      parseInt(hour),
-      parseInt(minute),
-      parseInt(second)
-    ).getTime();
+    if (bar.date.includes('T') || bar.date.includes('-')) {
+      // ISO 8601 format from Python bridge - already in UTC
+      const parsed = new Date(bar.date);
+      if (isNaN(parsed.getTime())) {
+        logger.error(`Failed to parse ISO date: ${bar.date}`);
+        return;
+      }
+      timestamp = parsed.getTime();
+    } else {
+      // Legacy IBKR format: "20260126  10:30:00"
+      const dateMatch = bar.date.match(/(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+      if (!dateMatch) {
+        logger.error(`Failed to parse bar date: ${bar.date}`);
+        return;
+      }
+
+      const [, year, month, day, hour, minute, second] = dateMatch;
+      timestamp = new Date(
+        parseInt(year),
+        parseInt(month) - 1, // JS months are 0-indexed
+        parseInt(day),
+        parseInt(hour),
+        parseInt(minute),
+        parseInt(second)
+      ).getTime();
+    }
 
     // Convert to Bar format and emit
     const barData: Bar = {
