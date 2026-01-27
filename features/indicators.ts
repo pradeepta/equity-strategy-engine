@@ -28,31 +28,43 @@ import {
 
 /**
  * Extract values from bars array for a specific field
+ * CRITICAL: Validates each value to prevent NaN/Infinity from corrupting indicators
  */
 function extractField(bars: Bar[], field: 'open' | 'high' | 'low' | 'close' | 'volume'): number[] {
-  return bars.map(b => b[field]);
+  return bars.map((b, index) => {
+    const value = b[field];
+    if (!Number.isFinite(value)) {
+      throw new Error(
+        `Invalid ${field} value at bar index ${index}: ${value} ` +
+        `(timestamp: ${b.timestamp}, bar: ${JSON.stringify(b)})`
+      );
+    }
+    return value;
+  });
 }
 
 /**
  * Extract OHLC arrays from bars for indicators that need them
+ * Uses extractField for validation
  */
 function extractOHLC(bars: Bar[]): { high: number[], low: number[], close: number[] } {
   return {
-    high: bars.map(b => b.high),
-    low: bars.map(b => b.low),
-    close: bars.map(b => b.close),
+    high: extractField(bars, 'high'),
+    low: extractField(bars, 'low'),
+    close: extractField(bars, 'close'),
   };
 }
 
 /**
  * Extract OHLCV arrays from bars for volume-based indicators
+ * Uses extractField for validation
  */
 function extractOHLCV(bars: Bar[]): { high: number[], low: number[], close: number[], volume: number[] } {
   return {
-    high: bars.map(b => b.high),
-    low: bars.map(b => b.low),
-    close: bars.map(b => b.close),
-    volume: bars.map(b => b.volume),
+    high: extractField(bars, 'high'),
+    low: extractField(bars, 'low'),
+    close: extractField(bars, 'close'),
+    volume: extractField(bars, 'volume'),
   };
 }
 
