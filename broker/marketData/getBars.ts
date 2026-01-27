@@ -225,24 +225,28 @@ export async function getBars(
   while (true) {
     attempt++;
 
-    logger.debug("Attempting to get bars", {
+    logger.info("🔍 Cache lookup attempt", {
       symbol,
       period,
-      session,
-      what,
       attempt,
+      limit,
       windowStart: toISO(windowStart),
       windowEnd: toISO(windowEnd),
-      includeForming,
     });
 
     // 1) Read from cache
+    // CRITICAL: When limit is specified, query ALL bars up to windowEnd (not just within window)
+    // This ensures we see bars inserted in previous loop iterations
+    const cacheQueryStart = limit
+      ? new Date(windowEnd.getTime() - 365 * 24 * 60 * 60 * 1000) // 1 year back
+      : windowStart;
+
     const cachedRows = await readBarsFromDb(pool, {
       symbol,
       period,
       what,
       session,
-      start: windowStart,
+      start: cacheQueryStart,
       end: windowEnd,
     });
 
@@ -259,6 +263,18 @@ export async function getBars(
 
     // Check if we have enough bars and they're not stale
     const enough = limit ? cachedBars.length >= limit && !isStale : !isStale;
+
+    logger.info("📊 Cache decision", {
+      symbol,
+      period,
+      cachedCount: cachedBars.length,
+      requestedLimit: limit,
+      isStale,
+      enough,
+      decision: enough ? "USE_CACHE" : "FETCH_MORE",
+      reason: !enough && limit && cachedBars.length < limit ? `Need ${limit} bars, only have ${cachedBars.length}` :
+              !enough && isStale ? `Cache is stale (${Math.floor((windowEnd.getTime() - lastBarTimeMs!) / 1000)}s old, threshold ${Math.floor(staleThresholdMs / 1000)}s)` : "OK",
+    });
 
     if (enough) {
       if (cachedBars.length > 0) sources.push("cache");

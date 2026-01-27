@@ -232,9 +232,16 @@ logger.info('[MultiStrategyManager] Loading strategy', {
 
 ### Documentation Files
 - **NEVER proactively create documentation files** (*.md) after completing tasks
+- **NEVER create summary documents, validation reports, or "fix summaries"** for routine bug fixes, small changes, or troubleshooting work
 - **ONLY create documentation** when explicitly requested by the user
 - Focus on completing the actual implementation work
-- Existing documentation should be updated only when necessary (e.g., when adding new major features that require explanation)
+- Update CLAUDE.md ONLY for major architectural changes or new subsystems (not for every bug fix)
+- Examples of what NOT to document:
+  - Individual bug fixes
+  - Timeout adjustments
+  - Validation additions
+  - Query optimizations
+  - Small refactors
 - Summary documents, README files, or guides should not be created automatically
 
 ---
@@ -797,6 +804,14 @@ psql "$(grep "^DATABASE_URL" .env | cut -d'=' -f2- | tr -d '"')" -c "YOUR_QUERY_
 ---
 
 ## Recent Fixes & Improvements
+
+**What belongs here:** Only document major features, architectural changes, or critical fixes that:
+- Add new subsystems or capabilities
+- Change existing behavior in significant ways
+- Require configuration changes by users
+- Are referenced frequently when debugging
+
+**What does NOT belong here:** Routine bug fixes, timeout adjustments, validation additions, query optimizations, small refactors.
 
 ### 7. TWS Market Data Type Configuration (2026-01-22)
 
