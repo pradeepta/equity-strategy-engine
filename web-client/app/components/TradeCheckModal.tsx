@@ -10,13 +10,11 @@ import {
 interface TradeCheckModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onUseAnalysis?: (analysis: TradeCheckAnalysis, regime: MarketRegime) => void;
 }
 
 export default function TradeCheckModal({
   isOpen,
-  onClose,
-  onUseAnalysis
+  onClose
 }: TradeCheckModalProps) {
   const [symbol, setSymbol] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -67,13 +65,6 @@ export default function TradeCheckModal({
       setError(err instanceof Error ? err.message : 'Failed to analyze symbol');
     } finally {
       setIsAnalyzing(false);
-    }
-  };
-
-  const handleUseAnalysis = () => {
-    if (analysis && regime && onUseAnalysis) {
-      onUseAnalysis(analysis, regime);
-      onClose();
     }
   };
 
@@ -607,22 +598,6 @@ export default function TradeCheckModal({
                     }}
                   >
                     {isAnalyzing ? 'Deploying...' : '🚀 Deploy Strategy'}
-                  </button>
-                )}
-                {onUseAnalysis && (
-                  <button
-                    onClick={handleUseAnalysis}
-                    style={{
-                      padding: '10px 20px',
-                      backgroundColor: '#f55036',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontWeight: 500,
-                    }}
-                  >
-                    Use This Analysis
                   </button>
                 )}
               </div>
