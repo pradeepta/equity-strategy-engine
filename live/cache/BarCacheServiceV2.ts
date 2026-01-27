@@ -150,7 +150,7 @@ export class BarCacheServiceV2 {
     // Use per-request parameters if provided, otherwise fall back to config defaults
     const session = options.session || this.config.session;
     const what = options.what || this.config.what;
-    const end = options.end || 'now';
+    const end = options.end; // Don't pass 'now' string - undefined = current time
 
     logger.debug('[BarCacheServiceV2] Getting bars', {
       symbol,

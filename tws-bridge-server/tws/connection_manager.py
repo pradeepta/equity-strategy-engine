@@ -101,9 +101,19 @@ class TWSConnectionManager:
 
     def connect(self) -> bool:
         """Connect to TWS/IB Gateway."""
-        if self.is_connected():
+        # Check if truly connected (both client socket and wrapper state)
+        if self.client.isConnected() and self.wrapper.is_connected:
             logger.debug("Already connected to TWS")
             return True
+
+        # If client thinks it's connected but wrapper doesn't, force disconnect
+        if self.client.isConnected() and not self.wrapper.is_connected:
+            logger.warning("⚠️  Client connected but wrapper disconnected, forcing cleanup...")
+            try:
+                self.client.disconnect()
+                time.sleep(1)
+            except Exception as e:
+                logger.debug(f"Cleanup disconnect error: {e}")
 
         try:
             logger.info(f"🔌 Connecting to TWS at {settings.tws_host}:{settings.tws_port}...")
@@ -114,7 +124,7 @@ class TWSConnectionManager:
                 settings.tws_client_id
             )
 
-            # Start API message processing thread
+            # Start API message processing thread (always start fresh if not alive)
             if self._api_thread is None or not self._api_thread.is_alive():
                 self._api_thread = threading.Thread(
                     target=self._run_api_loop,
@@ -122,6 +132,7 @@ class TWSConnectionManager:
                     name="TWS-API-Thread"
                 )
                 self._api_thread.start()
+                logger.debug("✅ TWS API thread started")
 
             # Wait for connection confirmation
             connected = self.wrapper.connection_event.wait(timeout=settings.tws_connect_timeout)
@@ -188,7 +199,22 @@ class TWSConnectionManager:
             try:
                 if not self.is_connected():
                     logger.warning("⚠️  TWS connection lost, attempting reconnect...")
-                    self.connect()
+
+                    # Force full disconnect to clean up stale state
+                    try:
+                        self.client.disconnect()
+                        self.wrapper.is_connected = False
+                        self.wrapper.connection_event.clear()
+                        # Wait for socket to fully close
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.debug(f"Disconnect during reconnect: {e}")
+
+                    # Attempt reconnect
+                    if self.connect():
+                        logger.info("✅ Successfully reconnected to TWS")
+                    else:
+                        logger.error("❌ Reconnect attempt failed, will retry in 10s")
 
                 # Check every 10 seconds
                 self._should_stop.wait(timeout=10)

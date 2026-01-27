@@ -7,13 +7,13 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import 'dotenv/config';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import OpenAI from 'openai';
 import { Pool } from 'pg';
+import WebSocket from 'ws';
 import { BacktestEngine } from './backtest/BacktestEngine';
 import { StrategyCompiler } from './compiler/compile';
 import { getChatRepo, getRepositoryFactory } from './database/RepositoryFactory';
 import { createStandardRegistry } from './features/registry';
-import { generateConversionSystemPrompt, generateDSLDocumentation } from './lib/dslDocGenerator';
+import { generateDSLDocumentation } from './lib/dslDocGenerator';
 import { generateImageKey, getStorageProvider } from './lib/storage';
 import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
 
@@ -402,88 +402,228 @@ const getLogStats = async () => {
   };
 };
 
-// Convert TradeCheck analysis to YAML strategy using Claude
-// DSL System Prompt is generated dynamically from the feature registry
+// Convert TradeCheck analysis to YAML strategy using Claude Code via AI Gateway
 const convertTradeCheckToYAML = async (
   analysis: any,
   marketRegime: any,
   maxRisk: number = 350
 ): Promise<{ yaml: string; warnings: string[] }> => {
 
-  // Validate required Azure OpenAI environment variables
-  if (!process.env.AZURE_OPENAI_ENDPOINT) {
-    throw new Error('AZURE_OPENAI_ENDPOINT not set in environment');
-  }
-  if (!process.env.AZURE_OPENAI_API_KEY) {
-    throw new Error('AZURE_OPENAI_API_KEY not set in environment');
-  }
-  if (!process.env.AZURE_OPENAI_DEPLOYMENT) {
-    throw new Error('AZURE_OPENAI_DEPLOYMENT not set in environment');
-  }
+  const gatewayUrl = process.env.ACP_GATEWAY_URL || 'ws://localhost:8787/acp';
+  const cwd = process.env.ACP_CWD || process.cwd();
 
-  // Initialize Azure OpenAI client
-  const client = new OpenAI({
-    apiKey: process.env.AZURE_OPENAI_API_KEY,
-    baseURL: `${process.env.AZURE_OPENAI_ENDPOINT}/openai/deployments/${process.env.AZURE_OPENAI_DEPLOYMENT}`,
-    defaultQuery: { 'api-version': process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview' },
-    defaultHeaders: { 'api-key': process.env.AZURE_OPENAI_API_KEY }
-  });
+  console.log(`[portfolio-api] Connecting to AI Gateway at ${gatewayUrl}`);
 
-  // Build user prompt
-  const userPrompt = `
-Convert this TradeCheck analysis to valid YAML:
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(gatewayUrl);
+    let requestId = 1;
+    let sessionId: string | null = null;
+    let buffer = '';
+    let responseText = '';
+    const warnings: string[] = [];
+    let hasReceivedAnyMessage = false;
 
-${JSON.stringify({ analysis, marketRegime, maxRiskPerTrade: maxRisk }, null, 2)}
+    const timeout = setTimeout(() => {
+      console.error('[portfolio-api] Timeout - hasReceivedAnyMessage:', hasReceivedAnyMessage);
+      console.error('[portfolio-api] Timeout - responseText length:', responseText.length);
+      ws.close();
+      reject(new Error('AI Gateway timeout after 60 seconds'));
+    }, 60000);
 
-Requirements:
-- Use timeframe: 5m (5-minute bars)
-- Calculate qty: floor(${maxRisk} / abs(entry - stop))
-- Validate stop loss is on correct side of entry
-- Validate targets are on correct side of entry
-- Infer appropriate features from patterns and key_levels
-- Create meaningful arm/trigger/invalidate rules
-- Output ONLY YAML, no markdown or explanations
-`;
+    ws.on('open', () => {
+      console.log('[portfolio-api] AI Gateway WebSocket connected');
 
-  try {
-    // Generate DSL system prompt dynamically from feature registry
-    const dslSystemPrompt = generateConversionSystemPrompt();
+      // Send session/new request with persona
+      const sessionNewMsg = {
+        jsonrpc: '2.0',
+        id: requestId++,
+        method: 'session/new',
+        params: {
+          cwd,
+          persona: 'blackrock_advisor',  // Use the trading strategy persona
+          mcpServers: [{
+            name: 'stocks-mcp',
+            type: 'stdio',
+            command: 'node',
+            args: [process.env.MCP_SERVER_PATH || './dist/mcp-server.js'],
+            env: []
+          }]
+        }
+      };
 
-    // Call Azure OpenAI API
-    const response = await client.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT!,
-      messages: [
-        { role: 'system', content: dslSystemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      max_completion_tokens: 4096,
-      temperature: 0.7
+      console.log('[portfolio-api] Sending session/new with payload:', JSON.stringify(sessionNewMsg, null, 2));
+      ws.send(JSON.stringify(sessionNewMsg));
     });
 
-    // Extract YAML from response
-    let yaml = response.choices[0]?.message?.content || '';
+    ws.on('message', (data) => {
+      hasReceivedAnyMessage = true;
+      const dataStr = data.toString();
+      console.log('[portfolio-api] Received message:', dataStr.substring(0, 500));
 
-    // Remove markdown code fences if present
-    yaml = yaml.replace(/```ya?ml\n?/g, '').replace(/```\n?/g, '').trim();
+      buffer += dataStr;
 
-    // Validate compilation
-    const warnings: string[] = [];
-    try {
-      const registry = createStandardRegistry();
-      const compiler = new StrategyCompiler(registry);
-      compiler.compileFromYAML(yaml);
-    } catch (compileError: any) {
-      throw new Error(`YAML compilation failed: ${compileError.message}`);
+      // Try to parse as complete JSON first (non-newline-delimited)
+      try {
+        const msg = JSON.parse(buffer);
+        console.log('[portfolio-api] Parsed complete message:', JSON.stringify(msg, null, 2).substring(0, 500));
+        buffer = ''; // Clear buffer on successful parse
+        handleMessage(msg);
+        return;
+      } catch (e) {
+        // Not a complete JSON object yet, try newline-delimited parsing
+      }
+
+      // Try to parse newline-delimited JSON messages
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        try {
+          const msg = JSON.parse(line);
+          console.log('[portfolio-api] Parsed line message:', JSON.stringify(msg, null, 2).substring(0, 500));
+          handleMessage(msg);
+        } catch (parseError) {
+          // Ignore JSON parse errors for individual lines
+        }
+      }
+    });
+
+    function handleMessage(msg: any) {
+      // Session created
+      if (msg.result?.sessionId && !sessionId) {
+        sessionId = msg.result.sessionId;
+        console.log('[portfolio-api] Session created:', sessionId);
+
+        // Send the prompt
+        const userPrompt = `Convert this TradeCheck analysis to a valid trading strategy YAML.
+
+Analysis Data:
+${JSON.stringify({ analysis, marketRegime, maxRiskPerTrade: maxRisk }, null, 2)}
+
+WORKFLOW (FOLLOW EXACTLY):
+1. FIRST: Call get_dsl_schema tool to see the exact YAML schema
+2. SECOND: Create the YAML strategy following the schema exactly
+3. THIRD: Call compile_strategy tool with your YAML to validate it
+4. FOURTH: If compilation fails, fix the errors and call compile_strategy again
+5. FIFTH: Only after compilation succeeds, return the final YAML
+
+YAML Requirements:
+- timeframe: 5m
+- qty: floor(${maxRisk} / abs(entry - stop))
+- Features must have 'type' field (builtin/indicator)
+- entryZone must be array format: [low, high]
+- Use stopPrice (not stopLoss)
+- Targets need ratioOfPosition field
+
+OUTPUT FORMAT:
+- Return ONLY the raw YAML that passed compile_strategy validation
+- Start with "meta:" - nothing before it
+- NO explanations, NO markdown fences
+- Just the compiled YAML text`;
+
+        const promptMsg = {
+          jsonrpc: '2.0',
+          id: requestId++,
+          method: 'session/prompt',
+          params: {
+            sessionId,
+            stream: true,
+            prompt: [{ type: 'text', text: userPrompt }]
+          }
+        };
+
+        console.log('[portfolio-api] Sending prompt');
+        ws.send(JSON.stringify(promptMsg));
+      }
+
+      // Streaming update
+      if (msg.method === 'session/update') {
+        const update = msg.params?.update;
+        const text = extractText(update?.textContent || update?.content);
+        if (text) {
+          responseText += text;
+          console.log('[portfolio-api] Accumulated response length:', responseText.length);
+        }
+      }
+
+      // Stop reason (done)
+      if (msg.result?.stopReason) {
+        console.log('[portfolio-api] Response complete, stopReason:', msg.result.stopReason);
+        console.log('[portfolio-api] Full response text:\n', responseText);
+        clearTimeout(timeout);
+        ws.close();
+
+        // Clean up response - extract YAML
+        let yaml = responseText.trim();
+
+        // Try to extract YAML starting with 'meta:' (preferred, since we asked for raw YAML)
+        const yamlMatch = yaml.match(/(meta:[\s\S]+)/);
+        if (yamlMatch) {
+          yaml = yamlMatch[1].trim();
+          console.log('[portfolio-api] Extracted YAML starting with meta:');
+        } else {
+          // Fallback: try code fences if Claude ignored instructions
+          const yamlFenceMatch = yaml.match(/```ya?ml\n?([\s\S]+?)```/);
+          if (yamlFenceMatch) {
+            yaml = yamlFenceMatch[1].trim();
+            console.log('[portfolio-api] Extracted YAML from code fence (fallback)');
+          } else {
+            // Last resort: clean up any markdown
+            yaml = yaml.replace(/```ya?ml\n?/g, '').replace(/```\n?/g, '').trim();
+            console.log('[portfolio-api] Using cleaned response text');
+          }
+        }
+
+        // Validate compilation
+        try {
+          const registry = createStandardRegistry();
+          const compiler = new StrategyCompiler(registry);
+          compiler.compileFromYAML(yaml);
+          console.log('[portfolio-api] YAML compilation successful');
+        } catch (compileError: any) {
+          console.error('[portfolio-api] YAML compilation failed:', compileError.message);
+          reject(new Error(`YAML compilation failed: ${compileError.message}`));
+          return;
+        }
+
+        resolve({ yaml, warnings });
+      }
+
+      // Error
+      if (msg.error?.message) {
+        console.error('[portfolio-api] AI Gateway error:', msg.error.message);
+        clearTimeout(timeout);
+        ws.close();
+        reject(new Error(`AI Gateway error: ${msg.error.message}`));
+      }
     }
 
-    return { yaml, warnings };
+    ws.on('error', (error) => {
+      console.error('[portfolio-api] WebSocket error:', error);
+      clearTimeout(timeout);
+      reject(new Error(`WebSocket error: ${error.message}`));
+    });
 
-  } catch (error: any) {
-    if (error.message?.includes('YAML compilation failed')) {
-      throw error; // Re-throw compilation errors
+    ws.on('close', () => {
+      console.log('[portfolio-api] WebSocket closed');
+      clearTimeout(timeout);
+    });
+
+    // Helper to extract text from content
+    function extractText(content: any): string | undefined {
+      if (!content) return undefined;
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        return content
+          .map((item) => (typeof item?.text === 'string' ? item.text : ''))
+          .join('');
+      }
+      if (typeof content?.text === 'string') return content.text;
+      return undefined;
     }
-    throw new Error(`LLM conversion failed: ${error.message}`);
-  }
+  });
 };
 
 // Fetch analysis from TradeCheck backend

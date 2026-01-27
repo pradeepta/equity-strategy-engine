@@ -162,12 +162,24 @@ export async function getBars(
   // Resolve end time
   const endDt = end && end !== "now" ? new Date(end) : new Date();
 
+  logger.info(`[getBars] 🔍 endDt resolution`, {
+    endParam: end,
+    endDt: endDt.toISOString(),
+    isValidDate: !isNaN(endDt.getTime())
+  });
+
   // Align end to period boundary (avoid partial last bar)
   // Unless includeForming is true, in which case use current time to get forming bar
   const includeForming = params.includeForming || false;
   const endAligned = includeForming
     ? endDt // Use current time as-is to include forming bar
     : new Date(Math.floor(endDt.getTime() / 1000 / periodSec) * periodSec * 1000); // Round to period boundary
+
+  logger.info(`[getBars] 📐 endAligned calculation`, {
+    includeForming,
+    endDt: endDt.toISOString(),
+    endAligned: endAligned.toISOString()
+  });
 
   let windowStart: Date;
   let windowEnd: Date = endAligned;
@@ -187,24 +199,55 @@ export async function getBars(
 
   // Market close: 4:00 PM local exchange time (handle DST via timezone conversion)
   const marketCloseHour = 16;
+  const marketOpenHour = 9;
+  const marketOpenMinute = 30;
 
-  // If current time is after market close, anchor windowEnd to market close
-  if (
-    (marketHour > marketCloseHour ||
-      (marketHour === marketCloseHour && marketMinute >= 0)) &&
-    !start
-  ) {
-    // Create market close time: 4:00 PM market time today (DST-aware)
+  // Check if we should anchor to market close:
+  // 1. After 4:00 PM same day (e.g., 5 PM, 8 PM, 11 PM)
+  // 2. Before 9:30 AM (overnight hours - e.g., 1 AM, 6 AM should use yesterday's close)
+  const isAfterClose = marketHour > marketCloseHour || (marketHour === marketCloseHour && marketMinute >= 0);
+  const isBeforeOpen = marketHour < marketOpenHour || (marketHour === marketOpenHour && marketMinute < marketOpenMinute);
+  const shouldAnchor = (isAfterClose || isBeforeOpen) && !start;
+
+  logger.info(`[getBars] ⏰ Market close anchoring check`, {
+    marketHour,
+    marketMinute,
+    marketCloseHour,
+    marketOpenHour,
+    marketOpenMinute,
+    startParam: start,
+    isAfterClose,
+    isBeforeOpen,
+    shouldAnchor
+  });
+
+  // If current time is after market close OR before market open, anchor windowEnd to market close
+  if (shouldAnchor) {
+    // If we're in overnight hours (before market open), use yesterday's close
+    let closeYear = marketYear;
+    let closeMonth = marketMonthIndex;
+    let closeDay = marketDay;
+
+    if (isBeforeOpen && !isAfterClose) {
+      // Subtract one day for overnight hours
+      const marketDate = new Date(Date.UTC(marketYear, marketMonthIndex, marketDay));
+      marketDate.setUTCDate(marketDate.getUTCDate() - 1);
+      closeYear = marketDate.getUTCFullYear();
+      closeMonth = marketDate.getUTCMonth();
+      closeDay = marketDate.getUTCDate();
+    }
+
+    // Create market close time: 4:00 PM market time (DST-aware)
     windowEnd = marketTzTimeToUtcDate(
-      marketYear,
-      marketMonthIndex,
-      marketDay,
+      closeYear,
+      closeMonth,
+      closeDay,
       marketCloseHour,
       0,
       0
     );
-    logger.debug(
-      `Current time (${String(marketHour).padStart(2, "0")}:${String(marketMinute).padStart(2, "0")} EST) is at/after market close. Anchoring windowEnd to ${windowEnd.toISOString()} (4:00 PM EST)`
+    logger.info(
+      `✅ ANCHORED to market close: Current=${String(marketHour).padStart(2, "0")}:${String(marketMinute).padStart(2, "0")} EST, using ${isBeforeOpen && !isAfterClose ? 'yesterday' : 'today'}'s close at windowEnd=${windowEnd.toISOString()}`
     );
   }
 
