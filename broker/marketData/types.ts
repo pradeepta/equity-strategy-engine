@@ -18,6 +18,7 @@ export interface GetBarsParams {
   session?: Session;
   what?: What;
   tz?: string;    // informational; storage is UTC TIMESTAMPTZ
+  includeForming?: boolean; // Include the current incomplete/forming bar
 }
 
 export interface Bar {

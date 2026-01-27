@@ -108,8 +108,8 @@ export async function upsertBars(
         period,
         what,
         session,
-        b.barstart.toISOString(),
-        b.barend.toISOString(),
+        b.barstart, // PostgreSQL will handle Date object directly with proper timezone
+        b.barend,   // PostgreSQL will handle Date object directly with proper timezone
         b.o,
         b.h,
         b.l,
@@ -117,7 +117,7 @@ export async function upsertBars(
         b.v,
         b.wap ?? null,
         b.tradeCount != null ? Math.round(b.tradeCount) : null, // Round to integer for database
-        new Date().toISOString()
+        new Date() // Pass Date object directly - PostgreSQL will store in local timezone
       );
     });
 

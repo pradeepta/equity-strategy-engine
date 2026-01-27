@@ -848,6 +848,97 @@ TWS_MARKET_DATA_TYPE=2  # Frozen (safe, recommended)
 
 ---
 
+### 8. Real-Time Bar Streaming with keepUpToDate (2026-01-26)
+
+**Problem:** When using fast loop override (`ORCHESTRATOR_LOOP_INTERVAL_MS < 60000`), the system couldn't get intrabar updates because TWS historical data API only returns complete closed bars.
+
+**Root Cause:** The `reqHistoricalData()` API with standard parameters only returns bars that have finished forming. For a 5-minute strategy checking every 10 seconds, the same completed bar would be returned repeatedly until the next 5-minute period closed.
+
+**Solution:** Implemented TWS `keepUpToDate` parameter for real-time bar streaming.
+
+**How keepUpToDate Works:**
+- When enabled, TWS sends completed bars via `historicalData` events (as usual)
+- Then continues sending updates for the forming/incomplete bar via `historicalDataUpdate` events
+- The forming bar updates arrive continuously as new trades occur
+- The last bar in the array is updated in-place with each new snapshot
+
+**Files Modified:**
+- [broker/marketData/ibkr.ts:41-60](broker/marketData/ibkr.ts#L41-L60) - Added `includeForming` parameter
+- [broker/marketData/ibkr.ts:145-154](broker/marketData/ibkr.ts#L145-L154) - Set `keepUpToDate=true` when `includeForming=true`
+- [broker/marketData/ibkr.ts:205-235](broker/marketData/ibkr.ts#L205-L235) - Wait for forming bar after historical data completes
+- [broker/marketData/ibkr.ts:274-351](broker/marketData/ibkr.ts#L274-L351) - Handle `historicalDataUpdate` events
+- [broker/marketData/getBars.ts:91-94](broker/marketData/getBars.ts#L91-L94) - Pass `includeForming` to IBKR fetcher
+- [broker/marketData/getBars.ts:168](broker/marketData/getBars.ts#L168) - Mark result with `partial_last_bar: true`
+- [.env.example:50-59](.env.example#L50-L59) - Updated documentation
+
+**Implementation Details:**
+
+```typescript
+// When includeForming=true:
+const endDateTime = includeForming ? "" : ibkrEndDateTime(windowEnd); // Empty string required
+const keepUpToDate = includeForming; // Enable real-time updates
+
+// Historical bars arrive via historicalData
+ibEmitter.on("historicalData", (id, date, open, high, low, close, volume, wap, barCount) => {
+  if (date.startsWith("finished")) {
+    // Wait 2 seconds for at least one forming bar update
+    setTimeout(() => resolve(bars), 2000);
+    return;
+  }
+  bars.push({ date, open, high, low, close, volume, wap, barCount });
+});
+
+// Forming bar updates arrive via historicalDataUpdate
+ibEmitter.on("historicalDataUpdate", (id, date, open, high, low, close, volume, wap, barCount) => {
+  const existingBarIndex = bars.findIndex((b) => b.date === date);
+  if (existingBarIndex >= 0) {
+    // Update existing forming bar in-place
+    bars[existingBarIndex] = { date, open, high, low, close, volume, wap, barCount };
+  } else {
+    // Add new forming bar
+    bars.push({ date, open, high, low, close, volume, wap, barCount });
+  }
+});
+```
+
+**Automatic Activation:**
+When `ORCHESTRATOR_LOOP_INTERVAL_MS < 60000` (less than 1 minute):
+- Cache bypass enabled (`forceRefresh=true`)
+- Real-time streaming enabled (`includeForming=true`)
+- Result metadata includes `partial_last_bar: true`
+
+**Requirements:**
+- TWS API keepUpToDate requires bar size >= 5 seconds
+- Supported: 5m, 15m, 30m, 1h, 1d timeframes
+- Must use `endDateTime=""` (empty string for current time)
+- Not supported: sub-5-second bars
+
+**Benefits:**
+- Strategies can react to intrabar price movements
+- Entry conditions tested against live forming bars
+- Useful for development/testing with fast loops
+- No need to wait for bar close to see price updates
+
+**Example Workflow:**
+```bash
+# .env
+ORCHESTRATOR_LOOP_INTERVAL_MS=10000  # Check every 10 seconds
+
+# Orchestrator behavior:
+# T+0s:  Fetch bars with keepUpToDate=true → 100 complete + 1 forming bar
+# T+10s: Fetch bars → forming bar updated with latest trades
+# T+20s: Fetch bars → forming bar updated again
+# ... continues until bar closes, then new forming bar starts
+```
+
+**Limitations:**
+- Forming bars are not cached (always fetched live)
+- Each bar update replaces the previous forming bar snapshot
+- No historical data for forming bars (only current incomplete bar)
+- Connection stays open briefly (2 seconds) after historical data completes
+
+---
+
 ## Historical Fixes (2026-01-20 and earlier)
 
 ### 1. Strategy Reopen Idempotency Fix

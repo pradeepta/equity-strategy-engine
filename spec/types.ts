@@ -205,7 +205,7 @@ export interface StrategyRuntimeState {
 export interface RuntimeLog {
   timestamp: number;
   barNum: number;
-  level: 'info' | 'warn' | 'error';
+  level: 'info' | 'warn' | 'error' | 'debug';
   message: string;
   data?: Record<string, unknown>;
 }

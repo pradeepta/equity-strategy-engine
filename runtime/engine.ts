@@ -84,6 +84,11 @@ export class StrategyEngine {
 
       // Evaluate transitions from current state
       await this.evaluateTransitions();
+
+      // Log summary after bar processing (only in live mode)
+      if (!this.replayMode) {
+        this.log('info', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      }
     } finally {
       this.replayMode = false;
     }
@@ -145,13 +150,29 @@ export class StrategyEngine {
       (t) => t.from === this.state.currentState
     );
 
-    for (const transition of possibleTransitions) {
-      if (await this.evaluateCondition(transition.when)) {
-        // Transition triggered!
-        this.log('info', `Transition: ${transition.from} -> ${transition.to}`);
+    // Log current state and bar info
+    const bar = this.state.currentBar;
+    if (!this.replayMode) {
+      this.log('info', `[${this.state.symbol}] State: ${this.state.currentState} | Bar #${this.state.barCount} | Price: $${bar?.close.toFixed(2)} | Vol: ${bar?.volume}`);
+    }
 
-        // Detect invalidation event (MANAGING -> EXITED)
+    for (const transition of possibleTransitions) {
+      const conditionLabel = this.getTransitionLabel(transition.from, transition.to);
+      const result = await this.evaluateConditionWithLogging(transition.when, conditionLabel);
+
+      if (result) {
+        // Detect special events
         const isInvalidation = transition.from === 'MANAGING' && transition.to === 'EXITED';
+        const isTrigger = transition.from === 'ARMED' && transition.to === 'PLACED';
+
+        // Transition triggered!
+        if (isInvalidation) {
+          this.log('info', `🚨 ${conditionLabel} TRIGGERED → Transition: ${transition.from} -> ${transition.to}`);
+        } else if (isTrigger) {
+          this.log('info', `📍 ${conditionLabel} TRIGGERED → Transition: ${transition.from} -> ${transition.to}`);
+        } else {
+          this.log('info', `✅ ${conditionLabel} PASSED → Transition: ${transition.from} -> ${transition.to}`);
+        }
 
         // Audit log for state transitions (especially important in replay mode)
         if (this.replayMode) {
@@ -199,8 +220,107 @@ export class StrategyEngine {
 
         // Only one transition per bar
         break;
+      } else {
+        // Transition failed - log why (only in non-replay mode)
+        if (!this.replayMode) {
+          this.log('debug', `❌ ${conditionLabel} FAILED`);
+        }
       }
     }
+  }
+
+  /**
+   * Get human-readable label for transition
+   */
+  private getTransitionLabel(from: string, to: string): string {
+    if (from === 'IDLE' && to === 'ARMED') return 'ARM';
+    if (from === 'ARMED' && to === 'TRIGGERED') return 'TRIGGER';
+    if (from === 'TRIGGERED' && to === 'MANAGING') return 'ENTRY';
+    if (from === 'MANAGING' && to === 'EXITED') return 'INVALIDATE';
+    if (from === 'ARMED' && to === 'IDLE') return 'DISARM';
+    return `${from}->${to}`;
+  }
+
+  /**
+   * Evaluate condition with detailed logging
+   */
+  private async evaluateConditionWithLogging(condition: any, label: string): Promise<boolean> {
+    try {
+      const result = await this.evaluateCondition(condition);
+
+      // Always log feature values for important events (INVALIDATE, order placement), otherwise only in non-replay mode
+      const isTrigger = label === 'TRIGGER' || label.includes('->PLACED') || label === 'ARMED->PLACED';
+      const isInvalidate = label === 'INVALIDATE';
+      const shouldLog = !this.replayMode || isTrigger || isInvalidate;
+
+      if (shouldLog) {
+        const relevantFeatures = this.extractRelevantFeatures(condition);
+        const featureValues: Record<string, number | string> = {};
+
+        for (const name of relevantFeatures) {
+          if (this.state.features.has(name)) {
+            featureValues[name] = this.state.features.get(name) as number;
+          } else if (this.state.timers.has(name)) {
+            // Include timer values (e.g., "entry_timer")
+            const timerValue = this.state.timers.get(name);
+            featureValues[name] = `${timerValue} bars`;
+          } else if (this.state.currentBar) {
+            const bar = this.state.currentBar;
+            if (name === 'close') featureValues[name] = bar.close;
+            else if (name === 'open') featureValues[name] = bar.open;
+            else if (name === 'high') featureValues[name] = bar.high;
+            else if (name === 'low') featureValues[name] = bar.low;
+            else if (name === 'volume') featureValues[name] = bar.volume;
+            else if (name === 'price') featureValues[name] = bar.close;
+          }
+        }
+
+        if (Object.keys(featureValues).length > 0) {
+          const valuesStr = Object.entries(featureValues)
+            .map(([k, v]) => {
+              if (typeof v === 'number') {
+                return `${k}=${v.toFixed(2)}`;
+              } else {
+                return `${k}=${v}`;
+              }
+            })
+            .join(', ');
+          this.log('info', `  [${label}] Values: ${valuesStr} => ${result ? 'TRUE' : 'FALSE'}`);
+        }
+      }
+
+      return result;
+    } catch (error) {
+      const err = error as Error;
+      this.log('error', `Failed to evaluate ${label}: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Extract feature/variable names from condition expression
+   */
+  private extractRelevantFeatures(condition: any): Set<string> {
+    const features = new Set<string>();
+
+    const traverse = (node: any) => {
+      if (!node) return;
+
+      if (node.type === 'identifier' && node.name) {
+        features.add(node.name);
+      }
+      if (node.left) traverse(node.left);
+      if (node.right) traverse(node.right);
+      if (node.argument) traverse(node.argument);
+      if (node.arguments) {
+        for (const arg of node.arguments) {
+          traverse(arg);
+        }
+      }
+    };
+
+    traverse(condition);
+    return features;
   }
 
   /**
@@ -449,15 +569,21 @@ export class StrategyEngine {
                 this.log('info', `Successfully cancelled ${cancelResult.succeeded.length} orders`);
               }
 
+              // Log order plan details before submission
+              this.log('info', `📤 Submitting order plan: ${plan.id} | Side: ${plan.side} | Qty: ${plan.qty} | Entry: [${plan.entryZone[0]}, ${plan.entryZone[1]}] | Stop: ${plan.stopPrice}`);
+
               // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
                 plan,
                 this.brokerEnv
               );
               this.state.openOrders.push(...orders);
-              this.log('info', `Submitted order plan: ${action.planId}`, {
-                ordersCount: orders.length,
-              });
+              this.log('info', `✅ Successfully submitted ${orders.length} order(s) for ${action.planId}`);
+
+              // Log individual order details
+              for (const order of orders) {
+                this.log('info', `  └─ Order ${order.id}: ${order.side} ${order.qty} @ ${order.type} | ${order.limitPrice ? `Limit: ${order.limitPrice}` : ''} ${order.stopPrice ? `Stop: ${order.stopPrice}` : ''}`);
+              }
             }
           }
           break;
@@ -542,7 +668,7 @@ export class StrategyEngine {
    * Log a message
    */
   private log(
-    level: 'info' | 'warn' | 'error',
+    level: 'info' | 'warn' | 'error' | 'debug',
     message: string,
     data?: Record<string, unknown>
   ): void {
@@ -554,6 +680,12 @@ export class StrategyEngine {
       data,
     };
     this.state.log.push(entry);
+
+    // Only log debug messages if DEBUG env var is set
+    if (level === 'debug' && !process.env.DEBUG) {
+      return;
+    }
+
     console.log(
       `[Bar ${this.state.barCount}] [${level.toUpperCase()}] ${message}`,
       data ? JSON.stringify(data) : ''

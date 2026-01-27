@@ -1,0 +1,24 @@
+# TWS Bridge Server Dependencies
+
+# TWS API
+ibapi>=9.81.1
+
+# FastAPI web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Data validation
+pydantic>=2.4.0
+pydantic-settings>=2.0.0
+
+# HTTP client (for health checks)
+httpx>=0.25.0
+
+# Logging
+python-json-logger>=2.0.7
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Date/time utilities
+python-dateutil>=2.8.2

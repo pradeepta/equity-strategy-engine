@@ -93,10 +93,24 @@ export class BarCacheServiceV2 {
 
   /**
    * Convert new Bar format (ISO timestamp) to legacy Bar format (Unix ms)
+   * CRITICAL: Validates all fields to prevent NaN/Infinity from reaching indicators
    */
   private convertToLegacyBar(bar: { t: string; o: number; h: number; l: number; c: number; v: number }): LegacyBar {
+    // Validate timestamp conversion
+    const timestamp = new Date(bar.t).getTime();
+    if (!Number.isFinite(timestamp) || isNaN(timestamp)) {
+      throw new Error(`Invalid bar timestamp: ${bar.t}`);
+    }
+
+    // Validate OHLCV fields
+    if (!Number.isFinite(bar.o) || !Number.isFinite(bar.h) ||
+        !Number.isFinite(bar.l) || !Number.isFinite(bar.c) ||
+        !Number.isFinite(bar.v)) {
+      throw new Error(`Invalid OHLCV values in bar: o=${bar.o}, h=${bar.h}, l=${bar.l}, c=${bar.c}, v=${bar.v}`);
+    }
+
     return {
-      timestamp: new Date(bar.t).getTime(),
+      timestamp,
       open: bar.o,
       high: bar.h,
       low: bar.l,
@@ -118,6 +132,7 @@ export class BarCacheServiceV2 {
       session?: 'rth' | 'all';
       what?: 'trades' | 'midpoint' | 'bid' | 'ask';
       end?: string;
+      includeForming?: boolean;
     } = {}
   ): Promise<LegacyBar[]> {
     const startTime = Date.now();
@@ -157,6 +172,7 @@ export class BarCacheServiceV2 {
       session,
       what,
       end,
+      includeForming: options.includeForming || false,
     });
 
     // Convert to legacy format

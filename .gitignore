@@ -93,3 +93,6 @@ strategies/
 /web-client/bun.lock.json
 /web-client/bun.lock.yaml
 /web-client/.next
+
+/tws-bridge-server/venv
+/tws-bridge-server/**/__pycache__

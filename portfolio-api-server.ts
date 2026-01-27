@@ -1232,13 +1232,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m
       // Returns historical OHLCV data compatible with TradeCheck backend format
       // Auto-fetches and caches missing data using BarCacheServiceV2
+
+      // Extract parameters outside try block for error handling
+      const symbol = pathname.split('/')[3]; // Extract symbol from /api/chart-data/:symbol
+      const startDate = url.searchParams.get('start_date');
+      const endDate = url.searchParams.get('end_date');
+      const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
+      const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
+      const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+
       try {
-        const symbol = pathname.split('/')[3]; // Extract symbol from /api/chart-data/:symbol
-        const startDate = url.searchParams.get('start_date');
-        const endDate = url.searchParams.get('end_date');
-        const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
-        const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
-        const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
 
         if (!symbol) {
           sendJSON(res, { error: 'Symbol is required' }, 400);
@@ -1322,10 +1325,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
 
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching chart data:', error);
+        console.error('[portfolio-api] Error fetching chart data for', symbol, error);
+
+        // Return structured error with symbol info
         sendJSON(res, {
           error: error.message || 'Failed to fetch chart data',
-          details: error.stack
+          symbol: symbol.toUpperCase(),
+          start_date: startDate,
+          end_date: endDate,
+          period,
+          session,
+          what,
+          details: error.stack,
+          suggestion: symbol.toUpperCase() === 'VIX'
+            ? 'VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)'
+            : 'Check if symbol exists and TWS has data for this period'
         }, 500);
       }
 
@@ -1333,20 +1347,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades
       // Simple endpoint to fetch recent bars using BarCacheServiceV2
       // Returns most recent N bars for a symbol
+
+      // Extract parameters outside try block for error handling
+      const symbol = pathname.split('/')[3]; // Extract symbol from /api/bars/:symbol
+      const limitParam = url.searchParams.get('limit');
+      const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
+      const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
+      const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+      const limit = limitParam ? parseInt(limitParam, 10) : 100;
+
       try {
-        const symbol = pathname.split('/')[3]; // Extract symbol from /api/bars/:symbol
-        const limitParam = url.searchParams.get('limit');
-        const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
-        const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
-        const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
 
         if (!symbol) {
           sendJSON(res, { error: 'Symbol is required' }, 400);
           return;
         }
 
-        // Parse and validate limit
-        const limit = limitParam ? parseInt(limitParam, 10) : 100;
+        // Validate limit
         if (isNaN(limit) || limit < 1 || limit > 5000) {
           sendJSON(res, { error: 'Invalid limit. Must be between 1 and 5000' }, 400);
           return;
@@ -1392,10 +1409,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
 
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching bars:', error);
+        console.error('[portfolio-api] Error fetching bars for', symbol, error);
+
+        // Return structured error with symbol info
         sendJSON(res, {
           error: error.message || 'Failed to fetch bars',
-          details: error.stack
+          symbol: symbol.toUpperCase(),
+          period,
+          session,
+          what,
+          limit,
+          details: error.stack,
+          suggestion: symbol.toUpperCase() === 'VIX'
+            ? 'VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)'
+            : 'Check if symbol exists and TWS has data for this period'
         }, 500);
       }
 

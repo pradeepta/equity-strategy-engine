@@ -9,6 +9,7 @@ import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, BrokerEnvironment } from '../spec/types';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
 import { BarCacheServiceV2 } from './cache/BarCacheServiceV2';
+import { RealtimeBarClient } from './streaming/RealtimeBarClient';
 
 export class MultiStrategyManager {
   private instances: Map<string, StrategyInstance>;  // strategyId -> instance
@@ -17,6 +18,7 @@ export class MultiStrategyManager {
   private brokerEnv: BrokerEnvironment;
   private strategyRepo: StrategyRepository;
   private barCache?: BarCacheServiceV2;  // Optional bar cache service V2
+  private realtimeBarClient: RealtimeBarClient | null = null;  // Streaming client reference
 
   constructor(
     adapter: BaseBrokerAdapter,
@@ -65,6 +67,11 @@ export class MultiStrategyManager {
 
     // Initialize (compiles YAML, creates engine)
     await instance.initialize();
+
+    // Set streaming client if available
+    if (this.realtimeBarClient) {
+      instance.setStreamingClient(this.realtimeBarClient);
+    }
 
     // Store instance by strategy ID
     this.instances.set(strategy.id, instance);
@@ -265,7 +272,7 @@ export class MultiStrategyManager {
    * If bar cache is enabled, uses BarCacheService for efficient fetching.
    * Otherwise, falls back to direct TWS client calls.
    */
-  async fetchLatestBarsForSymbols(symbols: string[]): Promise<Map<string, Bar[]>> {
+  async fetchLatestBarsForSymbols(symbols: string[], options?: { forceRefresh?: boolean; includeForming?: boolean }): Promise<Map<string, Bar[]>> {
     const results = new Map<string, Bar[]>();
 
     // Fetch bars for each symbol concurrently
@@ -287,9 +294,11 @@ export class MultiStrategyManager {
           throw new Error('BarCacheService is required for market data. Enable BAR_CACHE_ENABLED=true.');
         }
 
-        bars = await this.barCache.getBars(symbol, timeframe, 100);
-        const newBars = firstInstance.filterNewBars(bars);
-        results.set(symbol, newBars);
+        bars = await this.barCache.getBars(symbol, timeframe, 100, {
+          forceRefresh: options?.forceRefresh || false,
+          includeForming: options?.includeForming || false
+        });
+        results.set(symbol, bars);
       } catch (error) {
         console.error(`Failed to fetch bars for ${symbol}:`, error);
       }
@@ -351,6 +360,23 @@ export class MultiStrategyManager {
   getActiveCountForSymbol(symbol: string): number {
     const strategyIds = this.symbolIndex.get(symbol);
     return strategyIds ? strategyIds.size : 0;
+  }
+
+  /**
+   * Set real-time bar streaming client
+   * Will be passed to all strategy instances
+   */
+  setStreamingClient(client: RealtimeBarClient | null): void {
+    this.realtimeBarClient = client;
+
+    // Update all existing instances
+    for (const instance of this.instances.values()) {
+      instance.setStreamingClient(client!);
+    }
+
+    if (client) {
+      console.log(`✓ Real-time streaming client set for ${this.instances.size} strategy instance(s)`);
+    }
   }
 
   /**

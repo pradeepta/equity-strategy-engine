@@ -19,6 +19,43 @@ type TradeParams = {
 };
 
 /**
+ * Calculate default bar count based on timeframe
+ * Goal: Show reasonable time period for each timeframe
+ */
+function getDefaultBarCount(timeframe: string): number {
+  const tf = timeframe.toLowerCase();
+
+  // Intraday timeframes (show 1-2 trading days)
+  if (tf === '1m') return 390;        // 1 trading day (6.5 hours)
+  if (tf === '5m') return 78;         // 1 trading day
+  if (tf === '15m') return 52;        // 2 trading days (13 hours)
+  if (tf === '30m') return 65;        // 5 trading days (1 week)
+  if (tf === '1h') return 65;         // 10 trading days (2 weeks)
+  if (tf === '4h') return 40;         // ~20 trading days (1 month)
+
+  // Daily and above (show weeks/months)
+  if (tf === '1d') return 30;         // 30 days
+  if (tf === '1w') return 12;         // 12 weeks (~3 months)
+  if (tf === '1mo') return 12;        // 12 months (1 year)
+
+  return 100; // Default fallback
+}
+
+/**
+ * Parse timeframe from strategy YAML
+ */
+function parseTimeframeFromYAML(yamlContent: string): string {
+  const lines = yamlContent.split('\n');
+  for (const line of lines) {
+    const match = line.match(/^\s*timeframe:\s*(.+)/i);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+  return '5m'; // Default fallback
+}
+
+/**
  * Strategy Chart Component
  * Displays candlestick chart with trade levels (entry zone, stop loss, targets, invalidation)
  */
@@ -26,12 +63,25 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const fetchingMoreRef = useRef(false);
-  const barLimitRef = useRef(200);
+  const initialLoadCompleteRef = useRef(false); // Prevent auto-loading on mount
+
+  // Parse timeframe and calculate smart default bar count
+  const timeframe = parseTimeframeFromYAML(strategy.yamlContent);
+  const defaultBarCount = getDefaultBarCount(timeframe);
+
+  console.log(`[Chart] Timeframe: ${timeframe}, Default bar count: ${defaultBarCount}`);
+
   const [bars, setBars] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [barLimit, setBarLimit] = useState(200);
+  const [barLimit, setBarLimit] = useState(defaultBarCount);
+
+  // Keep ref in sync with state
+  const barLimitRef = useRef(barLimit);
+  useEffect(() => {
+    barLimitRef.current = barLimit;
+  }, [barLimit]);
   const [lastResponseCount, setLastResponseCount] = useState<number | null>(
     null,
   );
@@ -57,12 +107,13 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
   const MAX_BARS = 2000;
 
-  // Fetch bars
+  // Fetch bars (only when barLimit or strategy changes, NOT when bars.length changes)
   useEffect(() => {
     const fetchBars = async () => {
       try {
         fetchingMoreRef.current = true;
         const isInitialLoad = bars.length === 0;
+        console.log(`[Chart] Fetching bars: limit=${barLimit}, isInitialLoad=${isInitialLoad}`);
         setLoading(isInitialLoad);
         setLoadingMore(!isInitialLoad);
         const response = await fetch(
@@ -75,6 +126,11 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         );
         setBars(data.bars || []);
         setError(null);
+
+        // Mark initial load complete
+        if (isInitialLoad) {
+          initialLoadCompleteRef.current = true;
+        }
       } catch (err: any) {
         setError(err.message || "Failed to load chart");
       } finally {
@@ -84,7 +140,8 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       }
     };
     fetchBars();
-  }, [strategy.id, barLimit, bars.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategy.id, barLimit]); // Removed bars.length - only fetch when limit or strategy changes
 
   // Initialize chart
   useEffect(() => {
@@ -118,12 +175,15 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         localization: {
           timeFormatter: (timestamp: number) => {
             const date = new Date(timestamp * 1000);
+            const tzAbbr = new Intl.DateTimeFormat("en-US", {
+              timeZoneName: "short"
+            }).formatToParts(date).find(part => part.type === "timeZoneName")?.value || "";
             return new Intl.DateTimeFormat("en-US", {
               month: "short",
               day: "2-digit",
               hour: "2-digit",
               minute: "2-digit",
-            }).format(date);
+            }).format(date) + ` ${tzAbbr}`;
           },
         },
       });
@@ -306,17 +366,30 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       chart.timeScale().fitContent();
 
+      // Add scroll-based lazy loading (only after initial load)
       const timeScale = chart.timeScale();
+      let scrollEnabled = false;
+
+      // Wait 500ms after chart setup before enabling scroll detection
+      // This prevents auto-triggering during initial fitContent()
+      const enableScrollTimer = setTimeout(() => {
+        scrollEnabled = true;
+      }, 500);
+
       const handleRangeChange = (range: { from: number; to: number } | null) => {
-        if (!range || fetchingMoreRef.current) return;
+        // Don't trigger until scroll is enabled, or while already fetching
+        if (!scrollEnabled || !range || fetchingMoreRef.current || !initialLoadCompleteRef.current) {
+          return;
+        }
 
         const isAtLeftEdge = range.from < 5;
         const isAtLimit = bars.length >= barLimitRef.current;
 
+        // User scrolled to left edge AND we're at current limit → load more
         if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
           const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
           if (nextLimit > barLimitRef.current) {
-            barLimitRef.current = nextLimit;
+            console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit}`);
             setBarLimit(nextLimit);
           }
         }
@@ -325,13 +398,14 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
 
       return () => {
+        clearTimeout(enableScrollTimer);
         timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
         chart.remove();
       };
     } catch (err: any) {
       setError(err.message);
     }
-  }, [bars, strategy.yamlContent, barLimit]);
+  }, [bars, strategy.yamlContent]); // Removed barLimit - chart doesn't need to recreate when limit changes
 
   if (loading) {
     return (
@@ -370,10 +444,10 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         </div>
       )}
       <div style={{ marginTop: "6px", color: "#737373", fontSize: "12px" }}>
-        Requested bars: {barLimit}
+        Timeframe: {timeframe} • Bars: {barLimit} • Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
         {lastResponseCount !== null && (
           <span style={{ marginLeft: "8px" }}>
-            Returned: {lastResponseCount}
+            (Received: {lastResponseCount})
           </span>
         )}
       </div>

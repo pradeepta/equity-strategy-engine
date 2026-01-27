@@ -10,7 +10,7 @@ import { DatabasePoller } from "./DatabasePoller";
 import { PortfolioDataFetcher } from "../broker/twsPortfolio";
 import { StrategyEvaluatorClient } from "../evaluation/StrategyEvaluatorClient";
 import { BaseBrokerAdapter } from "../broker/broker";
-import { BrokerEnvironment } from "../spec/types";
+import { BrokerEnvironment, Bar } from "../spec/types";
 import { RepositoryFactory } from "../database/RepositoryFactory";
 import { Strategy } from "@prisma/client";
 import { OperationQueueService } from "./queue/OperationQueueService";
@@ -21,6 +21,7 @@ import { LoggerFactory } from "../logging/logger";
 import { Logger } from "../logging/logger";
 import { BarCacheServiceV2 } from "./cache/BarCacheServiceV2";
 import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
+import { RealtimeBarClient } from "./streaming/RealtimeBarClient";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
@@ -50,6 +51,7 @@ export class LiveTradingOrchestrator {
   private reconciliationService: BrokerReconciliationService;
   private alertService: OrderAlertService;
   private barCacheService?: BarCacheServiceV2;
+  private realtimeBarClient: RealtimeBarClient | null = null;
   private config: OrchestratorConfig;
   private running: boolean = false;
   private mainLoopInterval?: NodeJS.Timeout;
@@ -267,6 +269,47 @@ export class LiveTradingOrchestrator {
 
     this.running = true;
 
+    // Initialize real-time bar streaming client if Python bridge enabled
+    const pythonTwsEnabled = process.env.PYTHON_TWS_ENABLED === "true";
+    if (pythonTwsEnabled) {
+      const pythonTwsUrl = process.env.PYTHON_TWS_URL || "http://localhost:3003";
+      const wsUrl = pythonTwsUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws/stream";
+
+      logger.info(`📡 Initializing real-time bar streaming client: ${wsUrl}`);
+      this.realtimeBarClient = new RealtimeBarClient(wsUrl);
+
+      // Set up bar update handler
+      this.realtimeBarClient.on("bar", async (symbol: string, bar: Bar) => {
+        logger.debug(`🔄 Real-time bar update: ${symbol} | ${bar.timestamp}`);
+
+        // Process bar through all strategy instances for this symbol
+        await this.multiStrategyManager.processBar(symbol, bar);
+      });
+
+      this.realtimeBarClient.on("error", (error: Error) => {
+        logger.error("Real-time streaming error:", error);
+      });
+
+      this.realtimeBarClient.on("disconnected", () => {
+        logger.warn("⚠️  Real-time streaming disconnected, will auto-reconnect");
+      });
+
+      // Connect to streaming server
+      try {
+        await this.realtimeBarClient.connect();
+        logger.info("✅ Real-time bar streaming connected");
+
+        // Pass streaming client to all strategies
+        this.multiStrategyManager.setStreamingClient(this.realtimeBarClient);
+      } catch (error: any) {
+        logger.error(`❌ Failed to connect streaming client: ${error.message}`);
+        logger.info("⏸️  Continuing without real-time streaming (polling only)");
+        this.realtimeBarClient = null;
+      }
+    } else {
+      logger.info("⏸️  Real-time streaming disabled (set PYTHON_TWS_ENABLED=true to enable)");
+    }
+
     // Start database poller
     this.databasePoller.start();
 
@@ -303,6 +346,13 @@ export class LiveTradingOrchestrator {
 
     // Shutdown all strategies
     await this.multiStrategyManager.shutdownAll();
+
+    // Disconnect real-time streaming client
+    if (this.realtimeBarClient) {
+      logger.info("🔌 Disconnecting real-time bar streaming...");
+      this.realtimeBarClient.disconnect();
+      this.realtimeBarClient = null;
+    }
 
     // Disconnect portfolio fetcher
     await this.portfolioFetcher.disconnect();
@@ -398,16 +448,23 @@ export class LiveTradingOrchestrator {
           // Deduplicate symbols (multiple strategies can share same symbol)
           const uniqueSymbols = Array.from(new Set(strategiesNeedingBars));
 
+          // Check if we should force refresh (when using fast loop override)
+          const loopOverride = process.env.ORCHESTRATOR_LOOP_INTERVAL_MS;
+          const useFastLoop = loopOverride ? parseInt(loopOverride, 10) < 60000 : false; // < 1 minute
+          const forceRefresh = useFastLoop;
+          const includeForming = false; // DEPRECATED: TWS keepUpToDate is unreliable, always use polling
+
           logger.info(
             `🔄 Fetching bars for ${strategiesNeedingBars.length}/${
               activeStrategies.length
-            } strategy(ies): ${strategiesNeedingBars.join(", ")} (${uniqueSymbols.length} unique symbols)`
+            } strategy(ies): ${strategiesNeedingBars.join(", ")} (${uniqueSymbols.length} unique symbols)${forceRefresh ? ' [LIVE]' : ' [CACHED]'}`
           );
 
           // Fetch latest bars only for unique symbols
           const latestBars =
             await this.multiStrategyManager.fetchLatestBarsForSymbols(
-              uniqueSymbols
+              uniqueSymbols,
+              { forceRefresh, includeForming }
             );
 
           // Process bars for each symbol (distributes to all strategies)
@@ -425,11 +482,24 @@ export class LiveTradingOrchestrator {
               // Mark bars as fetched
               instance.markBarsFetched();
 
-              if (bars.length === 1) {
-                await instance.processBar(bars[0]);
+              // Filter to only new bars (not already processed)
+              const newBars = instance.filterNewBars(bars);
+
+              if (newBars.length === 0) {
+                // Show polling activity at INFO level when using fast loop override
+                if (forceRefresh) {
+                  logger.info(`[${instance.symbol}] ⏸️  Waiting for new bar (polled ${bars.length} bars, none new)`);
+                }
+                continue;
+              }
+
+              logger.info(`[${instance.symbol}] Processing ${newBars.length} new bar(s) out of ${bars.length} total`);
+
+              if (newBars.length === 1) {
+                await instance.processBar(newBars[0]);
               } else {
-                const warmupBars = bars.slice(0, -1);
-                const liveBar = bars[bars.length - 1];
+                const warmupBars = newBars.slice(0, -1);
+                const liveBar = newBars[newBars.length - 1];
 
                 for (const bar of warmupBars) {
                   await instance.processBar(bar, { replay: true });
@@ -438,8 +508,41 @@ export class LiveTradingOrchestrator {
                 await instance.processBar(liveBar);
               }
 
+              // Check if strategy reached terminal state (no outgoing transitions)
+              if (instance.isInTerminalState()) {
+                const stateName = instance.getCurrentStateName();
+                logger.info(`[${instance.symbol}] ⚠️  Strategy reached terminal state: ${stateName}`);
+                logger.info(`[${instance.symbol}] Auto-closing strategy in database...`);
+
+                try {
+                  const strategyRepo = this.repositoryFactory.getStrategyRepo();
+                  await strategyRepo.close(
+                    instance.strategyId,
+                    `Auto-closed: reached terminal state ${stateName} with no outgoing transitions`
+                  );
+                  logger.info(`[${instance.symbol}] ✅ Strategy auto-closed successfully`);
+
+                  // Remove from active strategies
+                  this.multiStrategyManager.removeStrategy(instance.strategyId);
+                  logger.info(`[${instance.symbol}] Removed from active strategy pool`);
+                } catch (error: any) {
+                  logger.error(`[${instance.symbol}] ❌ Failed to auto-close strategy: ${error.message}`);
+                }
+
+                // Skip evaluation check for closed strategy
+                continue;
+              }
+
               // Check if evaluation is due (every bar for now)
               if (instance.shouldEvaluate(1)) {
+                // Check if evaluation is globally enabled (default: false)
+                const evalEnabled = process.env.STRATEGY_EVAL_ENABLED === 'true';
+                if (!evalEnabled) {
+                  logger.debug(`⏸️  Skipping evaluation for ${instance.symbol} (STRATEGY_EVAL_ENABLED=false)`);
+                  instance.resetEvaluationCounter(); // Reset to avoid accumulation
+                  continue;
+                }
+
                 // Skip evaluation outside market hours if configured
                 const evalMarketHoursOnly = process.env.STRATEGY_EVAL_MARKET_HOURS_ONLY === 'true';
                 if (evalMarketHoursOnly && !this.isMarketOpen()) {
@@ -567,6 +670,16 @@ export class LiveTradingOrchestrator {
    * Calculate sleep interval based on shortest timeframe
    */
   private calculateSleepInterval(strategies: any[]): number {
+    // Check for fixed interval override (useful for development/testing)
+    const fixedIntervalMs = process.env.ORCHESTRATOR_LOOP_INTERVAL_MS;
+    if (fixedIntervalMs) {
+      const interval = parseInt(fixedIntervalMs, 10);
+      if (!isNaN(interval) && interval > 0) {
+        logger.debug(`Using fixed loop interval: ${interval}ms (ORCHESTRATOR_LOOP_INTERVAL_MS)`);
+        return interval;
+      }
+    }
+
     if (strategies.length === 0) {
       return 30000; // 30 seconds if no strategies
     }
