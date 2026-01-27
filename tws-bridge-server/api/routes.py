@@ -12,8 +12,8 @@ from api.models import (
     HealthResponse,
     ErrorResponse
 )
-from tws.connection_manager import tws_manager
-from tws.bar_fetcher import bar_fetcher
+from tws.connection_manager import get_http_connection
+import tws.bar_fetcher as bar_fetcher_module
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +31,14 @@ async def health_check():
 
     Returns server status and TWS connection state.
     """
-    connected = tws_manager.is_connected()
+    connected = get_http_connection().is_connected()
     uptime = time.time() - server_start_time
 
     return HealthResponse(
         status="ok" if connected else "degraded",
         connected=connected,
-        tws_host=tws_manager.client.host if hasattr(tws_manager.client, 'host') else "unknown",
-        tws_port=tws_manager.client.port if hasattr(tws_manager.client, 'port') else 0,
+        tws_host=get_http_connection().client.host if hasattr(get_http_connection().client, 'host') else "unknown",
+        tws_port=get_http_connection().client.port if hasattr(get_http_connection().client, 'port') else 0,
         uptime_seconds=uptime,
         version="1.0.0"
     )
@@ -60,16 +60,16 @@ async def fetch_bars(request: BarRequest):
     """
     try:
         # Ensure connected
-        if not tws_manager.is_connected():
+        if not get_http_connection().is_connected():
             logger.warning("Not connected to TWS, attempting to connect...")
-            if not tws_manager.connect():
+            if not get_http_connection().connect():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Failed to connect to TWS"
                 )
 
         # Fetch bars
-        bars_data = bar_fetcher.fetch_bars(
+        bars_data = bar_fetcher_module.bar_fetcher.fetch_bars(
             symbol=request.symbol,
             period=request.period,
             duration=request.duration,
@@ -134,10 +134,10 @@ async def connect_to_tws():
         Success status
     """
     try:
-        if tws_manager.is_connected():
+        if get_http_connection().is_connected():
             return {"success": True, "message": "Already connected to TWS"}
 
-        success = tws_manager.connect()
+        success = get_http_connection().connect()
 
         if success:
             return {"success": True, "message": "Connected to TWS"}
@@ -164,7 +164,7 @@ async def disconnect_from_tws():
         Success status
     """
     try:
-        tws_manager.disconnect()
+        get_http_connection().disconnect()
         return {"success": True, "message": "Disconnected from TWS"}
 
     except Exception as e:

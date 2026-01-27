@@ -6,7 +6,7 @@ import threading
 from typing import Dict, Set, Optional, Callable
 from datetime import datetime
 
-from tws.connection_manager import tws_manager
+from tws.connection_manager import get_websocket_connection
 from tws.bar_fetcher import BarData
 
 logger = logging.getLogger(__name__)
@@ -67,18 +67,15 @@ class StreamingManager:
         self.lock = threading.Lock()
         self.event_loop = None  # Reference to main event loop for thread-safe task scheduling
 
-        # Register callback with bar fetcher wrapper
-        from tws.bar_fetcher import bar_fetcher
-        self._original_update_handler = bar_fetcher.wrapper.historicalDataUpdate
+        # Get WebSocket connection
+        self.tws_connection = get_websocket_connection()
 
-        # IMPORTANT: Must override BOTH places where historicalDataUpdate is referenced:
-        # 1. On bar_fetcher.wrapper (for future method calls on wrapper instance)
-        bar_fetcher.wrapper.historicalDataUpdate = self._handle_bar_update
-        # 2. On tws_manager.client.wrapper (where TWS actually calls the callback)
-        tws_manager.client.wrapper.historicalDataUpdate = self._handle_bar_update
+        # Register callback for real-time bar updates on WebSocket connection's wrapper
+        self._original_update_handler = self.tws_connection.wrapper.historicalDataUpdate
+        self.tws_connection.client.wrapper.historicalDataUpdate = self._handle_bar_update
 
-        logger.info("🔧 Streaming Manager initialized")
-        logger.info(f"🔧 Registered callbacks on both wrapper and client.wrapper")
+        logger.info("🔧 [WebSocket] Streaming Manager initialized")
+        logger.info(f"🔧 [WebSocket] Registered historicalDataUpdate callback")
 
     def _handle_bar_update(self, reqId: int, bar):
         """Handle real-time bar updates from TWS (called from TWS thread)."""
@@ -189,7 +186,7 @@ class StreamingManager:
                 }
 
         # Create new subscription
-        req_id = tws_manager.get_next_request_id()
+        req_id = self.tws_connection.get_next_request_id()
 
         # Import here to avoid circular dependency
         from ibapi.contract import Contract
@@ -229,7 +226,7 @@ class StreamingManager:
 
         try:
             # Request historical data with keepUpToDate=True
-            tws_manager.client.reqHistoricalData(
+            self.tws_connection.client.reqHistoricalData(
                 reqId=req_id,
                 contract=contract,
                 endDateTime="",  # Empty = current time
@@ -286,8 +283,8 @@ class StreamingManager:
 
             # If no more subscribers, cancel TWS streaming
             if not subscription.has_subscribers():
-                logger.info(f"🛑 Cancelling stream for {symbol} (no subscribers)")
-                tws_manager.client.cancelHistoricalData(subscription.req_id)
+                logger.info(f"🛑 [WebSocket] Cancelling stream for {symbol} (no subscribers)")
+                self.tws_connection.client.cancelHistoricalData(subscription.req_id)
                 del self.subscriptions[symbol]
                 if symbol in self.callbacks:
                     del self.callbacks[symbol]
@@ -324,8 +321,8 @@ class StreamingManager:
                     unsubscribed.append(symbol)
 
                     if not subscription.has_subscribers():
-                        logger.info(f"🛑 Cancelling stream for {symbol} (no subscribers)")
-                        tws_manager.client.cancelHistoricalData(subscription.req_id)
+                        logger.info(f"🛑 [WebSocket] Cancelling stream for {symbol} (no subscribers)")
+                        self.tws_connection.client.cancelHistoricalData(subscription.req_id)
                         del self.subscriptions[symbol]
                         if symbol in self.callbacks:
                             del self.callbacks[symbol]
@@ -361,5 +358,5 @@ class StreamingManager:
             }
 
 
-# Global streaming manager instance
-streaming_manager = StreamingManager()
+# Global streaming manager instance (initialized on server startup)
+streaming_manager = None

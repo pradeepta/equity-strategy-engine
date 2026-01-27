@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
 
-from tws.connection_manager import tws_manager
+from tws.connection_manager import get_http_connection
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,8 @@ class BarFetcherWrapper(EWrapper):
     def __init__(self, base_wrapper: EWrapper):
         super().__init__()
         self.base_wrapper = base_wrapper
+        # Save original error method before we replace it
+        self.original_error = base_wrapper.error
         self.requests: Dict[int, BarFetchRequest] = {}
         self.requests_lock = threading.Lock()
 
@@ -195,19 +197,19 @@ class BarFetcherWrapper(EWrapper):
 
     def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson=""):
         """Error callback - delegate to base wrapper and handle request errors."""
-        # Delegate to base wrapper
+        # Delegate to original error method (not self.base_wrapper.error to avoid recursion)
         try:
-            self.base_wrapper.error(reqId, errorCode, errorString, advancedOrderRejectJson)
+            self.original_error(reqId, errorCode, errorString, advancedOrderRejectJson)
         except TypeError:
-            self.base_wrapper.error(reqId, errorCode, errorString)
+            self.original_error(reqId, errorCode, errorString)
 
         # Handle request-specific errors
         if reqId > 0:
             with self.requests_lock:
                 request = self.requests.get(reqId)
 
-            if request and errorCode not in [2104, 2106, 2158]:
-                # Not informational messages
+            if request and errorCode not in [2104, 2106, 2158, 2174, 2176]:
+                # Not informational messages (2104/2106 = data farm OK, 2158 = HMDS OK, 2174/2176 = warnings)
                 error_msg = f"[{errorCode}] {errorString}"
                 logger.error(f"❌ Error for bar fetch reqId={reqId}: {error_msg}")
                 request.mark_error(error_msg)
@@ -217,15 +219,19 @@ class BarFetcher:
     """Fetches historical and real-time bars from TWS."""
 
     def __init__(self):
+        # Get HTTP connection
+        self.tws_connection = get_http_connection()
+
         # Wrap the existing wrapper to intercept bar callbacks
-        self.wrapper = BarFetcherWrapper(tws_manager.wrapper)
+        self.wrapper = BarFetcherWrapper(self.tws_connection.wrapper)
 
         # Replace callbacks in client's wrapper
-        tws_manager.client.wrapper.historicalData = self.wrapper.historicalData
-        tws_manager.client.wrapper.historicalDataEnd = self.wrapper.historicalDataEnd
-        tws_manager.client.wrapper.historicalDataUpdate = self.wrapper.historicalDataUpdate
+        self.tws_connection.client.wrapper.historicalData = self.wrapper.historicalData
+        self.tws_connection.client.wrapper.historicalDataEnd = self.wrapper.historicalDataEnd
+        self.tws_connection.client.wrapper.historicalDataUpdate = self.wrapper.historicalDataUpdate
+        self.tws_connection.client.wrapper.error = self.wrapper.error
 
-        logger.info("🔧 BarFetcher initialized")
+        logger.info("🔧 [HTTP] BarFetcher initialized")
 
     def fetch_bars(
         self,
@@ -252,8 +258,8 @@ class BarFetcher:
         Returns:
             List of bar dictionaries
         """
-        if not tws_manager.is_connected():
-            raise RuntimeError("Not connected to TWS")
+        if not self.tws_connection.is_connected():
+            raise RuntimeError("[HTTP] Not connected to TWS")
 
         # Create contract
         # VIX is an index, not a stock - requires special handling
@@ -292,7 +298,7 @@ class BarFetcher:
         what_to_show = what.upper()
 
         # Get request ID
-        req_id = tws_manager.get_next_request_id()
+        req_id = self.tws_connection.get_next_request_id()
 
         # Create request tracker
         request = BarFetchRequest(req_id, include_forming)
@@ -306,7 +312,7 @@ class BarFetcher:
             )
 
             # Request historical data
-            tws_manager.client.reqHistoricalData(
+            self.tws_connection.client.reqHistoricalData(
                 reqId=req_id,
                 contract=contract,
                 endDateTime=end_datetime,
@@ -337,15 +343,15 @@ class BarFetcher:
             # Cleanup
             if include_forming:
                 # Cancel real-time updates
-                tws_manager.client.cancelHistoricalData(req_id)
+                self.tws_connection.client.cancelHistoricalData(req_id)
             self.wrapper.unregister_request(req_id)
 
     def cancel_streaming(self, req_id: int):
         """Cancel real-time bar streaming."""
-        tws_manager.client.cancelHistoricalData(req_id)
+        self.tws_connection.client.cancelHistoricalData(req_id)
         self.wrapper.unregister_request(req_id)
-        logger.info(f"🛑 Cancelled bar streaming for reqId={req_id}")
+        logger.info(f"🛑 [HTTP] Cancelled bar streaming for reqId={req_id}")
 
 
-# Global bar fetcher instance
-bar_fetcher = BarFetcher()
+# Global bar fetcher instance (initialized on server startup)
+bar_fetcher = None

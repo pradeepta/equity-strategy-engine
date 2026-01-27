@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-TWS Python API Real-Time Bar Streaming Test
-Tests if keepUpToDate=true works for XLE 5-minute bars
+TWS Python API Historical Data Fetching Test
+Tests basic historical bar fetching from TWS
 
 Official TWS API Python package: ibapi
 """
@@ -20,9 +20,9 @@ from ibapi.common import BarData
 # Configuration
 TWS_HOST = "127.0.0.1"
 TWS_PORT = 7497  # Paper trading port (use 7496 for live)
-CLIENT_ID = 9999
-REQUEST_ID = 12345
-WAIT_SECONDS = 60
+CLIENT_ID = 9998
+REQUEST_ID = 12346
+TIMEOUT_SECONDS = 30
 
 # ANSI color codes
 RESET = "\033[0m"
@@ -44,10 +44,11 @@ class TestApp(EWrapper, EClient):
 
         # State tracking
         self.connected = False
-        self.historical_data_complete = False
-        self.historical_bar_count = 0
-        self.update_count = 0
-        self.last_update_time = None
+        self.data_complete = False
+        self.bar_count = 0
+        self.bars_received = []
+        self.error_occurred = False
+        self.error_message = None
         self.event_counts = defaultdict(int)
 
         # Thread for message processing
@@ -74,16 +75,6 @@ class TestApp(EWrapper, EClient):
         print(f"   Next valid order ID: {orderId}")
         print()
 
-        # CRITICAL: Request DELAYED market data (Type 3) for real-time streaming
-        # Type 1 = Live (requires paid subscription)
-        # Type 2 = Frozen (closing prices only, no updates)
-        # Type 3 = Delayed (15-min delay, FREE, works with keepUpToDate)
-        print(f"{CYAN}📡 Requesting DELAYED market data (Type 3 - FREE)...{RESET}")
-        self.reqMarketDataType(3)
-        print(f"   Note: Type 3 = 15-minute delayed data (no subscription needed)")
-        print(f"   Updates will be delayed by ~15 minutes from live market")
-        print()
-
         # Request historical data after connection
         self.request_historical_data()
 
@@ -91,7 +82,6 @@ class TestApp(EWrapper, EClient):
         """Connection acknowledged"""
         super().connectAck()
         self.event_counts['connectAck'] += 1
-        print("Connection acknowledged")
 
     def connectionClosed(self):
         """Connection closed"""
@@ -103,12 +93,12 @@ class TestApp(EWrapper, EClient):
     # ==================== Historical Data Request ====================
 
     def request_historical_data(self):
-        """Request historical data with keepUpToDate=true"""
-        print(f"{BLUE}📡 Requesting historical data with keepUpToDate=true...{RESET}")
+        """Request historical data for HL (5-minute bars, 1 day)"""
+        print(f"{BLUE}📡 Requesting historical data...{RESET}")
 
-        # Create XLE stock contract
+        # Create HL stock contract (the symbol from your error logs)
         contract = Contract()
-        contract.symbol = "XLE"
+        contract.symbol = "HL"
         contract.secType = "STK"
         contract.exchange = "SMART"
         contract.currency = "USD"
@@ -117,25 +107,26 @@ class TestApp(EWrapper, EClient):
         print(f"   Request ID: {REQUEST_ID}")
         print(f"   Bar Size: 5 mins")
         print(f"   Duration: 1 D")
-        print(f"   Keep Up To Date: true")
+        print(f"   Session: Regular Trading Hours (RTH)")
+        print(f"   What: TRADES")
+        print(f"   End DateTime: Current time (empty string)")
         print()
 
-        # Request historical data with keepUpToDate=true
-        # def reqHistoricalData(self, reqId, contract, endDateTime, durationStr,
-        #                       barSizeSetting, whatToShow, useRTH, formatDate,
-        #                       keepUpToDate, chartOptions)
+        # Request historical data
         self.reqHistoricalData(
             reqId=REQUEST_ID,
             contract=contract,
-            endDateTime="",         # Empty string = current time (required for keepUpToDate)
+            endDateTime="",         # Empty string = current time
             durationStr="1 D",      # 1 day of data
             barSizeSetting="5 mins",  # 5-minute bars
             whatToShow="TRADES",    # Trade data
             useRTH=1,               # Regular trading hours only
             formatDate=1,           # Format: yyyymmdd  hh:mm:ss
-            keepUpToDate=True,      # Enable real-time streaming
+            keepUpToDate=False,     # No real-time streaming
             chartOptions=[]
         )
+
+        print(f"{YELLOW}⏳ Waiting for historical data (timeout: {TIMEOUT_SECONDS}s)...{RESET}")
 
     # ==================== Historical Data Callbacks ====================
 
@@ -147,12 +138,24 @@ class TestApp(EWrapper, EClient):
             return
 
         self.event_counts['historicalData'] += 1
-        self.historical_bar_count += 1
+        self.bar_count += 1
+        self.bars_received.append({
+            'date': bar.date,
+            'open': bar.open,
+            'high': bar.high,
+            'low': bar.low,
+            'close': bar.close,
+            'volume': int(bar.volume),
+            'wap': bar.average,
+            'count': bar.barCount
+        })
 
-        # Print every bar (or every 10th for brevity)
-        if self.historical_bar_count <= 5 or self.historical_bar_count % 10 == 0:
-            print(f"   Bar {self.historical_bar_count}: {bar.date} | "
-                  f"Close: ${bar.close:.2f} | Vol: {int(bar.volume)}")
+        # Print first 5 bars, then every 10th
+        if self.bar_count <= 5 or self.bar_count % 10 == 0:
+            print(f"   Bar {self.bar_count}: {bar.date} | "
+                  f"O: ${bar.open:.2f} | H: ${bar.high:.2f} | "
+                  f"L: ${bar.low:.2f} | C: ${bar.close:.2f} | "
+                  f"Vol: {int(bar.volume)}")
 
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         """Called when historical data download is complete"""
@@ -162,40 +165,12 @@ class TestApp(EWrapper, EClient):
             return
 
         self.event_counts['historicalDataEnd'] += 1
-        self.historical_data_complete = True
+        self.data_complete = True
 
         print()
-        print(f"{GREEN}✅ Historical data complete: {self.historical_bar_count} bars received{RESET}")
-        print(f"{YELLOW}⏳ Waiting for real-time updates (historicalDataUpdate callbacks)...{RESET}")
-        print(f"   Connection stays open for {WAIT_SECONDS} seconds...")
-        print()
-
-    def historicalDataUpdate(self, reqId: int, bar: BarData):
-        """
-        Called for real-time bar updates when keepUpToDate=True
-        THIS IS WHAT WE'RE TESTING
-        """
-        super().historicalDataUpdate(reqId, bar)
-
-        if reqId != REQUEST_ID:
-            print(f"{YELLOW}⚠️  Received historicalDataUpdate for different reqId: "
-                  f"{reqId} (expected: {REQUEST_ID}){RESET}")
-            return
-
-        self.event_counts['historicalDataUpdate'] += 1
-        self.update_count += 1
-        self.last_update_time = bar.date
-
-        print()
-        print(f"{GREEN}🎯 REAL-TIME UPDATE #{self.update_count}:{RESET}")
-        print(f"   Time: {bar.date}")
-        print(f"   Open: ${bar.open:.2f}")
-        print(f"   High: ${bar.high:.2f}")
-        print(f"   Low: ${bar.low:.2f}")
-        print(f"   Close: ${bar.close:.2f}")
-        print(f"   Volume: {int(bar.volume)}")
-        print(f"   Count: {bar.barCount}")
-        print(f"   WAP: ${bar.average:.2f}")
+        print(f"{GREEN}✅ Historical data complete: {self.bar_count} bars received{RESET}")
+        print(f"   Start: {start}")
+        print(f"   End: {end}")
 
     # ==================== Error Handling ====================
 
@@ -210,15 +185,37 @@ class TestApp(EWrapper, EClient):
 
         self.event_counts[f'error_{errorCode}'] += 1
 
-        # Filter out informational messages
-        info_codes = [2104, 2106, 2107, 2108, 2158, 2176]
+        # Filter out informational messages (don't treat as errors)
+        info_codes = [2104, 2106, 2107, 2108, 2158, 2174, 2176]
         if errorCode in info_codes:
             print(f"ℹ️  TWS Info [{errorCode}]: {errorString}")
             return
 
-        print(f"{RED}❌ TWS Error [{errorCode}]: {errorString}{RESET}")
-        if reqId != -1:
-            print(f"   Request ID: {reqId}")
+        # Pacing violation - this is what we're looking for
+        if errorCode == 162:
+            print(f"{RED}🚨 PACING VIOLATION [{errorCode}]: {errorString}{RESET}")
+            print(f"   This means you've exceeded TWS historical data request limits")
+            print(f"   Wait 10 minutes before trying again")
+            self.error_occurred = True
+            self.error_message = f"Pacing violation: {errorString}"
+            return
+
+        # Market data errors
+        if errorCode in [354, 10197, 10167]:
+            print(f"{RED}❌ Market Data Error [{errorCode}]: {errorString}{RESET}")
+            self.error_occurred = True
+            self.error_message = f"Market data error: {errorString}"
+            return
+
+        # Request-specific errors
+        if reqId == REQUEST_ID:
+            print(f"{RED}❌ Request Error [{errorCode}]: {errorString}{RESET}")
+            self.error_occurred = True
+            self.error_message = f"[{errorCode}] {errorString}"
+        else:
+            print(f"{YELLOW}⚠️  TWS Error [{errorCode}]: {errorString}{RESET}")
+            if reqId != -1:
+                print(f"   Request ID: {reqId}")
 
     # ==================== Results ====================
 
@@ -229,39 +226,57 @@ class TestApp(EWrapper, EClient):
         print("TEST RESULTS")
         print("=" * 80)
         print(f"Connected: {self.connected}")
-        print(f"Historical Data Complete: {self.historical_data_complete}")
-        print(f"Historical Bars Received: {self.historical_bar_count}")
-        print(f"Real-Time Updates Received: {self.update_count}")
-        print(f"Last Update Time: {self.last_update_time or 'N/A'}")
+        print(f"Data Complete: {self.data_complete}")
+        print(f"Bars Received: {self.bar_count}")
+        print(f"Error Occurred: {self.error_occurred}")
+        if self.error_message:
+            print(f"Error Message: {self.error_message}")
         print()
+
+        if self.bar_count > 0:
+            print(f"First Bar: {self.bars_received[0]['date']} @ ${self.bars_received[0]['close']:.2f}")
+            print(f"Last Bar:  {self.bars_received[-1]['date']} @ ${self.bars_received[-1]['close']:.2f}")
+            print()
+
         print("Event Counts:")
         for event, count in sorted(self.event_counts.items(), key=lambda x: x[1], reverse=True):
             print(f"  {event}: {count}")
         print("=" * 80)
 
-        if self.update_count > 0:
+        # Determine exit code
+        if self.error_occurred:
             print()
-            print(f"{GREEN}✅ SUCCESS: Real-time updates are working!{RESET}")
+            print(f"{RED}❌ FAILURE: Request failed with error{RESET}")
+            print(f"   {self.error_message}")
+            return 1
+        elif self.data_complete and self.bar_count > 0:
+            print()
+            print(f"{GREEN}✅ SUCCESS: Historical data fetched successfully!{RESET}")
             return 0
+        elif self.bar_count > 0:
+            print()
+            print(f"{YELLOW}⚠️  PARTIAL: Received bars but no completion signal{RESET}")
+            return 1
         else:
             print()
-            print(f"{RED}❌ FAILURE: No real-time updates received{RESET}")
+            print(f"{RED}❌ FAILURE: No bars received{RESET}")
             print("   Possible causes:")
-            print("   - Market is closed or no trading activity")
-            print("   - TWS doesn't support keepUpToDate with your account")
-            print("   - TWS API version doesn't support this feature")
+            print("   - Market is closed and no historical data available")
+            print("   - TWS pacing violation (error 162)")
             print("   - Market data subscription required")
+            print("   - Symbol not found or invalid")
             return 1
 
 
 def main():
     """Main entry point"""
     print("=" * 80)
-    print("TWS Python API Real-Time Bar Streaming Test")
+    print("TWS Python API Historical Data Fetching Test")
     print("=" * 80)
     print(f"Connecting to TWS at {TWS_HOST}:{TWS_PORT}")
-    print(f"Testing symbol: XLE, Bar size: 5 mins, Duration: 1 day")
-    print(f"Will wait {WAIT_SECONDS} seconds for real-time updates...")
+    print(f"Testing symbol: HL (Hecla Mining)")
+    print(f"Bar size: 5 mins, Duration: 1 day, Session: RTH")
+    print(f"Timeout: {TIMEOUT_SECONDS} seconds")
     print("=" * 80)
     print()
 
@@ -270,29 +285,42 @@ def main():
     app.start()
 
     # Wait for connection
-    timeout = 10
+    connection_timeout = 10
     start_time = time.time()
-    while not app.connected and (time.time() - start_time) < timeout:
+    while not app.connected and (time.time() - start_time) < connection_timeout:
         time.sleep(0.1)
 
     if not app.connected:
         print(f"{RED}❌ Failed to connect to TWS{RESET}")
         print(f"   Make sure TWS or IB Gateway is running on {TWS_HOST}:{TWS_PORT}")
         print("   Check TWS API settings: Configuration → API → Settings")
+        print("   Enable 'Enable ActiveX and Socket Clients'")
+        print(f"   Add 127.0.0.1 to 'Trusted IP Addresses'")
         return 1
 
-    # Wait for specified time to collect real-time updates
-    try:
-        time.sleep(WAIT_SECONDS)
-    except KeyboardInterrupt:
+    # Wait for data to complete or timeout
+    start_time = time.time()
+    while not app.data_complete and not app.error_occurred and (time.time() - start_time) < TIMEOUT_SECONDS:
+        time.sleep(0.5)
+
+    # Check if timed out
+    if not app.data_complete and not app.error_occurred:
         print()
-        print(f"{YELLOW}⚠️  Interrupted by user{RESET}")
+        print(f"{RED}❌ TIMEOUT: No response after {TIMEOUT_SECONDS} seconds{RESET}")
+        print("   This suggests TWS is not responding to the request")
+        print("   Possible causes:")
+        print("   - TWS pacing violation (too many requests recently)")
+        print("   - TWS connection issue")
+        print("   - Request stuck in TWS queue")
 
     # Print results
     exit_code = app.print_results()
 
     # Disconnect
+    print()
+    print(f"{CYAN}🔌 Disconnecting from TWS...{RESET}")
     app.disconnect()
+    time.sleep(1)  # Give time to disconnect cleanly
 
     return exit_code
 

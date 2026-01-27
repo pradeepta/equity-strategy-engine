@@ -6,7 +6,7 @@ import uuid
 from typing import Dict, Set
 from fastapi import WebSocket, WebSocketDisconnect
 
-from tws.streaming_manager import streaming_manager
+import tws.streaming_manager as streaming_manager_module
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class ConnectionManager:
         """Disconnect WebSocket and cleanup subscriptions."""
         if connection_id in self.active_connections:
             # Unsubscribe from all streams
-            await streaming_manager.unsubscribe_all(connection_id)
+            await streaming_manager_module.streaming_manager.unsubscribe_all(connection_id)
 
             # Remove connection
             del self.active_connections[connection_id]
@@ -144,7 +144,7 @@ async def handle_websocket(websocket: WebSocket):
                         })
 
                     # Subscribe to streaming
-                    result = await streaming_manager.subscribe(
+                    result = await streaming_manager_module.streaming_manager.subscribe(
                         symbol=symbol,
                         period=period,
                         session=session,
@@ -187,7 +187,7 @@ async def handle_websocket(websocket: WebSocket):
                     continue
 
                 try:
-                    result = await streaming_manager.unsubscribe(symbol, connection_id)
+                    result = await streaming_manager_module.streaming_manager.unsubscribe(symbol, connection_id)
                     connection_manager.remove_subscription(connection_id, symbol)
 
                     await websocket.send_json({
@@ -209,7 +209,7 @@ async def handle_websocket(websocket: WebSocket):
 
             elif action == "list_subscriptions":
                 # Get active subscriptions
-                subscriptions = streaming_manager.get_active_subscriptions()
+                subscriptions = streaming_manager_module.streaming_manager.get_active_subscriptions()
                 await websocket.send_json({
                     "type": "subscriptions",
                     "subscriptions": subscriptions

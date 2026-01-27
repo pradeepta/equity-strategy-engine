@@ -255,15 +255,36 @@ export async function getBars(
   if (start) {
     windowStart = new Date(start);
   } else {
-    // limit-mode: start from a reasonable window
-    const bufferBars = 20;
-    const initialSeconds = (limit! + bufferBars) * periodSec;
+    // limit-mode: start from a conservative window to avoid TWS timeout
+    // Use 7 trading days initially, expansion will handle larger requests if needed
+    const INITIAL_TRADING_DAYS = 7;
+    const TRADING_DAY_SECONDS = 6.5 * 60 * 60; // 6.5 hours
+    const initialSeconds = INITIAL_TRADING_DAYS * TRADING_DAY_SECONDS;
     windowStart = new Date(windowEnd.getTime() - initialSeconds * 1000);
+
+    logger.info(`📐 Initial window set to ${INITIAL_TRADING_DAYS} trading days`, {
+      symbol,
+      period,
+      requestedLimit: limit,
+      initialWindowSeconds: initialSeconds,
+      windowStart: toISO(windowStart),
+      windowEnd: toISO(windowEnd)
+    });
   }
 
   const sources: Array<"cache" | "ibkr"> = [];
-  const maxAttempts = 5;
+
+  // Check if exponential window expansion is enabled (default: true for backward compatibility)
+  const enableExpansion = process.env.ENABLE_BAR_FETCH_EXPANSION !== 'false';
+  const maxAttempts = enableExpansion ? 5 : 1; // Only 1 attempt if expansion disabled
   let attempt = 0;
+
+  logger.info("📊 Bar fetch configuration", {
+    enableExpansion,
+    maxAttempts,
+    symbol,
+    period
+  });
 
   while (true) {
     attempt++;
@@ -428,7 +449,55 @@ export async function getBars(
     // 4) UPSERT into cache
     await upsertBars(pool, { symbol, period, what, session, bars: normalized });
 
-    // 5) Check if we need to expand window
+    // 5) Check freshness of newly fetched data
+    // If IBKR data is also stale, it means TWS doesn't have fresher data yet - accept it and stop
+    const lastIbkrBarTime = normalized.length
+      ? normalized[normalized.length - 1].barstart.getTime()
+      : null;
+    const ibkrDataIsStale = lastIbkrBarTime != null &&
+      windowEnd.getTime() - lastIbkrBarTime > staleThresholdMs;
+
+    if (ibkrDataIsStale && normalized.length > 0) {
+      logger.info("⚠️  IBKR data is also stale - TWS doesn't have fresher data yet, accepting current data", {
+        symbol,
+        period,
+        lastIbkrBarTime: new Date(lastIbkrBarTime!).toISOString(),
+        staleness: Math.floor((windowEnd.getTime() - lastIbkrBarTime!) / 1000),
+        threshold: Math.floor(staleThresholdMs / 1000),
+        attempt
+      });
+
+      // Read from cache (now includes IBKR data) and return
+      const rows = await readBarsFromDb(pool, {
+        symbol,
+        period,
+        what,
+        session,
+        start: windowStart,
+        end: windowEnd,
+      });
+      const bars = rowsToBars(rows);
+      const finalBars = limit ? sliceLastN(bars, limit) : bars;
+
+      return {
+        meta: {
+          symbol,
+          period,
+          session,
+          what,
+          start: finalBars.length ? finalBars[0].t : toISO(windowStart),
+          end: finalBars.length
+            ? finalBars[finalBars.length - 1].t
+            : toISO(windowEnd),
+          count: finalBars.length,
+          source: Array.from(new Set(sources)),
+          partial_last_bar: includeForming,
+        },
+        bars: finalBars,
+      };
+    }
+
+    // 6) Check if we need to expand window
     if (attempt >= maxAttempts) {
       // Return whatever we can after maxAttempts
       const rows = await readBarsFromDb(pool, {
@@ -471,6 +540,55 @@ export async function getBars(
     }
 
     // Expand backward (double the lookback) for the next attempt
+    // Skip if expansion is disabled
+    if (!enableExpansion) {
+      logger.info("⏸️  Window expansion disabled, stopping after first attempt", {
+        symbol,
+        period,
+        attempt,
+        cachedCount: cachedBars.length,
+        requestedLimit: limit
+      });
+      // One more cache check, then return whatever we have
+      const rows = await readBarsFromDb(pool, {
+        symbol,
+        period,
+        what,
+        session,
+        start: windowStart,
+        end: windowEnd,
+      });
+      const bars = rowsToBars(rows);
+      const finalBars = limit ? sliceLastN(bars, limit) : bars;
+
+      logger.warn("Returning partial result (expansion disabled)", {
+        symbol,
+        period,
+        session,
+        what,
+        barCount: finalBars.length,
+        requestedLimit: limit,
+        includeForming,
+      });
+
+      return {
+        meta: {
+          symbol,
+          period,
+          session,
+          what,
+          start: finalBars.length ? finalBars[0].t : toISO(windowStart),
+          end: finalBars.length
+            ? finalBars[finalBars.length - 1].t
+            : toISO(windowEnd),
+          count: finalBars.length,
+          source: Array.from(new Set(sources)),
+          partial_last_bar: includeForming,
+        },
+        bars: finalBars,
+      };
+    }
+
     const currentSpanSec = Math.floor(
       (windowEnd.getTime() - windowStart.getTime()) / 1000
     );

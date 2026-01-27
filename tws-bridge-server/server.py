@@ -30,7 +30,9 @@ import uvicorn
 from config import settings
 from api.routes import router
 from api.websocket import handle_websocket
-from tws.connection_manager import tws_manager
+from tws.connection_manager import initialize_connections, get_http_connection, get_websocket_connection
+import tws.bar_fetcher as bar_fetcher_module
+import tws.streaming_manager as streaming_manager_module
 
 # Configure logging
 logging.basicConfig(
@@ -57,18 +59,48 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info(f"Server: http://{settings.host}:{settings.port}")
     logger.info(f"TWS: {settings.tws_host}:{settings.tws_port}")
-    logger.info(f"Client ID: {settings.tws_client_id}")
     logger.info(f"Market Data Type: {settings.tws_market_data_type}")
     logger.info("=" * 60)
 
-    # Connect to TWS
-    logger.info("🔌 Connecting to TWS...")
-    success = tws_manager.connect()
+    # Initialize TWS connections (HTTP and WebSocket with separate Client IDs)
+    logger.info("🔧 Initializing TWS connections...")
+    initialize_connections()
 
-    if success:
-        logger.info("✅ TWS connection established")
+    # Connect HTTP API connection (Client ID 100)
+    logger.info("🔌 Connecting HTTP API to TWS (Client ID 100)...")
+    http_conn = get_http_connection()
+    http_success = http_conn.connect()
+
+    if http_success:
+        logger.info("✅ HTTP API TWS connection established")
     else:
-        logger.warning("⚠️  Failed to connect to TWS on startup (will retry automatically)")
+        logger.warning("⚠️  HTTP API failed to connect to TWS on startup (will retry automatically)")
+
+    # Connect WebSocket API connection (Client ID 101)
+    logger.info("🔌 Connecting WebSocket API to TWS (Client ID 101)...")
+    ws_conn = get_websocket_connection()
+    ws_success = ws_conn.connect()
+
+    if ws_success:
+        logger.info("✅ WebSocket API TWS connection established")
+    else:
+        logger.warning("⚠️  WebSocket API failed to connect to TWS on startup (will retry automatically)")
+
+    # Initialize bar fetcher (uses HTTP connection)
+    logger.info("🔧 Initializing bar fetcher...")
+    from tws.bar_fetcher import BarFetcher
+    bar_fetcher_module.bar_fetcher = BarFetcher()
+
+    # Initialize streaming manager (uses WebSocket connection)
+    logger.info("🔧 Initializing streaming manager...")
+    from tws.streaming_manager import StreamingManager
+    streaming_manager_module.streaming_manager = StreamingManager()
+
+    logger.info("=" * 60)
+    logger.info("✅ TWS Bridge Server Started Successfully")
+    logger.info("   HTTP API:      Uses TWS Client ID 200")
+    logger.info("   WebSocket API: Uses TWS Client ID 201")
+    logger.info("=" * 60)
 
     yield
 
@@ -77,9 +109,13 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 TWS Bridge Server Shutting Down")
     logger.info("=" * 60)
 
-    # Disconnect from TWS
-    logger.info("🔌 Disconnecting from TWS...")
-    tws_manager.disconnect()
+    # Disconnect both connections
+    logger.info("🔌 Disconnecting HTTP API from TWS...")
+    http_conn.disconnect()
+
+    logger.info("🔌 Disconnecting WebSocket API from TWS...")
+    ws_conn.disconnect()
+
     logger.info("✅ Shutdown complete")
 
 
