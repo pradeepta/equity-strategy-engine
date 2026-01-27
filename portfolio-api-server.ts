@@ -1237,8 +1237,81 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sendJSON(res, { error: error.message || 'Failed to generate DSL schema' }, 500);
       }
 
+    } else if (pathname === '/api/strategies/deploy' && req.method === 'POST') {
+      // POST /api/strategies/deploy - Deploy YAML strategy directly (no conversion)
+      try {
+        const body = await parseBody(req);
+        const { yaml, name, symbol } = body;
+
+        if (!yaml) {
+          sendJSON(res, { error: 'Missing required field: yaml' }, 400);
+          return;
+        }
+
+        const userId = process.env.USER_ID;
+        if (!userId) {
+          sendJSON(res, { error: 'USER_ID not configured' }, 500);
+          return;
+        }
+
+        console.log(`[portfolio-api] Deploying strategy: ${name || symbol}`);
+
+        // Validate YAML compiles and extract metadata
+        let compiled;
+        try {
+          const registry = createStandardRegistry();
+          const compiler = new StrategyCompiler(registry);
+          compiled = compiler.compileFromYAML(yaml);
+          console.log(`[portfolio-api] YAML validation successful for ${compiled.symbol}`);
+        } catch (compileError: any) {
+          console.error('[portfolio-api] YAML validation failed:', compileError.message);
+          sendJSON(res, {
+            success: false,
+            error: `YAML validation failed: ${compileError.message}`
+          }, 400);
+          return;
+        }
+
+        // Deploy to database
+        const factory = getRepositoryFactory();
+        const strategyRepo = factory.getStrategyRepo();
+
+        const strategy = await strategyRepo.createWithVersion({
+          userId,
+          yamlContent: yaml,
+          name: name || `Strategy ${compiled.symbol}`,
+          symbol: symbol || compiled.symbol,
+          timeframe: compiled.timeframe,
+          changeReason: 'Deployed via API',
+        });
+
+        // Mark as PENDING so orchestrator will pick it up
+        const updatedStrategy = await factory.getPrisma().strategy.update({
+          where: { id: strategy.id },
+          data: { status: 'PENDING' },
+        });
+
+        console.log(`[portfolio-api] Strategy deployed with ID: ${updatedStrategy.id}, status: ${updatedStrategy.status}`);
+
+        sendJSON(res, {
+          success: true,
+          strategyId: updatedStrategy.id,
+          strategyName: updatedStrategy.name,
+          symbol: updatedStrategy.symbol,
+          status: updatedStrategy.status,
+          message: 'Strategy deployed successfully. Orchestrator will activate it automatically.'
+        }, 201);
+
+      } catch (error: any) {
+        console.error('[portfolio-api] Error deploying strategy:', error);
+        sendJSON(res, {
+          success: false,
+          error: error.message || 'Failed to deploy strategy'
+        }, 500);
+      }
+
     } else if (pathname === '/api/tradecheck/convert' && req.method === 'POST') {
-      // POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy
+      // POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy (no deployment)
       try {
         const body = await parseBody(req);
         const { analysis, market_regime, max_risk_per_trade } = body;

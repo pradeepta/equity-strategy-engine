@@ -77,6 +77,41 @@ export default function TradeCheckModal({
     }
   };
 
+  const handleDeployStrategy = async () => {
+    if (!yaml || !analysis) {
+      setError('No strategy available to deploy');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      const response = await fetch('http://localhost:3002/api/strategies/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          yaml: yaml,
+          name: `${symbol.toUpperCase()} ${analysis.setup_type === 'long' ? 'Long' : 'Short'} Strategy`,
+          symbol: symbol.toUpperCase()
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        alert(`✅ Strategy deployed successfully!\n\nStrategy ID: ${data.strategyId}\n\n${data.message}`);
+        onClose();
+      } else {
+        setError(data.error || 'Failed to deploy strategy');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to deploy strategy');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !isAnalyzing) {
       handleAnalyze();
@@ -557,6 +592,23 @@ export default function TradeCheckModal({
                 >
                   Close
                 </button>
+                {yaml && (
+                  <button
+                    onClick={handleDeployStrategy}
+                    disabled={isAnalyzing}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: isAnalyzing ? '#ccc' : '#22c55e',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: isAnalyzing ? 'not-allowed' : 'pointer',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {isAnalyzing ? 'Deploying...' : '🚀 Deploy Strategy'}
+                  </button>
+                )}
                 {onUseAnalysis && (
                   <button
                     onClick={handleUseAnalysis}
