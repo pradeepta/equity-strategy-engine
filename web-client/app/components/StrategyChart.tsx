@@ -175,12 +175,15 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         localization: {
           timeFormatter: (timestamp: number) => {
             const date = new Date(timestamp * 1000);
+            const tzAbbr = new Intl.DateTimeFormat("en-US", {
+              timeZoneName: "short"
+            }).formatToParts(date).find(part => part.type === "timeZoneName")?.value || "";
             return new Intl.DateTimeFormat("en-US", {
               month: "short",
               day: "2-digit",
               hour: "2-digit",
               minute: "2-digit",
-            }).format(date);
+            }).format(date) + ` ${tzAbbr}`;
           },
         },
       });
@@ -441,7 +444,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         </div>
       )}
       <div style={{ marginTop: "6px", color: "#737373", fontSize: "12px" }}>
-        Timeframe: {timeframe} • Bars: {barLimit}
+        Timeframe: {timeframe} • Bars: {barLimit} • Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
         {lastResponseCount !== null && (
           <span style={{ marginLeft: "8px" }}>
             (Received: {lastResponseCount})

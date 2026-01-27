@@ -15,6 +15,17 @@ const logger = LoggerFactory.getLogger("IBKR-Fetcher");
 // Python TWS Bridge configuration
 const PYTHON_TWS_ENABLED = process.env.PYTHON_TWS_ENABLED === "true";
 const PYTHON_TWS_URL = process.env.PYTHON_TWS_URL || "http://localhost:3003";
+// IBKR always returns timestamps in Eastern Time, regardless of server location
+const MARKET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
 
 /**
  * Format Date to IBKR endDateTime format
@@ -33,15 +44,32 @@ function ibkrEndDateTime(d: Date): string {
 
 function durationStr(seconds: number): string {
   // IBKR accepts duration in various formats: S (seconds), D (days), W (weeks), M (months), Y (years)
-  // For better reliability, convert to days for longer durations
-  const days = Math.ceil(seconds / (24 * 60 * 60));
+  // CRITICAL: IBKR "D" means TRADING days (6.5 hours), not calendar days (24 hours)
+  // Market hours: 9:30 AM - 4:00 PM EST = 6.5 hours = 23400 seconds per trading day
 
-  if (days >= 1) {
-    return `${days} D`;
-  } else {
-    // For sub-day durations, use seconds
+  const TRADING_DAY_SECONDS = 6.5 * 60 * 60; // 23400 seconds
+  const tradingDays = seconds / TRADING_DAY_SECONDS;
+
+  if (tradingDays < 1) {
+    // Less than 1 trading day: use seconds
     return `${Math.max(1, Math.floor(seconds))} S`;
+  } else {
+    // 1+ trading days: round UP to ensure we get enough data
+    return `${Math.ceil(tradingDays)} D`;
   }
+}
+
+function formatMarketDateTime(d: Date): string {
+  const parts = MARKET_FORMATTER.formatToParts(d);
+  const get = (type: string) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  const yyyy = get("year");
+  const mm = get("month");
+  const dd = get("day");
+  const HH = get("hour");
+  const MM = get("minute");
+  const SS = get("second");
+  return `${yyyy}${mm}${dd} ${HH}:${MM}:${SS}`;
 }
 
 /**
@@ -61,21 +89,15 @@ async function fetchFromPythonBridge(params: {
 
   const duration = durationStr(durationSeconds);
 
-  // Format end datetime for Python bridge (empty string = now, or specific timestamp)
+  // Format end datetime for Python bridge (empty string = now, or exchange-local timestamp)
   let endDateTime = "";
   const now = new Date();
   const timeDiffMs = Math.abs(now.getTime() - windowEnd.getTime());
 
   // If windowEnd is not "now" (>5 seconds difference), format it
   if (timeDiffMs > 5000) {
-    // Python TWS API expects format: "20250126 10:30:00" (no UTC suffix)
-    const yyyy = windowEnd.getUTCFullYear();
-    const mm = String(windowEnd.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(windowEnd.getUTCDate()).padStart(2, "0");
-    const HH = String(windowEnd.getUTCHours()).padStart(2, "0");
-    const MM = String(windowEnd.getUTCMinutes()).padStart(2, "0");
-    const SS = String(windowEnd.getUTCSeconds()).padStart(2, "0");
-    endDateTime = `${yyyy}${mm}${dd} ${HH}:${MM}:${SS}`;
+    // Python TWS API expects format: "YYYYMMDD HH:MM:SS" in exchange local time
+    endDateTime = formatMarketDateTime(windowEnd);
   }
 
   logger.info("Fetching bars from Python TWS Bridge", {

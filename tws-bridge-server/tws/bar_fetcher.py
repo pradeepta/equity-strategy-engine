@@ -3,6 +3,7 @@
 import logging
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any
 from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
@@ -11,6 +12,48 @@ from tws.connection_manager import tws_manager
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def parse_ibkr_date_to_utc(date_str: str) -> str:
+    """
+    Parse IBKR date format (local server time) and convert to UTC ISO format.
+
+    IMPORTANT: TWS returns timestamps in the SERVER'S LOCAL TIMEZONE, not Eastern Time!
+    - Format: "20260126  09:55:00" (note: two spaces between date and time)
+    - If server is in Pacific Time: represents 9:55 AM Pacific (12:55 PM ET)
+    - If server is in Eastern Time: represents 9:55 AM Eastern
+
+    Returns:
+    - ISO 8601 UTC string: "2026-01-26T14:55:00+00:00"
+    """
+    try:
+        # Split date and time parts
+        parts = date_str.split()
+        date_part = parts[0]  # "20260126"
+        time_part = parts[1] if len(parts) > 1 else "00:00:00"
+
+        # Parse components
+        year = int(date_part[0:4])
+        month = int(date_part[4:6])
+        day = int(date_part[6:8])
+        hour, minute, second = [int(x) for x in time_part.split(':')]
+
+        # CRITICAL FIX: Create datetime in LOCAL time (server's timezone)
+        # TWS returns timestamps in the server's local timezone, not Eastern Time!
+        # Get system's local timezone
+        local_tz = datetime.now().astimezone().tzinfo
+        local_time = datetime(year, month, day, hour, minute, second, tzinfo=local_tz)
+
+        # Convert to UTC
+        utc_time = local_time.astimezone(ZoneInfo('UTC'))
+
+        # Return ISO format
+        return utc_time.isoformat()
+
+    except Exception as e:
+        logger.error(f"Failed to parse IBKR date '{date_str}': {e}")
+        # Return original if parsing fails
+        return date_str
 
 
 class BarData:
@@ -28,9 +71,9 @@ class BarData:
         self.count = count
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary."""
+        """Convert to dictionary with UTC timestamps."""
         return {
-            "date": self.date,
+            "date": parse_ibkr_date_to_utc(self.date),  # Convert local time to UTC
             "open": self.open,
             "high": self.high,
             "low": self.low,

@@ -23,6 +23,17 @@ import { fetchHistoricalFromIbkr } from "./ibkr";
 import { LoggerFactory } from "../../logging/logger";
 
 const logger = LoggerFactory.getLogger("GetBars");
+// IBKR always returns timestamps in Eastern Time, regardless of server location
+const MARKET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
 
 function isAlignedToPeriod(d: Date, periodSeconds: number): boolean {
   const ms = d.getTime();
@@ -33,9 +44,71 @@ function toISO(d: Date): string {
   return d.toISOString();
 }
 
+function getMarketTzParts(d: Date): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
+  const parts = MARKET_FORMATTER.formatToParts(d);
+  const get = (type: string) =>
+    parseInt(parts.find((p) => p.type === type)!.value);
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour"),
+    minute: get("minute"),
+    second: get("second"),
+  };
+}
+
+function getMarketTzOffsetMs(utcDate: Date): number {
+  const parts = getMarketTzParts(utcDate);
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+  return asUtc - utcDate.getTime();
+}
+
+function marketTzTimeToUtcDate(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0
+): Date {
+  const utcGuess = new Date(Date.UTC(year, monthIndex, day, hour, minute, second));
+  const offsetMs = getMarketTzOffsetMs(utcGuess);
+  return new Date(utcGuess.getTime() - offsetMs);
+}
+
 function parseIbkrDate(dateStr: string): Date | null {
-  // IBKR format: "20251202" or "20251202  10:30:00"
-  // CRITICAL: IBKR timestamps are in America/New_York (Eastern Time), NOT local timezone!
+  // Handle both formats:
+  // 1. ISO 8601 from Python bridge: "2026-01-26T14:55:00+00:00" (already UTC)
+  // 2. Legacy IBKR format: "20251202" or "20251202  10:30:00" (Eastern Time)
+
+  // Check if it's ISO 8601 format (contains 'T' or '-')
+  if (dateStr.includes('T') || dateStr.includes('-')) {
+    // ISO format from Python bridge - already in UTC
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) {
+      return parsed;
+    }
+    logger.warn(`Failed to parse ISO date: ${dateStr}`);
+    return null;
+  }
+
+  // Legacy IBKR format: "20251202" or "20251202  10:30:00"
+  // CRITICAL: IBKR timestamps are in exchange-local time (configurable).
   if (dateStr.includes(" ")) {
     // Has time component
     const [datePart, timePart] = dateStr.split(/\s+/);
@@ -48,20 +121,17 @@ function parseIbkrDate(dateStr: string): Date | null {
         .split(":")
         .map((s) => parseInt(s));
 
-      // Create ISO string assuming Eastern Time (America/New_York)
-      // Use -05:00 for EST (standard time). This is an approximation - ideally we'd use a timezone library
-      // to handle DST, but for stock market hours this works since market is 9:30 AM - 4:00 PM ET year-round
-      const isoString = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}-05:00`;
-      return new Date(isoString);
+      // Convert exchange-local time to UTC, respecting DST
+      return marketTzTimeToUtcDate(year, month, day, hours, minutes, seconds);
     } else {
-      return new Date(year, month, day);
+      return marketTzTimeToUtcDate(year, month, day);
     }
   } else {
     // Date only: "20251202"
     const year = parseInt(dateStr.substring(0, 4));
     const month = parseInt(dateStr.substring(4, 6)) - 1;
     const day = parseInt(dateStr.substring(6, 8));
-    return new Date(year, month, day);
+    return marketTzTimeToUtcDate(year, month, day);
   }
 }
 
@@ -101,6 +171,42 @@ export async function getBars(
 
   let windowStart: Date;
   let windowEnd: Date = endAligned;
+
+  // CRITICAL FIX: If fetching after market close, anchor to market close time
+  // Market hours: 9:30 AM - 4:00 PM local exchange time (configurable).
+  // This ensures we fetch the LAST N hours of trading data, not N hours backward from "now"
+  const now = new Date();
+
+  // Get current time in market timezone using Intl.DateTimeFormat
+  const marketParts = getMarketTzParts(now);
+  const marketYear = marketParts.year;
+  const marketMonthIndex = marketParts.month - 1;
+  const marketDay = marketParts.day;
+  const marketHour = marketParts.hour;
+  const marketMinute = marketParts.minute;
+
+  // Market close: 4:00 PM local exchange time (handle DST via timezone conversion)
+  const marketCloseHour = 16;
+
+  // If current time is after market close, anchor windowEnd to market close
+  if (
+    (marketHour > marketCloseHour ||
+      (marketHour === marketCloseHour && marketMinute >= 0)) &&
+    !start
+  ) {
+    // Create market close time: 4:00 PM market time today (DST-aware)
+    windowEnd = marketTzTimeToUtcDate(
+      marketYear,
+      marketMonthIndex,
+      marketDay,
+      marketCloseHour,
+      0,
+      0
+    );
+    logger.debug(
+      `Current time (${String(marketHour).padStart(2, "0")}:${String(marketMinute).padStart(2, "0")} EST) is at/after market close. Anchoring windowEnd to ${windowEnd.toISOString()} (4:00 PM EST)`
+    );
+  }
 
   // Determine initial window
   if (start) {
@@ -142,8 +248,17 @@ export async function getBars(
 
     const cachedBars = rowsToBars(cachedRows);
 
-    // Check if we have enough bars
-    const enough = limit ? cachedBars.length >= limit : true;
+    // Check if cache is stale relative to windowEnd (avoid returning old bars)
+    const lastBarTimeMs = cachedBars.length
+      ? new Date(cachedBars[cachedBars.length - 1].t).getTime()
+      : null;
+    const staleThresholdMs = Math.floor(periodSec * 1000 * 1.5);
+    const isStale =
+      lastBarTimeMs != null &&
+      windowEnd.getTime() - lastBarTimeMs > staleThresholdMs;
+
+    // Check if we have enough bars and they're not stale
+    const enough = limit ? cachedBars.length >= limit && !isStale : !isStale;
 
     if (enough) {
       if (cachedBars.length > 0) sources.push("cache");
@@ -157,6 +272,7 @@ export async function getBars(
         barCount: finalBars.length,
         sources,
         includeForming,
+        isStale,
       });
 
       return {
