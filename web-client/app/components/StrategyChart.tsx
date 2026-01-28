@@ -62,8 +62,17 @@ function parseTimeframeFromYAML(yamlContent: string): string {
 export function StrategyChart({ strategy }: { strategy: any }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
+  const candlestickSeriesRef = useRef<any>(null);
+  const entryLowerSeriesRef = useRef<any>(null);
+  const entryUpperSeriesRef = useRef<any>(null);
+  const stopLossSeriesRef = useRef<any>(null);
+  const targetSeriesRefs = useRef<any[]>([]);
+  const invalidationSeriesRef = useRef<any>(null);
   const fetchingMoreRef = useRef(false);
   const initialLoadCompleteRef = useRef(false); // Prevent auto-loading on mount
+  const firstChartRenderRef = useRef(false);
+  const currentYamlRef = useRef<string>("");
+  const chartCreatedRef = useRef(false);
 
   // Parse timeframe and calculate smart default bar count
   const timeframe = parseTimeframeFromYAML(strategy.yamlContent);
@@ -104,50 +113,71 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     invalidationLevel: null,
     side: null,
   });
+  const [lastFetchTime, setLastFetchTime] = useState<Date>(new Date());
 
   const MAX_BARS = 2000;
+  const REFRESH_INTERVAL = 10000; // 10 seconds
 
-  // Fetch bars (only when barLimit or strategy changes, NOT when bars.length changes)
-  useEffect(() => {
-    const fetchBars = async () => {
-      try {
-        fetchingMoreRef.current = true;
-        const isInitialLoad = bars.length === 0;
-        console.log(`[Chart] Fetching bars: limit=${barLimit}, isInitialLoad=${isInitialLoad}`);
-        setLoading(isInitialLoad);
-        setLoadingMore(!isInitialLoad);
-        const response = await fetch(
-          `${API_BASE}/api/portfolio/strategies/${strategy.id}/bars?limit=${barLimit}`,
-        );
-        if (!response.ok) throw new Error("Failed to fetch chart data");
-        const data = await response.json();
-        setLastResponseCount(
-          typeof data.count === "number" ? data.count : (data.bars || []).length,
-        );
-        setBars(data.bars || []);
-        setError(null);
-
-        // Mark initial load complete
-        if (isInitialLoad) {
-          initialLoadCompleteRef.current = true;
-        }
-      } catch (err: any) {
-        setError(err.message || "Failed to load chart");
-      } finally {
-        fetchingMoreRef.current = false;
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    };
-    fetchBars();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategy.id, barLimit]); // Removed bars.length - only fetch when limit or strategy changes
-
-  // Initialize chart
-  useEffect(() => {
-    if (!chartContainerRef.current || bars.length === 0) return;
+  // Fetch bars function (extracted for reuse)
+  const fetchBars = async () => {
+    if (fetchingMoreRef.current) return;
 
     try {
+      fetchingMoreRef.current = true;
+      const isInitialLoad = bars.length === 0;
+      console.log(`[Chart] Fetching bars: limit=${barLimit}, isInitialLoad=${isInitialLoad}`);
+      setLoading(isInitialLoad);
+      setLoadingMore(!isInitialLoad);
+      const response = await fetch(
+        `${API_BASE}/api/portfolio/strategies/${strategy.id}/bars?limit=${barLimit}`,
+      );
+      if (!response.ok) throw new Error("Failed to fetch chart data");
+      const data = await response.json();
+      setLastResponseCount(
+        typeof data.count === "number" ? data.count : (data.bars || []).length,
+      );
+      setBars(data.bars || []);
+      setError(null);
+      setLastFetchTime(new Date());
+
+      // Mark initial load complete
+      if (isInitialLoad) {
+        initialLoadCompleteRef.current = true;
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to load chart");
+    } finally {
+      fetchingMoreRef.current = false;
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  };
+
+  // Initial load
+  useEffect(() => {
+    fetchBars();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategy.id, barLimit]); // Fetch when strategy or limit changes
+
+  // Auto-refresh interval
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      console.log('[Chart] Auto-refresh triggered');
+      fetchBars();
+    }, REFRESH_INTERVAL);
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategy.id, barLimit]);
+
+  // Create chart once when container is ready
+  useEffect(() => {
+    if (!chartContainerRef.current || chartCreatedRef.current) return;
+
+    console.log('[Chart] Creating chart...');
+
+    try {
+      chartCreatedRef.current = true;
       const chart = createChart(chartContainerRef.current, {
         width: chartContainerRef.current.clientWidth,
         height: 500,
@@ -190,7 +220,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       chartRef.current = chart;
 
-      // Add candlestick data
+      // Create candlestick series
       const candlestickSeries = chart.addSeries(CandlestickSeries, {
         upColor: "#22c55e",
         downColor: "#ef4444",
@@ -200,17 +230,86 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         wickDownColor: "#ef4444",
       });
 
-      const chartData: CandlestickData[] = bars
-        .map((bar) => ({
-          time: Math.floor(new Date(bar.timestamp).getTime() / 1000) as any,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-        }))
-        .sort((a, b) => (a.time as number) - (b.time as number));
+      candlestickSeriesRef.current = candlestickSeries;
 
-      candlestickSeries.setData(chartData);
+      // Add scroll-based lazy loading
+      const timeScale = chart.timeScale();
+      let scrollEnabled = false;
+
+      // Wait 500ms after chart setup before enabling scroll detection
+      const enableScrollTimer = setTimeout(() => {
+        scrollEnabled = true;
+      }, 500);
+
+      const handleRangeChange = (range: { from: number; to: number } | null) => {
+        if (!scrollEnabled || !range || fetchingMoreRef.current || !initialLoadCompleteRef.current) {
+          return;
+        }
+
+        const isAtLeftEdge = range.from < 5;
+        const isAtLimit = bars.length >= barLimitRef.current;
+
+        if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
+          const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
+          if (nextLimit > barLimitRef.current) {
+            console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit}`);
+            setBarLimit(nextLimit);
+          }
+        }
+      };
+
+      timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
+
+      return () => {
+        clearTimeout(enableScrollTimer);
+        timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
+        chart.remove();
+        chartCreatedRef.current = false;
+      };
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }, [loading]); // Create chart when loading completes and container is rendered
+
+  // Create trade level lines when YAML changes
+  useEffect(() => {
+    if (!chartRef.current) {
+      console.log('[Chart] Skipping trade lines - no chart');
+      return;
+    }
+
+    if (strategy.yamlContent === currentYamlRef.current) {
+      console.log('[Chart] Skipping trade lines - YAML unchanged');
+      return;
+    }
+
+    console.log('[Chart] Creating trade level lines...');
+
+    try {
+      const chart = chartRef.current;
+      currentYamlRef.current = strategy.yamlContent;
+
+      // Remove existing trade level lines
+      if (entryLowerSeriesRef.current) {
+        try { chart.removeSeries(entryLowerSeriesRef.current); } catch (e) {}
+        entryLowerSeriesRef.current = null;
+      }
+      if (entryUpperSeriesRef.current) {
+        try { chart.removeSeries(entryUpperSeriesRef.current); } catch (e) {}
+        entryUpperSeriesRef.current = null;
+      }
+      if (stopLossSeriesRef.current) {
+        try { chart.removeSeries(stopLossSeriesRef.current); } catch (e) {}
+        stopLossSeriesRef.current = null;
+      }
+      targetSeriesRefs.current.forEach(series => {
+        try { chart.removeSeries(series); } catch (e) {}
+      });
+      targetSeriesRefs.current = [];
+      if (invalidationSeriesRef.current) {
+        try { chart.removeSeries(invalidationSeriesRef.current); } catch (e) {}
+        invalidationSeriesRef.current = null;
+      }
 
       // Parse YAML for trade parameters
       const yamlLines = strategy.yamlContent.split("\n");
@@ -284,55 +383,37 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       setTradeParams({ entryZone, stopLoss, targets, invalidationLevel, side });
 
-      // Add entry zone lines
+      // Create entry zone lines
       if (entryZone) {
-        const [lower, upper] = entryZone;
-        const entryLowerSeries = chart.addSeries(LineSeries, {
+        entryLowerSeriesRef.current = chart.addSeries(LineSeries, {
           color: "#22c55e",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const entryUpperSeries = chart.addSeries(LineSeries, {
+        entryUpperSeriesRef.current = chart.addSeries(LineSeries, {
           color: "#22c55e",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-
-        const lineData: LineData[] = chartData.map((d) => ({
-          time: d.time,
-          value: lower,
-        }));
-        const lineDataUpper: LineData[] = chartData.map((d) => ({
-          time: d.time,
-          value: upper,
-        }));
-        entryLowerSeries.setData(lineData);
-        entryUpperSeries.setData(lineDataUpper);
       }
 
-      // Add stop loss line
+      // Create stop loss line
       if (stopLoss !== null) {
-        const stopLossValue = stopLoss;
-        const stopSeries = chart.addSeries(LineSeries, {
+        stopLossSeriesRef.current = chart.addSeries(LineSeries, {
           color: "#ef4444",
           lineWidth: 2,
           lineStyle: LineStyle.Solid,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map((d) => ({
-          time: d.time,
-          value: stopLossValue,
-        }));
-        stopSeries.setData(lineData);
       }
 
-      // Add target lines
-      targets.forEach((target, idx) => {
+      // Create target lines
+      targets.forEach(() => {
         const targetSeries = chart.addSeries(LineSeries, {
           color: "#3b82f6",
           lineWidth: 2,
@@ -340,72 +421,107 @@ export function StrategyChart({ strategy }: { strategy: any }) {
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map((d) => ({
-          time: d.time,
-          value: target,
-        }));
-        targetSeries.setData(lineData);
+        targetSeriesRefs.current.push(targetSeries);
       });
 
-      // Add invalidation line
+      // Create invalidation line
       if (invalidationLevel !== null) {
-        const invalidationValue = invalidationLevel;
-        const invalidSeries = chart.addSeries(LineSeries, {
+        invalidationSeriesRef.current = chart.addSeries(LineSeries, {
           color: "#f97316",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        const lineData: LineData[] = chartData.map((d) => ({
-          time: d.time,
-          value: invalidationValue,
-        }));
-        invalidSeries.setData(lineData);
       }
 
-      chart.timeScale().fitContent();
-
-      // Add scroll-based lazy loading (only after initial load)
-      const timeScale = chart.timeScale();
-      let scrollEnabled = false;
-
-      // Wait 500ms after chart setup before enabling scroll detection
-      // This prevents auto-triggering during initial fitContent()
-      const enableScrollTimer = setTimeout(() => {
-        scrollEnabled = true;
-      }, 500);
-
-      const handleRangeChange = (range: { from: number; to: number } | null) => {
-        // Don't trigger until scroll is enabled, or while already fetching
-        if (!scrollEnabled || !range || fetchingMoreRef.current || !initialLoadCompleteRef.current) {
-          return;
-        }
-
-        const isAtLeftEdge = range.from < 5;
-        const isAtLimit = bars.length >= barLimitRef.current;
-
-        // User scrolled to left edge AND we're at current limit → load more
-        if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
-          const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
-          if (nextLimit > barLimitRef.current) {
-            console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit}`);
-            setBarLimit(nextLimit);
-          }
-        }
-      };
-
-      timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
-
-      return () => {
-        clearTimeout(enableScrollTimer);
-        timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
-        chart.remove();
-      };
+      setTradeParams({ entryZone, stopLoss, targets, invalidationLevel, side });
     } catch (err: any) {
       setError(err.message);
     }
-  }, [bars, strategy.yamlContent]); // Removed barLimit - chart doesn't need to recreate when limit changes
+  }, [strategy.yamlContent]); // Only recreate lines when YAML changes
+
+  // Update chart data when bars change
+  useEffect(() => {
+    if (!chartRef.current || !candlestickSeriesRef.current || bars.length === 0) {
+      console.log('[Chart] Skipping data update:', {
+        hasChart: !!chartRef.current,
+        hasSeries: !!candlestickSeriesRef.current,
+        barsLength: bars.length
+      });
+      return;
+    }
+
+    console.log('[Chart] Updating chart data with', bars.length, 'bars');
+
+    try {
+      const candlestickSeries = candlestickSeriesRef.current;
+
+      const chartData: CandlestickData[] = bars
+        .map((bar) => ({
+          time: Math.floor(new Date(bar.timestamp).getTime() / 1000) as any,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }))
+        .sort((a, b) => (a.time as number) - (b.time as number));
+
+      // Update candlestick data
+      candlestickSeries.setData(chartData);
+
+      // Update trade level line data
+      if (entryLowerSeriesRef.current && tradeParams.entryZone) {
+        const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
+          time: d.time,
+          value: tradeParams.entryZone![0],
+        }));
+        entryLowerSeriesRef.current.setData(lineData);
+      }
+
+      if (entryUpperSeriesRef.current && tradeParams.entryZone) {
+        const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
+          time: d.time,
+          value: tradeParams.entryZone![1],
+        }));
+        entryUpperSeriesRef.current.setData(lineData);
+      }
+
+      if (stopLossSeriesRef.current && tradeParams.stopLoss !== null) {
+        const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
+          time: d.time,
+          value: tradeParams.stopLoss!,
+        }));
+        stopLossSeriesRef.current.setData(lineData);
+      }
+
+      targetSeriesRefs.current.forEach((series, idx) => {
+        if (tradeParams.targets[idx] !== undefined) {
+          const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
+            time: d.time,
+            value: tradeParams.targets[idx],
+          }));
+          series.setData(lineData);
+        }
+      });
+
+      if (invalidationSeriesRef.current && tradeParams.invalidationLevel !== null) {
+        const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
+          time: d.time,
+          value: tradeParams.invalidationLevel!,
+        }));
+        invalidationSeriesRef.current.setData(lineData);
+      }
+
+      // Fit content only on first render
+      if (!firstChartRenderRef.current) {
+        chartRef.current.timeScale().fitContent();
+        firstChartRenderRef.current = true;
+      }
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }, [bars, tradeParams]); // Update data when bars change
 
   if (loading) {
     return (
@@ -450,6 +566,9 @@ export function StrategyChart({ strategy }: { strategy: any }) {
             (Received: {lastResponseCount})
           </span>
         )}
+        <span style={{ marginLeft: "8px" }}>
+          Last updated: {lastFetchTime.toLocaleTimeString()}
+        </span>
       </div>
       {loadingMore && (
         <div style={{ marginTop: "6px", color: "#737373", fontSize: "12px" }}>

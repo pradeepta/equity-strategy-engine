@@ -19,7 +19,7 @@ from ibapi.common import BarData
 
 # Configuration
 TWS_HOST = "127.0.0.1"
-TWS_PORT = 7496  # Paper trading port (use 7496 for live)
+TWS_PORT = 7497  # Paper trading port (use 7496 for live)
 CLIENT_ID = 9999
 REQUEST_ID = 12345
 WAIT_SECONDS = 60

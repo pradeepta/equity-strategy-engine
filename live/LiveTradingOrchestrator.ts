@@ -22,6 +22,7 @@ import { Logger } from "../logging/logger";
 import { BarCacheServiceV2 } from "./cache/BarCacheServiceV2";
 import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
 import { RealtimeBarClient } from "./streaming/RealtimeBarClient";
+import { upsertBars } from "../broker/marketData/database";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
@@ -148,7 +149,8 @@ export class LiveTradingOrchestrator {
     const twsHost = config.twsHost || process.env.TWS_HOST || "127.0.0.1";
     const twsPort = config.twsPort || parseInt(process.env.TWS_PORT || "7497");
 
-    this.portfolioFetcher = new PortfolioDataFetcher(twsHost, twsPort, 3);
+    // Use unique client ID to avoid conflicts with other portfolio fetchers
+    this.portfolioFetcher = new PortfolioDataFetcher(twsHost, twsPort, 3000 + Math.floor(Math.random() * 1000));
     this.evaluatorClient = new StrategyEvaluatorClient(
       config.evalEndpoint,
       config.evalEnabled
@@ -281,6 +283,45 @@ export class LiveTradingOrchestrator {
       // Set up bar update handler
       this.realtimeBarClient.on("bar", async (symbol: string, bar: Bar) => {
         logger.debug(`🔄 Real-time bar update: ${symbol} | ${bar.timestamp}`);
+
+        // Persist bar to database for chart visibility
+        try {
+          const pool = this.repositoryFactory.getPool();
+          const barTimestamp = new Date(bar.timestamp);
+
+          // Calculate bar period (assuming 5-minute bars for now)
+          // TODO: Get actual period from strategy metadata
+          const period = "5m";
+          const barStart = new Date(barTimestamp);
+          barStart.setSeconds(0, 0); // Normalize to start of minute
+
+          // Calculate bar end (5 minutes later)
+          const barEnd = new Date(barStart);
+          barEnd.setMinutes(barEnd.getMinutes() + 5);
+
+          await upsertBars(pool, {
+            symbol,
+            period: period as "5m",
+            what: "trades",
+            session: "rth",
+            bars: [{
+              barstart: barStart,
+              barend: barEnd,
+              o: bar.open,
+              h: bar.high,
+              l: bar.low,
+              c: bar.close,
+              v: bar.volume,
+              wap: null,
+              tradeCount: null,
+            }]
+          });
+
+          logger.debug(`💾 Persisted forming bar to DB: ${symbol} @ ${barStart.toISOString()}`);
+        } catch (error: any) {
+          logger.warn(`⚠️  Failed to persist bar to database: ${error.message}`);
+          // Don't fail strategy processing if DB write fails
+        }
 
         // Process bar through all strategy instances for this symbol
         await this.multiStrategyManager.processBar(symbol, bar);

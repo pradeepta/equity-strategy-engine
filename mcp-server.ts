@@ -1313,7 +1313,8 @@ async function handleGetLivePortfolioSnapshot(args: any) {
 
     const host = process.env.TWS_HOST || '127.0.0.1';
     const port = parseInt(process.env.TWS_PORT || '7497', 10);
-    const clientId = 3; // Client ID 3 for portfolio data (same as swap evaluation)
+    // Use unique client ID to avoid conflicts with other portfolio fetchers
+    const clientId = 3000 + Math.floor(Math.random() * 1000);
 
     const fetcher = new PortfolioDataFetcher(host, port, clientId);
     const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
@@ -1624,8 +1625,8 @@ async function handleGetPortfolioSectorConcentration(args: any) {
     const host = process.env.TWS_HOST || '127.0.0.1';
     const port = parseInt(process.env.TWS_PORT || '7497', 10);
 
-    // Fetch portfolio snapshot
-    const portfolioFetcher = new PortfolioDataFetcher(host, port, 3);
+    // Fetch portfolio snapshot with unique client ID to avoid conflicts
+    const portfolioFetcher = new PortfolioDataFetcher(host, port, 3000 + Math.floor(Math.random() * 1000));
     const snapshot = await portfolioFetcher.getPortfolioSnapshot(forceRefresh);
 
     if (snapshot.positions.length === 0) {
