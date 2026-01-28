@@ -137,12 +137,11 @@ function parseTimeframeFromYAML(yamlContent: string): string {
  */
 export function StrategyChart({ strategy }: { strategy: any }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const rsiChartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
-  const rsiChartRef = useRef<any>(null);
   const candlestickSeriesRef = useRef<any>(null);
   const vwapSeriesRef = useRef<any>(null);
   const rsiSeriesRef = useRef<any>(null);
+  const rsiRefLinesRef = useRef<any>(null);
   const entryLowerSeriesRef = useRef<any>(null);
   const entryUpperSeriesRef = useRef<any>(null);
   const stopLossSeriesRef = useRef<any>(null);
@@ -324,6 +323,55 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       });
       vwapSeriesRef.current = vwapSeries;
 
+      // Create RSI series on main chart with separate right price scale (0-100 range)
+      const rsiSeries = chart.addSeries(LineSeries, {
+        color: "#60a5fa",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: "RSI",
+        priceScaleId: "rsi", // Use separate price scale for RSI
+      });
+      rsiSeriesRef.current = rsiSeries;
+
+      // Configure RSI price scale
+      chart.priceScale("rsi").applyOptions({
+        scaleMargins: {
+          top: 0.8, // Push RSI to bottom 20% of chart
+          bottom: 0,
+        },
+        borderColor: "#2b2b2b",
+      });
+
+      // Add RSI reference lines (30, 50, 70) on same price scale
+      const rsiOversold = chart.addSeries(LineSeries, {
+        color: "#ef4444",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceScaleId: "rsi",
+      });
+      const rsiNeutral = chart.addSeries(LineSeries, {
+        color: "#737373",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceScaleId: "rsi",
+      });
+      const rsiOverbought = chart.addSeries(LineSeries, {
+        color: "#22c55e",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceScaleId: "rsi",
+      });
+
+      // Store RSI reference lines for later updates
+      rsiRefLinesRef.current = { rsiOversold, rsiNeutral, rsiOverbought };
+
       // Add scroll-based lazy loading
       const timeScale = chart.timeScale();
       let scrollEnabled = false;
@@ -352,78 +400,10 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
 
-      // Create RSI chart below main chart
-      if (rsiChartContainerRef.current) {
-        console.log('[Chart] Creating RSI chart...');
-        const rsiChart = createChart(rsiChartContainerRef.current, {
-          width: rsiChartContainerRef.current.clientWidth,
-          height: 150,
-          layout: {
-            background: { color: "#1a1a1a" },
-            textColor: "#d1d5db",
-          },
-          grid: {
-            vertLines: { color: "#2b2b2b" },
-            horzLines: { color: "#2b2b2b" },
-          },
-          crosshair: { mode: 1 },
-          rightPriceScale: {
-            borderColor: "#2b2b2b",
-            scaleMargins: { top: 0.1, bottom: 0.1 },
-          },
-          timeScale: {
-            borderColor: "#2b2b2b",
-            visible: false, // Hide time scale (sync with main chart)
-          },
-        });
-
-        rsiChartRef.current = rsiChart;
-
-        // Create RSI line series
-        const rsiSeries = rsiChart.addSeries(LineSeries, {
-          color: "#60a5fa",
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: true,
-          title: "RSI",
-        });
-        rsiSeriesRef.current = rsiSeries;
-
-        // Add RSI reference lines (30, 50, 70)
-        const rsiOversold = rsiChart.addSeries(LineSeries, {
-          color: "#ef4444",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        const rsiNeutral = rsiChart.addSeries(LineSeries, {
-          color: "#737373",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        const rsiOverbought = rsiChart.addSeries(LineSeries, {
-          color: "#22c55e",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-
-        // These will be populated with data in the data update effect
-        // Store refs for later updates
-        (rsiChart as any)._refLines = { rsiOversold, rsiNeutral, rsiOverbought };
-      }
-
       return () => {
         clearTimeout(enableScrollTimer);
         timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
         chart.remove();
-        if (rsiChartRef.current) {
-          rsiChartRef.current.remove();
-        }
         chartCreatedRef.current = false;
       };
     } catch (err: any) {
@@ -644,7 +624,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       }
 
       // Update RSI
-      if (rsiSeriesRef.current && rsiChartRef.current) {
+      if (rsiSeriesRef.current) {
         const rsiValues = calculateRSI(bars, 14);
         const rsiData: LineData[] = chartData
           .map((d: CandlestickData, idx: number) => ({
@@ -655,8 +635,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         rsiSeriesRef.current.setData(rsiData);
 
         // Update RSI reference lines
-        const refLines = (rsiChartRef.current as any)._refLines;
-        if (refLines && chartData.length > 0) {
+        if (rsiRefLinesRef.current && chartData.length > 0) {
           const refLineData30: LineData[] = chartData.map((d: CandlestickData) => ({
             time: d.time,
             value: 30,
@@ -669,9 +648,9 @@ export function StrategyChart({ strategy }: { strategy: any }) {
             time: d.time,
             value: 70,
           }));
-          refLines.rsiOversold.setData(refLineData30);
-          refLines.rsiNeutral.setData(refLineData50);
-          refLines.rsiOverbought.setData(refLineData70);
+          rsiRefLinesRef.current.rsiOversold.setData(refLineData30);
+          rsiRefLinesRef.current.rsiNeutral.setData(refLineData50);
+          rsiRefLinesRef.current.rsiOverbought.setData(refLineData70);
         }
       }
 
@@ -749,10 +728,6 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       <div
         ref={chartContainerRef}
         style={{ width: "100%", minHeight: "500px" }}
-      />
-      <div
-        ref={rsiChartContainerRef}
-        style={{ width: "100%", minHeight: "150px", marginTop: "8px" }}
       />
       {(firstBarDayLabel || lastBarDayLabel) && (
         <div
@@ -834,11 +809,11 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
             <div>
               <div style={{ color: "#60a5fa", fontWeight: 600 }}>
-                RSI (blue line, separate panel)
+                RSI (blue line, bottom overlay)
               </div>
               <div>
-                Oversold: &lt;30 (red) • Neutral: 50 (gray) • Overbought: &gt;70
-                (green)
+                Oversold: &lt;30 (red dash) • Neutral: 50 (gray dot) • Overbought: &gt;70
+                (green dash)
               </div>
             </div>
 
