@@ -19,7 +19,7 @@ from ibapi.common import BarData
 
 # Configuration
 TWS_HOST = "127.0.0.1"
-TWS_PORT = 7497  # Paper trading port (use 7496 for live)
+TWS_PORT = 7496  # Paper trading port (use 7496 for live)
 CLIENT_ID = 9999
 REQUEST_ID = 12345
 WAIT_SECONDS = 60
@@ -74,14 +74,14 @@ class TestApp(EWrapper, EClient):
         print(f"   Next valid order ID: {orderId}")
         print()
 
-        # CRITICAL: Request DELAYED market data (Type 3) for real-time streaming
-        # Type 1 = Live (requires paid subscription)
+        # CRITICAL: Request LIVE market data (Type 1) for real-time streaming with keepUpToDate
+        # Type 1 = Live (requires paid subscription, needed for keepUpToDate)
         # Type 2 = Frozen (closing prices only, no updates)
-        # Type 3 = Delayed (15-min delay, FREE, works with keepUpToDate)
-        print(f"{CYAN}📡 Requesting DELAYED market data (Type 3 - FREE)...{RESET}")
-        self.reqMarketDataType(3)
-        print(f"   Note: Type 3 = 15-minute delayed data (no subscription needed)")
-        print(f"   Updates will be delayed by ~15 minutes from live market")
+        # Type 3 = Delayed (15-min delay, doesn't work with keepUpToDate)
+        print(f"{CYAN}📡 Requesting LIVE market data (Type 1)...{RESET}")
+        self.reqMarketDataType(1)
+        print(f"   Note: Type 1 = Live real-time data (required for keepUpToDate)")
+        print(f"   If you don't have a market data subscription, you'll get errors")
         print()
 
         # Request historical data after connection
@@ -108,7 +108,7 @@ class TestApp(EWrapper, EClient):
 
         # Create XLE stock contract
         contract = Contract()
-        contract.symbol = "XLE"
+        contract.symbol = "AAPL"
         contract.secType = "STK"
         contract.exchange = "SMART"
         contract.currency = "USD"

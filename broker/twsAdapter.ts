@@ -496,12 +496,15 @@ export class TwsAdapter extends BaseBrokerAdapter {
       console.error(`⚠️  WARNING: Reusing order ID ${stopLossOrderId}! This will cause TWS to reject or overwrite orders.`);
     }
 
+    // Round all prices to 2 decimals (minimum tick size for stocks)
+    const roundPrice = (price: number) => Math.round(price * 100) / 100;
+
     // Parent order (entry)
     const parentOrder = {
       action: plan.side === 'buy' ? 'BUY' : 'SELL',
       orderType: 'LMT',
       totalQuantity: bracket.entryOrder.qty,
-      lmtPrice: plan.targetEntryPrice,
+      lmtPrice: roundPrice(plan.targetEntryPrice),
       transmit: false, // Don't transmit parent until children are attached
       outsideRth: true, // Allow order to be active outside regular trading hours
       tif: 'GTC', // Good Till Cancel - required for after-hours trading
@@ -512,7 +515,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
       action: plan.side === 'buy' ? 'SELL' : 'BUY',
       orderType: 'LMT',
       totalQuantity: bracket.takeProfit.qty,
-      lmtPrice: bracket.takeProfit.limitPrice,
+      lmtPrice: roundPrice(bracket.takeProfit.limitPrice!),
       parentId: parentOrderId,
       transmit: false,
       outsideRth: true, // Allow order to be active outside regular trading hours
@@ -524,7 +527,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
       action: plan.side === 'buy' ? 'SELL' : 'BUY',
       orderType: 'STP',
       totalQuantity: bracket.stopLoss.qty,
-      auxPrice: bracket.stopLoss.stopPrice || plan.stopPrice, // FIXED: Use stopPrice field
+      auxPrice: roundPrice(bracket.stopLoss.stopPrice || plan.stopPrice), // FIXED: Use stopPrice field
       parentId: parentOrderId,
       transmit: true, // Transmit entire bracket when stop loss is placed
       outsideRth: true, // Allow stop order to trigger outside regular trading hours

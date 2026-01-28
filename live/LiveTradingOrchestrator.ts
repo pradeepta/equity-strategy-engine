@@ -485,12 +485,26 @@ export class LiveTradingOrchestrator {
               // Filter to only new bars (not already processed)
               const newBars = instance.filterNewBars(bars);
 
+              // Check if we should force evaluation even without new bars
+              const forceEvaluation = process.env.FORCE_STRATEGY_EVALUATION === 'true';
+
               if (newBars.length === 0) {
                 // Show polling activity at INFO level when using fast loop override
                 if (forceRefresh) {
                   logger.info(`[${instance.symbol}] ⏸️  Waiting for new bar (polled ${bars.length} bars, none new)`);
                 }
-                continue;
+
+                // Skip processing unless forced evaluation is enabled
+                if (!forceEvaluation) {
+                  continue;
+                }
+
+                // Force evaluation: re-process the most recent bar
+                if (bars.length > 0) {
+                  logger.info(`[${instance.symbol}] 🔄 Force evaluation: re-processing last bar (live mode)`);
+                  await instance.processBar(bars[bars.length - 1], { replay: false });
+                }
+                continue; // Move to next strategy after forced evaluation
               }
 
               logger.info(`[${instance.symbol}] Processing ${newBars.length} new bar(s) out of ${bars.length} total`);
@@ -501,8 +515,20 @@ export class LiveTradingOrchestrator {
                 const warmupBars = newBars.slice(0, -1);
                 const liveBar = newBars[newBars.length - 1];
 
-                for (const bar of warmupBars) {
-                  await instance.processBar(bar, { replay: true });
+                // Check if forced evaluation should apply to warmup bars
+                const warmupReplay = !forceEvaluation; // If forced, process warmup in live mode too
+
+                if (warmupReplay) {
+                  // Standard warmup: replay mode (no orders placed)
+                  for (const bar of warmupBars) {
+                    await instance.processBar(bar, { replay: true });
+                  }
+                } else {
+                  // Forced evaluation: all bars in live mode (orders can be placed)
+                  logger.info(`[${instance.symbol}] ⚠️  Processing ${warmupBars.length} warmup bars in LIVE mode (FORCE_STRATEGY_EVALUATION=true)`);
+                  for (const bar of warmupBars) {
+                    await instance.processBar(bar, { replay: false });
+                  }
                 }
 
                 await instance.processBar(liveBar);
