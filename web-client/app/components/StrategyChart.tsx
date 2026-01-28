@@ -19,6 +19,82 @@ type TradeParams = {
 };
 
 /**
+ * Calculate VWAP (Volume Weighted Average Price)
+ */
+function calculateVWAP(bars: any[]): number[] {
+  const vwap: number[] = [];
+  let cumulativeTPV = 0; // Cumulative Typical Price × Volume
+  let cumulativeVolume = 0;
+
+  for (const bar of bars) {
+    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
+    cumulativeTPV += typicalPrice * bar.volume;
+    cumulativeVolume += bar.volume;
+    vwap.push(cumulativeVolume > 0 ? cumulativeTPV / cumulativeVolume : typicalPrice);
+  }
+
+  return vwap;
+}
+
+/**
+ * Calculate RSI (Relative Strength Index)
+ */
+function calculateRSI(bars: any[], period: number = 14): number[] {
+  const rsi: number[] = [];
+  if (bars.length < period + 1) {
+    return bars.map(() => 50); // Not enough data
+  }
+
+  const changes: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    changes.push(bars[i].close - bars[i - 1].close);
+  }
+
+  // Initial average gain/loss
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 0; i < period; i++) {
+    const change = changes[i];
+    if (change > 0) avgGain += change;
+    else avgLoss += Math.abs(change);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  // First RSI value
+  rsi.push(NaN); // First bar has no RSI
+  for (let i = 0; i < period; i++) {
+    rsi.push(NaN); // Not enough data yet
+  }
+
+  if (avgLoss === 0) {
+    rsi.push(100);
+  } else {
+    const rs = avgGain / avgLoss;
+    rsi.push(100 - 100 / (1 + rs));
+  }
+
+  // Subsequent RSI values using smoothed average
+  for (let i = period; i < changes.length; i++) {
+    const change = changes[i];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+
+    if (avgLoss === 0) {
+      rsi.push(100);
+    } else {
+      const rs = avgGain / avgLoss;
+      rsi.push(100 - 100 / (1 + rs));
+    }
+  }
+
+  return rsi;
+}
+
+/**
  * Calculate default bar count based on timeframe
  * Goal: Show reasonable time period for each timeframe
  */
@@ -61,8 +137,12 @@ function parseTimeframeFromYAML(yamlContent: string): string {
  */
 export function StrategyChart({ strategy }: { strategy: any }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const rsiChartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
+  const rsiChartRef = useRef<any>(null);
   const candlestickSeriesRef = useRef<any>(null);
+  const vwapSeriesRef = useRef<any>(null);
+  const rsiSeriesRef = useRef<any>(null);
   const entryLowerSeriesRef = useRef<any>(null);
   const entryUpperSeriesRef = useRef<any>(null);
   const stopLossSeriesRef = useRef<any>(null);
@@ -232,6 +312,17 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       candlestickSeriesRef.current = candlestickSeries;
 
+      // Create VWAP series (purple line)
+      const vwapSeries = chart.addSeries(LineSeries, {
+        color: "#a855f7",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: "VWAP",
+      });
+      vwapSeriesRef.current = vwapSeries;
+
       // Add scroll-based lazy loading
       const timeScale = chart.timeScale();
       let scrollEnabled = false;
@@ -260,10 +351,78 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
 
+      // Create RSI chart below main chart
+      if (rsiChartContainerRef.current) {
+        console.log('[Chart] Creating RSI chart...');
+        const rsiChart = createChart(rsiChartContainerRef.current, {
+          width: rsiChartContainerRef.current.clientWidth,
+          height: 150,
+          layout: {
+            background: { color: "#1a1a1a" },
+            textColor: "#d1d5db",
+          },
+          grid: {
+            vertLines: { color: "#2b2b2b" },
+            horzLines: { color: "#2b2b2b" },
+          },
+          crosshair: { mode: 1 },
+          rightPriceScale: {
+            borderColor: "#2b2b2b",
+            scaleMargins: { top: 0.1, bottom: 0.1 },
+          },
+          timeScale: {
+            borderColor: "#2b2b2b",
+            visible: false, // Hide time scale (sync with main chart)
+          },
+        });
+
+        rsiChartRef.current = rsiChart;
+
+        // Create RSI line series
+        const rsiSeries = rsiChart.addSeries(LineSeries, {
+          color: "#60a5fa",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: "RSI",
+        });
+        rsiSeriesRef.current = rsiSeries;
+
+        // Add RSI reference lines (30, 50, 70)
+        const rsiOversold = rsiChart.addSeries(LineSeries, {
+          color: "#ef4444",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const rsiNeutral = rsiChart.addSeries(LineSeries, {
+          color: "#737373",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const rsiOverbought = rsiChart.addSeries(LineSeries, {
+          color: "#22c55e",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+
+        // These will be populated with data in the data update effect
+        // Store refs for later updates
+        (rsiChart as any)._refLines = { rsiOversold, rsiNeutral, rsiOverbought };
+      }
+
       return () => {
         clearTimeout(enableScrollTimer);
         timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
         chart.remove();
+        if (rsiChartRef.current) {
+          rsiChartRef.current.remove();
+        }
         chartCreatedRef.current = false;
       };
     } catch (err: any) {
@@ -470,6 +629,48 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       // Update candlestick data
       candlestickSeries.setData(chartData);
 
+      // Update VWAP
+      if (vwapSeriesRef.current) {
+        const vwapValues = calculateVWAP(bars);
+        const vwapData: LineData[] = chartData.map((d: CandlestickData, idx: number) => ({
+          time: d.time,
+          value: vwapValues[idx],
+        }));
+        vwapSeriesRef.current.setData(vwapData);
+      }
+
+      // Update RSI
+      if (rsiSeriesRef.current && rsiChartRef.current) {
+        const rsiValues = calculateRSI(bars, 14);
+        const rsiData: LineData[] = chartData
+          .map((d: CandlestickData, idx: number) => ({
+            time: d.time,
+            value: rsiValues[idx],
+          }))
+          .filter((d) => !isNaN(d.value)); // Filter out NaN values
+        rsiSeriesRef.current.setData(rsiData);
+
+        // Update RSI reference lines
+        const refLines = (rsiChartRef.current as any)._refLines;
+        if (refLines && chartData.length > 0) {
+          const refLineData30: LineData[] = chartData.map((d: CandlestickData) => ({
+            time: d.time,
+            value: 30,
+          }));
+          const refLineData50: LineData[] = chartData.map((d: CandlestickData) => ({
+            time: d.time,
+            value: 50,
+          }));
+          const refLineData70: LineData[] = chartData.map((d: CandlestickData) => ({
+            time: d.time,
+            value: 70,
+          }));
+          refLines.rsiOversold.setData(refLineData30);
+          refLines.rsiNeutral.setData(refLineData50);
+          refLines.rsiOverbought.setData(refLineData70);
+        }
+      }
+
       // Update trade level line data
       if (entryLowerSeriesRef.current && tradeParams.entryZone) {
         const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
@@ -545,6 +746,10 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         ref={chartContainerRef}
         style={{ width: "100%", minHeight: "500px" }}
       />
+      <div
+        ref={rsiChartContainerRef}
+        style={{ width: "100%", minHeight: "150px", marginTop: "8px" }}
+      />
       {(firstBarDayLabel || lastBarDayLabel) && (
         <div
           style={{
@@ -591,7 +796,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
           <div
             style={{ fontWeight: 600, marginBottom: "12px", fontSize: "14px" }}
           >
-            Trade Levels
+            Indicators & Trade Levels
             {tradeParams.side && (
               <span
                 style={{
@@ -616,6 +821,23 @@ export function StrategyChart({ strategy }: { strategy: any }) {
               gap: "12px",
             }}
           >
+            <div>
+              <div style={{ color: "#a855f7", fontWeight: 600 }}>
+                VWAP (solid purple)
+              </div>
+              <div>Volume Weighted Average Price</div>
+            </div>
+
+            <div>
+              <div style={{ color: "#60a5fa", fontWeight: 600 }}>
+                RSI (blue line, separate panel)
+              </div>
+              <div>
+                Oversold: &lt;30 (red) • Neutral: 50 (gray) • Overbought: &gt;70
+                (green)
+              </div>
+            </div>
+
             {tradeParams.entryZone && (
               <div>
                 <div style={{ color: "#22c55e", fontWeight: 600 }}>
