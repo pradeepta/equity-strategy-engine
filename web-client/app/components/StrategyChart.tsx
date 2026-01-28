@@ -194,6 +194,12 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     side: null,
   });
   const [lastFetchTime, setLastFetchTime] = useState<Date>(new Date());
+  const [legendData, setLegendData] = useState<{
+    time: string;
+    close: number | null;
+    rsi: number | null;
+    vwap: number | null;
+  } | null>(null);
 
   const MAX_BARS = 2000;
   const REFRESH_INTERVAL = 10000; // 10 seconds
@@ -371,6 +377,32 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
       // Store RSI reference lines for later updates
       rsiRefLinesRef.current = { rsiOversold, rsiNeutral, rsiOverbought };
+
+      // Add crosshair move handler for legend updates
+      chart.subscribeCrosshairMove((param) => {
+        if (!param.time) {
+          setLegendData(null);
+          return;
+        }
+
+        const timeStr = new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date((param.time as number) * 1000));
+
+        const candleData = param.seriesData.get(candlestickSeries) as any;
+        const vwapData = param.seriesData.get(vwapSeries) as any;
+        const rsiData = param.seriesData.get(rsiSeries) as any;
+
+        setLegendData({
+          time: timeStr,
+          close: candleData?.close ?? null,
+          rsi: rsiData?.value ?? null,
+          vwap: vwapData?.value ?? null,
+        });
+      });
 
       // Add scroll-based lazy loading
       const timeScale = chart.timeScale();
@@ -725,10 +757,49 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
   return (
     <div>
-      <div
-        ref={chartContainerRef}
-        style={{ width: "100%", minHeight: "500px" }}
-      />
+      <div style={{ position: "relative" }}>
+        <div
+          ref={chartContainerRef}
+          style={{ width: "100%", minHeight: "500px" }}
+        />
+        {/* Hover legend overlay */}
+        {legendData && (
+          <div
+            style={{
+              position: "absolute",
+              top: "12px",
+              left: "12px",
+              padding: "8px 12px",
+              backgroundColor: "rgba(26, 26, 26, 0.9)",
+              border: "1px solid #2b2b2b",
+              borderRadius: "6px",
+              fontSize: "13px",
+              color: "#d1d5db",
+              pointerEvents: "none",
+              zIndex: 10,
+            }}
+          >
+            <div style={{ marginBottom: "6px", fontWeight: 600 }}>
+              {legendData.time}
+            </div>
+            {legendData.close !== null && (
+              <div style={{ color: "#22c55e" }}>
+                Close: ${legendData.close.toFixed(2)}
+              </div>
+            )}
+            {legendData.vwap !== null && (
+              <div style={{ color: "#a855f7" }}>
+                VWAP: ${legendData.vwap.toFixed(2)}
+              </div>
+            )}
+            {legendData.rsi !== null && (
+              <div style={{ color: "#60a5fa" }}>
+                RSI: {legendData.rsi.toFixed(2)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       {(firstBarDayLabel || lastBarDayLabel) && (
         <div
           style={{
