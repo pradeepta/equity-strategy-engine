@@ -153,6 +153,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   const firstChartRenderRef = useRef(false);
   const currentYamlRef = useRef<string>("");
   const chartCreatedRef = useRef(false);
+  const barsLengthRef = useRef(0); // Track current bars length for scroll handler
 
   // Parse timeframe and calculate smart default bar count
   const timeframe = parseTimeframeFromYAML(strategy.yamlContent);
@@ -338,12 +339,12 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         }
 
         const isAtLeftEdge = range.from < 5;
-        const isAtLimit = bars.length >= barLimitRef.current;
+        const isAtLimit = barsLengthRef.current >= barLimitRef.current;
 
         if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
           const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
           if (nextLimit > barLimitRef.current) {
-            console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit}`);
+            console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit} (current: ${barsLengthRef.current})`);
             setBarLimit(nextLimit);
           }
         }
@@ -602,6 +603,9 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
   // Update chart data when bars change
   useEffect(() => {
+    // Update bars length ref for scroll handler
+    barsLengthRef.current = bars.length;
+
     if (!chartRef.current || !candlestickSeriesRef.current || bars.length === 0) {
       console.log('[Chart] Skipping data update:', {
         hasChart: !!chartRef.current,

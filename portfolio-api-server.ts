@@ -766,7 +766,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const cachedBars = await barCacheService.getBars(
           strategy.symbol,
           strategy.timeframe,
-          limit
+          limit,
+          { forceRefresh: true } // Always get fresh data for chart
         );
 
         // Convert to API format (Bar already has correct structure, just format timestamp)
