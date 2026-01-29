@@ -16,7 +16,20 @@ export class OrderRepository {
   constructor(private prisma: PrismaClient) {}
 
   /**
-   * Create order
+   * Find orders by plan ID (for idempotency check)
+   */
+  async findByPlanId(planId: string, strategyId: string): Promise<Order[]> {
+    return this.prisma.order.findMany({
+      where: {
+        planId,
+        strategyId,
+      },
+    });
+  }
+
+  /**
+   * Create order with idempotency check
+   * If orders with the same planId + strategyId exist, returns existing orders instead
    */
   async create(params: {
     strategyId: string;
@@ -31,6 +44,21 @@ export class OrderRepository {
     parentOrderId?: string;
     isParent?: boolean;
   }): Promise<Order> {
+    // Check for existing order with same planId + strategyId (idempotency)
+    const existing = await this.prisma.order.findFirst({
+      where: {
+        planId: params.planId,
+        strategyId: params.strategyId,
+        qty: params.qty,
+        side: params.side,
+      },
+    });
+
+    if (existing) {
+      console.log(`ℹ️  Idempotency: Order with planId=${params.planId} already exists (id=${existing.id})`);
+      return existing;
+    }
+
     return this.prisma.order.create({
       data: params,
     });

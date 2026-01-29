@@ -91,6 +91,89 @@ export function StrategyDetailModal({
             </div>
           </div>
 
+          {/* Open Orders Section */}
+          {strategy.openOrders && strategy.openOrders.length > 0 && (
+            <div className="modal-section">
+              <h3 className="modal-section-title">
+                Open Orders ({strategy.openOrders.length})
+              </h3>
+              <div className="orders-table-container">
+                <table className="orders-table">
+                  <thead>
+                    <tr>
+                      <th>Order ID</th>
+                      <th>Type</th>
+                      <th>Side</th>
+                      <th>Qty</th>
+                      <th>Limit Price</th>
+                      <th>Stop Price</th>
+                      <th>Status</th>
+                      <th>Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {strategy.openOrders.map((order: any) => (
+                      <tr key={order.id}>
+                        <td className="order-id-cell">
+                          {order.brokerOrderId || order.id.slice(0, 8)}
+                        </td>
+                        <td>{order.type}</td>
+                        <td>
+                          <span
+                            className={`side-badge ${order.side.toLowerCase()}`}
+                          >
+                            {order.side}
+                          </span>
+                        </td>
+                        <td>{order.qty}</td>
+                        <td>
+                          {order.limitPrice
+                            ? `$${order.limitPrice.toFixed(2)}`
+                            : "—"}
+                        </td>
+                        <td>
+                          {order.stopPrice
+                            ? `$${order.stopPrice.toFixed(2)}`
+                            : "—"}
+                        </td>
+                        <td>
+                          <span
+                            className={`status-badge ${order.status.toLowerCase()}`}
+                          >
+                            {order.status}
+                          </span>
+                        </td>
+                        <td className="time-cell">
+                          {new Date(order.submittedAt).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Show error warnings if any orders have errors */}
+              {strategy.openOrders.some((o: any) => o.errorMessage) && (
+                <div className="order-errors-warning">
+                  ⚠️ Some orders have errors:
+                  {strategy.openOrders
+                    .filter((o: any) => o.errorMessage)
+                    .map((o: any) => (
+                      <div key={o.id} className="error-detail">
+                        Order {o.brokerOrderId || o.id.slice(0, 8)}:{" "}
+                        {o.errorMessage}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {strategy.latestRecommendation && (
             <div className="modal-section">
               <h3 className="modal-section-title">Latest Recommendation</h3>

@@ -40,11 +40,64 @@ export interface ReconciliationReport {
  * Service for reconciling broker state with database state
  */
 export class BrokerReconciliationService {
+  // Circuit breaker for auto-cancel to prevent runaway cancellations
+  private cancellationHistory: Array<{ timestamp: Date; count: number }> = [];
+  private readonly MAX_CANCELLATIONS_PER_HOUR = 20; // Max 20 cancellations per hour
+  private readonly CIRCUIT_BREAKER_WINDOW_MS = 60 * 60 * 1000; // 1 hour window
+  private circuitBreakerTripped = false;
+
   constructor(
     private orderRepo: OrderRepository,
     private alertService: OrderAlertService,
     private systemLogRepo?: SystemLogRepository
   ) {}
+
+  /**
+   * Check if circuit breaker should trip (too many cancellations)
+   */
+  private checkCircuitBreaker(proposedCancellations: number): boolean {
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - this.CIRCUIT_BREAKER_WINDOW_MS);
+
+    // Remove old entries outside the window
+    this.cancellationHistory = this.cancellationHistory.filter(
+      entry => entry.timestamp >= windowStart
+    );
+
+    // Calculate total cancellations in window
+    const totalCancellations = this.cancellationHistory.reduce(
+      (sum, entry) => sum + entry.count,
+      0
+    );
+
+    // Check if adding proposed cancellations would exceed threshold
+    if (totalCancellations + proposedCancellations > this.MAX_CANCELLATIONS_PER_HOUR) {
+      this.circuitBreakerTripped = true;
+      console.error(`🚨 CIRCUIT BREAKER TRIPPED: ${totalCancellations} cancellations in last hour, refusing to cancel ${proposedCancellations} more orders`);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Record cancellations for circuit breaker tracking
+   */
+  private recordCancellations(count: number): void {
+    this.cancellationHistory.push({
+      timestamp: new Date(),
+      count,
+    });
+  }
+
+  /**
+   * Reset circuit breaker (manual intervention)
+   */
+  resetCircuitBreaker(): void {
+    this.circuitBreakerTripped = false;
+    this.cancellationHistory = [];
+    console.log('✓ Circuit breaker reset - auto-cancellation re-enabled');
+  }
 
   /**
    * Perform full reconciliation on startup
@@ -88,9 +141,21 @@ export class BrokerReconciliationService {
         // Find discrepancies
         const orphaned = this.findOrphanedOrders(brokerOrders, dbOrders);
         const missing = this.findMissingOrders(brokerOrders, dbOrders);
+        const statusMismatches = this.findStatusMismatches(brokerOrders, dbOrders);
 
         report.orphanedOrders.push(...orphaned);
         report.missingOrders.push(...missing);
+        report.statusMismatches.push(...statusMismatches.map(m => ({
+          orderId: m.orderId,
+          dbStatus: m.dbStatus,
+          brokerStatus: m.brokerStatus,
+        })));
+
+        // Handle status mismatches FIRST (before handling orphaned/missing)
+        if (statusMismatches.length > 0) {
+          console.warn(`⚠️ Found ${statusMismatches.length} status mismatches for ${symbol}`);
+          await this.handleStatusMismatches(statusMismatches, report);
+        }
 
         // Handle orphaned orders (auto-cancel per user preference)
         if (orphaned.length > 0) {
@@ -163,6 +228,61 @@ export class BrokerReconciliationService {
   }
 
   /**
+   * Find orders with mismatched status between broker and database
+   */
+  private findStatusMismatches(
+    brokerOrders: Order[],
+    dbOrders: DbOrder[]
+  ): Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }> {
+    const mismatches: Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }> = [];
+
+    // Create a map of broker orders by ID for quick lookup
+    const brokerOrderMap = new Map(brokerOrders.map(bo => [bo.id, bo]));
+
+    // Check each DB order against broker state
+    for (const dbOrder of dbOrders) {
+      const brokerOrder = brokerOrderMap.get(dbOrder.id);
+
+      if (!brokerOrder) {
+        // Order not at broker - will be handled by findMissingOrders
+        continue;
+      }
+
+      // Normalize statuses for comparison (both to uppercase)
+      const dbStatus = dbOrder.status.toUpperCase();
+      const brokerStatus = brokerOrder.status.toUpperCase();
+
+      // Map broker statuses to our DB statuses
+      const statusMap: Record<string, string> = {
+        'PENDING': 'PENDING',
+        'PENDINGSUBMIT': 'PENDING',
+        'PENDINGCANCEL': 'PENDING',
+        'PRESUBMITTED': 'PENDING',
+        'SUBMITTED': 'SUBMITTED',
+        'FILLED': 'FILLED',
+        'PARTIALLYFILLED': 'PARTIALLY_FILLED',
+        'CANCELLED': 'CANCELLED',
+        'INACTIVE': 'REJECTED',
+        'REJECTED': 'REJECTED',
+      };
+
+      const normalizedBrokerStatus = statusMap[brokerStatus] || brokerStatus;
+
+      // Detect mismatch
+      if (dbStatus !== normalizedBrokerStatus) {
+        mismatches.push({
+          orderId: dbOrder.id,
+          dbStatus,
+          brokerStatus: normalizedBrokerStatus,
+          order: dbOrder,
+        });
+      }
+    }
+
+    return mismatches;
+  }
+
+  /**
    * Handle orphaned orders: Auto-cancel them at broker
    * Per user preference: automatically cancel any orders not tracked in DB
    */
@@ -214,6 +334,34 @@ export class BrokerReconciliationService {
       return;
     }
 
+    // 🚨 CIRCUIT BREAKER CHECK: Prevent runaway cancellations
+    if (this.checkCircuitBreaker(cancellable.length)) {
+      const errorMsg = `Circuit breaker tripped - refusing to auto-cancel ${cancellable.length} orders for ${symbol}. Manual intervention required.`;
+      console.error(`🚨 ${errorMsg}`);
+      report.actionsToken.push(errorMsg);
+
+      await this.systemLogRepo?.create({
+        level: 'ERROR',
+        component: 'BrokerReconciliationService',
+        message: 'Circuit breaker tripped - auto-cancel disabled',
+        metadata: {
+          symbol,
+          proposedCancellations: cancellable.length,
+          orderIds: cancellable.map(o => o.id),
+          cancellationHistoryCount: this.cancellationHistory.length,
+          threshold: this.MAX_CANCELLATIONS_PER_HOUR,
+        },
+      });
+
+      await this.alertService.alertReconciliationFailure(symbol, {
+        type: 'circuit_breaker_tripped',
+        count: cancellable.length,
+        orderIds: cancellable.map(o => o.id),
+      });
+
+      return; // Exit without canceling
+    }
+
     // Auto-cancel orphaned orders (per user preference)
     console.log(`🔨 Auto-canceling ${cancellable.length} orphaned orders for ${symbol}...`);
 
@@ -240,6 +388,9 @@ export class BrokerReconciliationService {
         report.actionsToken.push(
           `Cancelled ${cancelResult.succeeded.length} orphaned orders for ${symbol}`
         );
+
+        // Record cancellations for circuit breaker
+        this.recordCancellations(cancelResult.succeeded.length);
 
         // Alert about successful cancellation
         await this.alertService.alertOrphanedOrder(
@@ -321,6 +472,67 @@ export class BrokerReconciliationService {
   }
 
   /**
+   * Handle status mismatches: Update DB to match broker state
+   */
+  private async handleStatusMismatches(
+    mismatches: Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }>,
+    report: ReconciliationReport
+  ): Promise<void> {
+    for (const mismatch of mismatches) {
+      try {
+        const oldStatus = mismatch.dbStatus;
+        const newStatus = mismatch.brokerStatus;
+
+        console.log(`🔄 Status mismatch for order ${mismatch.orderId}: DB=${oldStatus}, Broker=${newStatus}`);
+
+        // Update status in database to match broker
+        await this.orderRepo.updateStatus(mismatch.orderId, newStatus as any);
+        await this.orderRepo.createAuditLog({
+          orderId: mismatch.orderId,
+          brokerOrderId: mismatch.order.brokerOrderId ?? undefined,
+          strategyId: mismatch.order.strategyId,
+          eventType: 'RECONCILED',
+          oldStatus: oldStatus as any,
+          newStatus: newStatus as any,
+          metadata: {
+            symbol: mismatch.order.symbol,
+            reconciliationType: 'status_sync',
+            previousDbStatus: oldStatus,
+            brokerStatus: newStatus,
+          },
+        });
+
+        console.log(`✓ Updated order ${mismatch.orderId} status: ${oldStatus} → ${newStatus}`);
+        report.actionsToken.push(`Updated order ${mismatch.orderId} status: ${oldStatus} → ${newStatus}`);
+
+        await this.systemLogRepo?.create({
+          level: 'INFO',
+          component: 'BrokerReconciliationService',
+          message: `Status mismatch resolved for order ${mismatch.orderId}`,
+          metadata: {
+            orderId: mismatch.orderId,
+            symbol: mismatch.order.symbol,
+            oldStatus,
+            newStatus,
+          },
+        });
+      } catch (error) {
+        console.error(`Failed to update status for order ${mismatch.orderId}:`, error);
+        report.actionsToken.push(`Failed to update status for order ${mismatch.orderId}: ${error}`);
+        await this.systemLogRepo?.create({
+          level: 'ERROR',
+          component: 'BrokerReconciliationService',
+          message: `Failed to resolve status mismatch for order ${mismatch.orderId}`,
+          metadata: {
+            orderId: mismatch.orderId,
+            error: String(error),
+          },
+        });
+      }
+    }
+  }
+
+  /**
    * Periodic reconciliation (lighter weight - only checks for discrepancies)
    * Does NOT auto-cancel orders - just detects and alerts
    */
@@ -358,9 +570,21 @@ export class BrokerReconciliationService {
 
         const orphaned = this.findOrphanedOrders(brokerOrders, dbOrders);
         const missing = this.findMissingOrders(brokerOrders, dbOrders);
+        const statusMismatches = this.findStatusMismatches(brokerOrders, dbOrders);
 
         report.orphanedOrders.push(...orphaned);
         report.missingOrders.push(...missing);
+        report.statusMismatches.push(...statusMismatches.map(m => ({
+          orderId: m.orderId,
+          dbStatus: m.dbStatus,
+          brokerStatus: m.brokerStatus,
+        })));
+
+        // Fix status mismatches automatically (safe operation)
+        if (statusMismatches.length > 0) {
+          console.warn(`⚠️ Periodic check found ${statusMismatches.length} status mismatches for ${symbol}`);
+          await this.handleStatusMismatches(statusMismatches, report);
+        }
 
         // Alert but don't auto-fix (periodic checks are informational)
         if (orphaned.length > 0) {

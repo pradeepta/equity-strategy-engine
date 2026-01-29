@@ -72,7 +72,7 @@ export class LiveTradingOrchestrator {
   private currentSleepResolve?: () => void; // Resolve function to interrupt sleep
   private currentSleepTimeout?: NodeJS.Timeout; // Timeout reference to clear
   private lastReconciliationTime: number = 0;
-  private reconciliationIntervalMs: number = 5 * 60 * 1000; // 5 minutes
+  private reconciliationIntervalMs: number = 60 * 1000; // 60 seconds (increased from 5 minutes)
 
   constructor(
     config: OrchestratorConfig,
@@ -448,6 +448,20 @@ export class LiveTradingOrchestrator {
           const previousDailyPnL = this.config.brokerEnv.currentDailyPnL;
           this.config.brokerEnv.currentDailyPnL =
             portfolio.realizedPnL + portfolio.unrealizedPnL;
+
+          // Update portfolio values for dynamic position sizing
+          this.config.brokerEnv.accountValue = portfolio.totalValue;
+          this.config.brokerEnv.buyingPower = portfolio.buyingPower;
+
+          // Log portfolio snapshot for transparency
+          logger.debug("📊 Portfolio Snapshot Updated", {
+            totalValue: portfolio.totalValue.toFixed(2),
+            cash: portfolio.cash.toFixed(2),
+            buyingPower: portfolio.buyingPower.toFixed(2),
+            unrealizedPnL: portfolio.unrealizedPnL.toFixed(2),
+            realizedPnL: portfolio.realizedPnL.toFixed(2),
+            positionCount: portfolio.positions.length,
+          });
 
           // Audit log when daily loss limit is first breached
           if (

@@ -578,9 +578,136 @@ export class StrategyEngine {
               // Log order plan details before submission
               this.log('info', `📤 Submitting order plan: ${plan.id} | Side: ${plan.side} | Qty: ${plan.qty} | Entry: [${plan.entryZone[0]}, ${plan.entryZone[1]}] | Stop: ${plan.stopPrice}`);
 
+              // Apply buying power-based position sizing if enabled
+              let finalPlan = plan;
+              if (this.brokerEnv.enableDynamicSizing && this.brokerEnv.buyingPower) {
+                const buyingPowerFactor = this.brokerEnv.buyingPowerFactor || 0.75; // Default 75%
+                const adjustedBuyingPower = this.brokerEnv.buyingPower * buyingPowerFactor;
+                const entryPrice = plan.targetEntryPrice;
+
+                // Calculate max shares based on adjusted buying power
+                let maxSharesByBuyingPower = Math.floor(adjustedBuyingPower / entryPrice);
+
+                // Apply additional limits
+                const limits: string[] = [];
+
+                // Apply YAML max shares
+                if (maxSharesByBuyingPower > plan.qty) {
+                  maxSharesByBuyingPower = plan.qty;
+                  limits.push(`YAML max (${plan.qty})`);
+                } else {
+                  limits.push(`${(buyingPowerFactor * 100).toFixed(0)}% buying power`);
+                }
+
+                // Apply MAX_ORDER_QTY if set
+                if (this.brokerEnv.maxOrderQty !== undefined && maxSharesByBuyingPower > this.brokerEnv.maxOrderQty) {
+                  maxSharesByBuyingPower = this.brokerEnv.maxOrderQty;
+                  limits.push(`MAX_ORDER_QTY (${this.brokerEnv.maxOrderQty})`);
+                }
+
+                // Apply MAX_NOTIONAL if set
+                if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
+                  const maxSharesByNotional = Math.floor(this.brokerEnv.maxNotionalPerSymbol / entryPrice);
+                  if (maxSharesByBuyingPower > maxSharesByNotional) {
+                    maxSharesByBuyingPower = maxSharesByNotional;
+                    limits.push(`MAX_NOTIONAL ($${this.brokerEnv.maxNotionalPerSymbol})`);
+                  }
+                }
+
+                // Ensure at least 1 share if affordable
+                if (maxSharesByBuyingPower < 1) {
+                  this.log('error', `Position sizing resulted in 0 shares`, {
+                    adjustedBuyingPower: adjustedBuyingPower.toFixed(2),
+                    entryPrice: entryPrice.toFixed(2),
+                    buyingPowerFactor: `${(buyingPowerFactor * 100).toFixed(0)}%`,
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'error',
+                    message: 'Position sizing resulted in 0 shares - insufficient buying power',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      totalBuyingPower: this.brokerEnv.buyingPower,
+                      adjustedBuyingPower,
+                      entryPrice,
+                      buyingPowerFactor,
+                    },
+                  });
+                  return;
+                }
+
+                const notionalValue = maxSharesByBuyingPower * entryPrice;
+                const utilizationPercent = (notionalValue / this.brokerEnv.buyingPower) * 100;
+
+                // Create modified plan
+                finalPlan = { ...plan, qty: maxSharesByBuyingPower };
+
+                // Alert user about quantity adjustment
+                const wasAdjusted = maxSharesByBuyingPower !== plan.qty;
+                const alertLevel = wasAdjusted ? 'warn' : 'info';
+                const alertEmoji = wasAdjusted ? '⚠️' : '✅';
+
+                this.log(alertLevel, `${alertEmoji} Position Size ${wasAdjusted ? 'ADJUSTED' : 'Applied'}:`, {
+                  originalQty: plan.qty,
+                  finalQty: maxSharesByBuyingPower,
+                  notionalValue: notionalValue.toFixed(2),
+                  buyingPower: this.brokerEnv.buyingPower.toFixed(2),
+                  adjustedBuyingPower: adjustedBuyingPower.toFixed(2),
+                  utilizationPercent: `${utilizationPercent.toFixed(1)}%`,
+                  appliedLimits: limits.join(', '),
+                  reason: wasAdjusted ? 'Respecting portfolio buying power' : 'Within buying power limits',
+                });
+
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: wasAdjusted ? 'warn' : 'info',
+                  message: wasAdjusted
+                    ? `Quantity adjusted from ${plan.qty} to ${maxSharesByBuyingPower} to respect buying power`
+                    : 'Position size within buying power limits',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    originalQty: plan.qty,
+                    finalQty: maxSharesByBuyingPower,
+                    notionalValue,
+                    totalBuyingPower: this.brokerEnv.buyingPower,
+                    adjustedBuyingPower,
+                    buyingPowerFactor,
+                    utilizationPercent,
+                    appliedLimits: limits,
+                  },
+                });
+              } else if (this.brokerEnv.buyingPower !== undefined) {
+                // Even if dynamic sizing is disabled, validate buying power
+                const requiredCapital = plan.qty * plan.targetEntryPrice;
+                if (requiredCapital > this.brokerEnv.buyingPower) {
+                  this.log('error', `⛔ Order BLOCKED - Insufficient buying power`, {
+                    requiredCapital: requiredCapital.toFixed(2),
+                    availableBuyingPower: this.brokerEnv.buyingPower.toFixed(2),
+                    shortfall: (requiredCapital - this.brokerEnv.buyingPower).toFixed(2),
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'error',
+                    message: 'Order blocked - insufficient buying power',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      qty: plan.qty,
+                      entryPrice: plan.targetEntryPrice,
+                      requiredCapital,
+                      buyingPower: this.brokerEnv.buyingPower,
+                      shortfall: requiredCapital - this.brokerEnv.buyingPower,
+                    },
+                  });
+                  return;
+                }
+              }
+
               // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
-                plan,
+                finalPlan,
                 this.brokerEnv
               );
               this.state.openOrders.push(...orders);

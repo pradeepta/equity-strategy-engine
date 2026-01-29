@@ -59,6 +59,12 @@ async function main() {
     dailyLossLimit: process.env.DAILY_LOSS_LIMIT
       ? parseFloat(process.env.DAILY_LOSS_LIMIT)
       : undefined,
+    // Dynamic position sizing configuration
+    enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === 'true',
+    buyingPowerFactor: process.env.BUYING_POWER_FACTOR
+      ? parseFloat(process.env.BUYING_POWER_FACTOR)
+      : 0.75, // Default 75% of buying power
+    // accountValue and buyingPower will be populated by orchestrator from portfolio snapshot
   };
 
   logger.info('Broker environment configured', {

@@ -210,6 +210,29 @@ const getStrategyMetrics = async () => {
       },
     });
 
+    // Fetch open order details for display in UI
+    const openOrders = await prisma.order.findMany({
+      where: {
+        strategyId: strategy.id,
+        status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
+      },
+      orderBy: { submittedAt: 'desc' },
+      select: {
+        id: true,
+        brokerOrderId: true,
+        planId: true,
+        symbol: true,
+        side: true,
+        qty: true,
+        type: true,
+        limitPrice: true,
+        stopPrice: true,
+        status: true,
+        submittedAt: true,
+        errorMessage: true,
+      },
+    });
+
     return {
       id: strategy.id,
       name: strategy.name,
@@ -223,6 +246,7 @@ const getStrategyMetrics = async () => {
       winRate: parseFloat(winRate.toFixed(2)),
       totalPnL: parseFloat(totalPnL.toFixed(2)),
       openOrderCount, // Current open orders from runtime
+      openOrders, // Open order details for UI display
       latestRecommendation: latestEvaluation?.recommendation || null,
       activatedAt: strategy.activatedAt,
       closedAt: strategy.closedAt,
@@ -1008,6 +1032,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const strategyRepo = factory.getStrategyRepo();
       const execHistoryRepo = factory.getExecutionHistoryRepo();
 
+      let portfolioFetcher: any = null; // Declare outside try block for cleanup
+
       try {
         // 1. Get strategy and validate state
         const strategy = await prisma.strategy.findUnique({
@@ -1080,7 +1106,27 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         const currentBar = bars[bars.length - 1];
 
-        // 6. Create broker adapter and environment (same config as orchestrator)
+        // 6. Fetch portfolio snapshot for position sizing
+        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+        portfolioFetcher = new PortfolioDataFetcher(
+          process.env.TWS_HOST || '127.0.0.1',
+          parseInt(process.env.TWS_PORT || '7497'),
+          3 // Portfolio client ID
+        );
+
+        let portfolioSnapshot;
+        try {
+          await portfolioFetcher.connect();
+          portfolioSnapshot = await portfolioFetcher.getPortfolioSnapshot(true); // Force refresh
+          console.log('[portfolio-api] Portfolio snapshot fetched', {
+            totalValue: portfolioSnapshot.totalValue,
+            buyingPower: portfolioSnapshot.buyingPower,
+          });
+        } catch (error) {
+          console.warn('[portfolio-api] Failed to fetch portfolio snapshot, continuing without position sizing', error);
+        }
+
+        // 7. Create broker adapter and environment (same config as orchestrator)
         const { TwsAdapter } = await import('./broker/twsAdapter');
         const twsHost = process.env.TWS_HOST || '127.0.0.1';
         const twsPort = parseInt(process.env.TWS_PORT || '7497');
@@ -1104,6 +1150,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           dailyLossLimit: process.env.DAILY_LOSS_LIMIT
             ? parseFloat(process.env.DAILY_LOSS_LIMIT)
             : undefined,
+          // Dynamic position sizing configuration
+          enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === 'true',
+          buyingPowerFactor: process.env.BUYING_POWER_FACTOR
+            ? parseFloat(process.env.BUYING_POWER_FACTOR)
+            : 0.75,
+          // Portfolio values from snapshot
+          accountValue: portfolioSnapshot?.totalValue,
+          buyingPower: portfolioSnapshot?.buyingPower,
         };
 
         // 7. Submit order plan via broker adapter
@@ -1177,6 +1231,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         console.log(`[portfolio-api] Force deployed strategy ${strategyId}: ${strategy.name} (${strategy.symbol}) - ${orders.length} orders submitted`);
 
+        // Cleanup portfolio fetcher
+        if (portfolioFetcher) {
+          await portfolioFetcher.disconnect();
+        }
+
         sendJSON(res, {
           success: true,
           strategy,
@@ -1185,6 +1244,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
       } catch (error: any) {
         console.error('[portfolio-api] Error force deploying strategy:', error);
+
+        // Cleanup portfolio fetcher on error
+        if (portfolioFetcher) {
+          try {
+            await portfolioFetcher.disconnect();
+          } catch (cleanupError) {
+            console.error('[portfolio-api] Error cleaning up portfolio fetcher:', cleanupError);
+          }
+        }
+
         sendJSON(res, { error: error.message || 'Failed to force deploy strategy' }, 500);
       }
     } else if (pathname === '/api/portfolio/strategy-audit') {

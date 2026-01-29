@@ -601,6 +601,7 @@ export function Dashboard() {
                     <th>Symbol</th>
                     <th>Status</th>
                     <th>Updated</th>
+                    <th>Open Orders</th>
                     <th>Trades</th>
                     <th>Win Rate</th>
                     <th>P&L</th>
@@ -638,6 +639,15 @@ export function Dashboard() {
                               })
                             : "-"}
                         </td>
+                        <td>
+                          {strategy.openOrderCount > 0 ? (
+                            <span className="order-count-badge">
+                              {strategy.openOrderCount}
+                            </span>
+                          ) : (
+                            <span style={{ color: "#737373" }}>—</span>
+                          )}
+                        </td>
                         <td>{strategy.totalTrades}</td>
                         <td>{strategy.winRate.toFixed(1)}%</td>
                         <td
@@ -651,7 +661,7 @@ export function Dashboard() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7} className="empty-row">
+                      <td colSpan={8} className="empty-row">
                         No strategies match the filter
                       </td>
                     </tr>

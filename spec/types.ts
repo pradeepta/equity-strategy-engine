@@ -96,6 +96,7 @@ export type OrderStatus =
 
 export interface Order {
   id: string;
+  brokerOrderId?: string | null; // TWS/broker-assigned order ID (for mapping)
   planId: string;
   symbol: string;
   side: OrderSide;
@@ -258,6 +259,11 @@ export interface BrokerEnvironment {
   maxNotionalPerSymbol?: number;
   dailyLossLimit?: number;
   currentDailyPnL?: number;
+  // Portfolio values for dynamic position sizing
+  accountValue?: number;           // Total account value (NetLiquidation)
+  buyingPower?: number;            // Available buying power for new positions
+  enableDynamicSizing?: boolean;   // Enable dynamic position sizing (default: false)
+  buyingPowerFactor?: number;      // Percentage of buying power to use (default: 0.75 = 75%)
   auditEvent?: (entry: {
     component: string;
     level?: 'info' | 'warn' | 'error';
