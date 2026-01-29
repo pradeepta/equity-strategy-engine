@@ -6,6 +6,7 @@ import {
   LineStyle,
   CandlestickSeries,
   LineSeries,
+  HistogramSeries,
 } from "lightweight-charts";
 
 const API_BASE = "http://localhost:3002";
@@ -142,6 +143,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   const vwapSeriesRef = useRef<any>(null);
   const rsiSeriesRef = useRef<any>(null);
   const rsiRefLinesRef = useRef<any>(null);
+  const volumeSeriesRef = useRef<any>(null);
   const entryLowerSeriesRef = useRef<any>(null);
   const entryUpperSeriesRef = useRef<any>(null);
   const stopLossSeriesRef = useRef<any>(null);
@@ -199,6 +201,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     close: number | null;
     rsi: number | null;
     vwap: number | null;
+    volume: number | null;
   } | null>(null);
 
   const MAX_BARS = 2000;
@@ -340,10 +343,31 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       });
       rsiSeriesRef.current = rsiSeries;
 
-      // Configure RSI price scale
+      // Configure RSI price scale (middle overlay)
       chart.priceScale("rsi").applyOptions({
         scaleMargins: {
-          top: 0.8, // Push RSI to bottom 20% of chart
+          top: 0.75, // Push RSI to bottom 25% of chart (above volume)
+          bottom: 0.15, // Leave space for volume at very bottom
+        },
+        borderColor: "#2b2b2b",
+      });
+
+      // Create Volume histogram series at the very bottom
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        color: "#60a5fa",
+        priceFormat: {
+          type: "volume",
+        },
+        priceScaleId: "volume", // Separate price scale for volume
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      volumeSeriesRef.current = volumeSeries;
+
+      // Configure volume price scale (very bottom)
+      chart.priceScale("volume").applyOptions({
+        scaleMargins: {
+          top: 0.9, // Push volume to bottom 10% of chart
           bottom: 0,
         },
         borderColor: "#2b2b2b",
@@ -395,12 +419,14 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         const candleData = param.seriesData.get(candlestickSeries) as any;
         const vwapData = param.seriesData.get(vwapSeries) as any;
         const rsiData = param.seriesData.get(rsiSeries) as any;
+        const volumeData = param.seriesData.get(volumeSeries) as any;
 
         setLegendData({
           time: timeStr,
           close: candleData?.close ?? null,
           rsi: rsiData?.value ?? null,
           vwap: vwapData?.value ?? null,
+          volume: volumeData?.value ?? null,
         });
       });
 
@@ -686,6 +712,18 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         }
       }
 
+      // Update Volume
+      if (volumeSeriesRef.current) {
+        const volumeData = bars
+          .map((bar, idx) => ({
+            time: chartData[idx].time,
+            value: bar.volume,
+            color: bar.close >= bar.open ? "#22c55e80" : "#ef444480", // Green/red with transparency
+          }))
+          .sort((a, b) => (a.time as number) - (b.time as number));
+        volumeSeriesRef.current.setData(volumeData);
+      }
+
       // Update trade level line data
       if (entryLowerSeriesRef.current && tradeParams.entryZone) {
         const lineData: LineData[] = chartData.map((d: CandlestickData) => ({
@@ -797,6 +835,11 @@ export function StrategyChart({ strategy }: { strategy: any }) {
                 RSI: {legendData.rsi.toFixed(2)}
               </div>
             )}
+            {legendData.volume !== null && (
+              <div style={{ color: "#60a5fa" }}>
+                Volume: {legendData.volume.toLocaleString()}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -880,11 +923,20 @@ export function StrategyChart({ strategy }: { strategy: any }) {
 
             <div>
               <div style={{ color: "#60a5fa", fontWeight: 600 }}>
-                RSI (blue line, bottom overlay)
+                RSI (blue line, middle overlay)
               </div>
               <div>
                 Oversold: &lt;30 (red dash) • Neutral: 50 (gray dot) • Overbought: &gt;70
                 (green dash)
+              </div>
+            </div>
+
+            <div>
+              <div style={{ color: "#60a5fa", fontWeight: 600 }}>
+                Volume (histogram, bottom)
+              </div>
+              <div>
+                Green bars: bullish candle • Red bars: bearish candle
               </div>
             </div>
 
