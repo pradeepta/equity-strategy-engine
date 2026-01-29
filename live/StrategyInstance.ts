@@ -10,6 +10,8 @@ import { StrategyEngine } from '../runtime/engine';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult, Order } from '../spec/types';
 import { RealtimeBarClient } from './streaming/RealtimeBarClient';
+import { StrategyRepository } from '../database/repositories/StrategyRepository';
+import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -21,6 +23,8 @@ export class StrategyInstance {
   private compiler: StrategyCompiler;
   private brokerAdapter: BaseBrokerAdapter;
   private brokerEnv: BrokerEnvironment;
+  private strategyRepo: StrategyRepository;  // For persisting runtime state
+  private execHistoryRepo: ExecutionHistoryRepository;  // For logging execution events
   private ir!: CompiledIR;
   private barsSinceLastEval: number = 0;
   private yamlContent: string;
@@ -41,6 +45,8 @@ export class StrategyInstance {
     name: string,
     adapter: BaseBrokerAdapter,
     brokerEnv: BrokerEnvironment,
+    strategyRepo: StrategyRepository,
+    execHistoryRepo: ExecutionHistoryRepository,
     activatedAt?: Date  // Optional - defaults to now
   ) {
     this.strategyId = strategyId;
@@ -50,6 +56,8 @@ export class StrategyInstance {
     this.strategyName = name;
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
+    this.strategyRepo = strategyRepo;
+    this.execHistoryRepo = execHistoryRepo;
     this.activatedAt = activatedAt || new Date();
 
     // Create compiler with standard registry
@@ -121,7 +129,34 @@ export class StrategyInstance {
       const currentStateName = currentState.currentState;
 
       if (currentStateName !== this.lastStateName) {
-        console.log(`[${this.symbol}] State transition: ${this.lastStateName || 'init'} → ${currentStateName}`);
+        const fromState = this.lastStateName || 'init';
+        console.log(`[${this.symbol}] State transition: ${fromState} → ${currentStateName}`);
+
+        // Persist state to database for API access
+        try {
+          await this.strategyRepo.updateRuntimeState(this.strategyId, currentStateName);
+        } catch (error) {
+          console.error(`[${this.symbol}] Failed to persist runtime state:`, error);
+          // Don't fail strategy processing if DB write fails
+        }
+
+        // Log state transition to execution history
+        try {
+          await this.execHistoryRepo.logStateTransition({
+            strategyId: this.strategyId,
+            fromState,
+            toState: currentStateName,
+            barTimestamp: new Date(bar.timestamp),
+            currentPrice: bar.close,
+            currentVolume: BigInt(bar.volume),
+            barsProcessed: this.barsProcessedSinceActivation,
+            openOrderCount: currentState.openOrders.length,
+          });
+        } catch (error) {
+          console.error(`[${this.symbol}] Failed to log state transition:`, error);
+          // Don't fail strategy processing if DB write fails
+        }
+
         this.lastStateName = currentStateName;
 
         // Start or stop streaming based on new state
@@ -130,7 +165,8 @@ export class StrategyInstance {
         // Check if reached terminal state (no outgoing transitions)
         if (this.isTerminalState(currentStateName)) {
           console.log(`[${this.symbol}] ⚠️  Reached terminal state: ${currentStateName} (strategy will be auto-closed)`);
-          // Trigger auto-close callback if available
+
+          // System event for operator visibility
           if (this.brokerEnv.auditEvent) {
             this.brokerEnv.auditEvent({
               component: 'StrategyInstance',
@@ -143,6 +179,23 @@ export class StrategyInstance {
                 autoClose: true,
               },
             });
+          }
+
+          // Database audit log for terminal state
+          try {
+            await this.strategyRepo.createAuditLog({
+              strategyId: this.strategyId,
+              eventType: 'STATUS_CHANGED',
+              changeReason: `Strategy reached terminal state: ${currentStateName}`,
+              metadata: {
+                terminalState: currentStateName,
+                autoClose: true,
+                barsProcessed: this.barsProcessedSinceActivation,
+                timestamp: new Date(bar.timestamp).toISOString(),
+              },
+            });
+          } catch (error) {
+            console.error(`[${this.symbol}] Failed to log terminal state audit:`, error);
           }
         }
       }
@@ -346,7 +399,7 @@ export class StrategyInstance {
   }
 
   /**
-   * Shutdown strategy
+   * Shutdown strategy (with audit log)
    */
   async shutdown(): Promise<void> {
     console.log(`Shutting down strategy: ${this.strategyName} for ${this.symbol}`);
@@ -354,6 +407,31 @@ export class StrategyInstance {
     // Stop streaming if active
     if (this.isStreaming) {
       await this.stopStreaming();
+    }
+
+    // Log shutdown to execution history
+    try {
+      await this.execHistoryRepo.logDeactivation(
+        this.strategyId,
+        'Strategy instance shutdown'
+      );
+    } catch (error) {
+      console.error(`[${this.symbol}] Failed to log shutdown:`, error);
+    }
+
+    // Create strategy audit log for shutdown
+    try {
+      await this.strategyRepo.createAuditLog({
+        strategyId: this.strategyId,
+        eventType: 'STATUS_CHANGED',
+        changeReason: 'Strategy instance shutdown',
+        metadata: {
+          barsProcessedSinceActivation: this.barsProcessedSinceActivation,
+          lastState: this.lastStateName,
+        },
+      });
+    } catch (error) {
+      console.error(`[${this.symbol}] Failed to create shutdown audit log:`, error);
     }
 
     this.initialized = false;
@@ -410,6 +488,17 @@ export class StrategyInstance {
    */
   getTimeframe(): string {
     return this.ir.timeframe;
+  }
+
+  /**
+   * Get compiled IR (for force deploy)
+   * Exposes internal IR to allow external order submission
+   */
+  getCompiledIR(): CompiledIR {
+    if (!this.initialized) {
+      throw new Error('Strategy not initialized');
+    }
+    return this.ir;
   }
 
   /**

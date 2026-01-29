@@ -7,7 +7,7 @@ import * as dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import { LiveTradingOrchestrator } from './live/LiveTradingOrchestrator';
+import { LiveTradingOrchestrator, setGlobalOrchestrator } from './live/LiveTradingOrchestrator';
 import { TwsAdapter } from './broker/twsAdapter';
 import { BrokerEnvironment } from './spec/types';
 import { LoggerFactory } from './logging/logger';
@@ -59,6 +59,12 @@ async function main() {
     dailyLossLimit: process.env.DAILY_LOSS_LIMIT
       ? parseFloat(process.env.DAILY_LOSS_LIMIT)
       : undefined,
+    // Dynamic position sizing configuration
+    enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === 'true',
+    buyingPowerFactor: process.env.BUYING_POWER_FACTOR
+      ? parseFloat(process.env.BUYING_POWER_FACTOR)
+      : 0.75, // Default 75% of buying power
+    // accountValue and buyingPower will be populated by orchestrator from portfolio snapshot
   };
 
   logger.info('Broker environment configured', {
@@ -95,6 +101,9 @@ async function main() {
 
   // Create orchestrator
   const orchestrator = new LiveTradingOrchestrator(config);
+
+  // Set global orchestrator instance for API access (force deploy, etc.)
+  setGlobalOrchestrator(orchestrator);
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {

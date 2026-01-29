@@ -8,6 +8,7 @@ import { StrategyInstance } from './StrategyInstance';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, BrokerEnvironment } from '../spec/types';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
+import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
 import { BarCacheServiceV2 } from './cache/BarCacheServiceV2';
 import { RealtimeBarClient } from './streaming/RealtimeBarClient';
 
@@ -17,6 +18,7 @@ export class MultiStrategyManager {
   private brokerAdapter: BaseBrokerAdapter;
   private brokerEnv: BrokerEnvironment;
   private strategyRepo: StrategyRepository;
+  private execHistoryRepo: ExecutionHistoryRepository;
   private barCache?: BarCacheServiceV2;  // Optional bar cache service V2
   private realtimeBarClient: RealtimeBarClient | null = null;  // Streaming client reference
 
@@ -24,6 +26,7 @@ export class MultiStrategyManager {
     adapter: BaseBrokerAdapter,
     brokerEnv: BrokerEnvironment,
     strategyRepo: StrategyRepository,
+    execHistoryRepo: ExecutionHistoryRepository,
     barCache?: BarCacheServiceV2
   ) {
     this.instances = new Map();
@@ -31,6 +34,7 @@ export class MultiStrategyManager {
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
     this.strategyRepo = strategyRepo;
+    this.execHistoryRepo = execHistoryRepo;
     this.barCache = barCache;
 
     if (this.barCache) {
@@ -62,6 +66,8 @@ export class MultiStrategyManager {
       strategy.name,
       this.brokerAdapter,
       this.brokerEnv,
+      this.strategyRepo,  // Pass repository for state persistence
+      this.execHistoryRepo,  // Pass execution history repository for audit logs
       strategy.activatedAt || undefined  // Pass activation timestamp
     );
 

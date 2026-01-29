@@ -40,6 +40,8 @@ export class TwsAdapter extends BaseBrokerAdapter {
   private orderIdReady: boolean = false; // Track if we've received nextValidId
   private orderRejections: Map<number, { code: number; message: string }> = new Map(); // Track order rejections
   private orderStatusCallbacks: Map<number, Array<(status: string) => void>> = new Map(); // Callbacks for status changes
+  private executions: Map<number, Array<{ execId: string; time: string; qty: number; price: number; side: string }>> = new Map(); // Track executions per order
+  private commissions: Map<string, { commission: number; currency: string }> = new Map(); // Track commissions per execId
   private auditEvent?: BrokerEnvironment['auditEvent'];
 
   private host: string;
@@ -189,6 +191,89 @@ export class TwsAdapter extends BaseBrokerAdapter {
         });
       });
 
+      // Handle execution details (fills)
+      this.client.on('execDetails', (reqId: number, contract: any, execution: any) => {
+        const timestamp = new Date().toISOString();
+        const orderId = execution.orderId;
+        const execId = execution.execId;
+        const qty = execution.shares;
+        const price = execution.price;
+        const side = execution.side;
+        const time = execution.time;
+
+        console.log(`[${timestamp}] 💰 FILL: Order ${orderId} - ${qty} shares @ $${price} (execId: ${execId}, side: ${side})`);
+
+        // Store execution details
+        if (!this.executions.has(orderId)) {
+          this.executions.set(orderId, []);
+        }
+        this.executions.get(orderId)!.push({
+          execId,
+          time,
+          qty,
+          price,
+          side,
+        });
+
+        // Update pending order with partial fill info
+        const order = this.pendingOrders.get(orderId);
+        if (order) {
+          // Calculate total filled quantity
+          const fills = this.executions.get(orderId) || [];
+          const totalFilled = fills.reduce((sum, fill) => sum + fill.qty, 0);
+          const avgPrice = fills.reduce((sum, fill) => sum + fill.price * fill.qty, 0) / totalFilled;
+
+          console.log(`   ℹ️  Total filled for order ${orderId}: ${totalFilled}/${order.qty} @ avg $${avgPrice.toFixed(2)}`);
+
+          // Update order status based on fill
+          if (totalFilled >= order.qty) {
+            order.status = 'Filled';
+            console.log(`   ✅ Order ${orderId} completely filled`);
+          } else {
+            order.status = 'PartiallyFilled';
+            console.log(`   ⏳ Order ${orderId} partially filled (${totalFilled}/${order.qty})`);
+          }
+        }
+
+        this.auditEvent?.({
+          component: 'TwsAdapter',
+          level: 'info',
+          message: 'Order execution received',
+          metadata: {
+            orderId: orderId.toString(),
+            execId,
+            symbol: contract?.symbol,
+            qty,
+            price,
+            side,
+            time,
+          },
+        });
+      });
+
+      // Handle commission reports
+      this.client.on('commissionReport', (commissionReport: any) => {
+        const execId = commissionReport.execId;
+        const commission = commissionReport.commission;
+        const currency = commissionReport.currency;
+
+        console.log(`💸 COMMISSION: execId ${execId} - $${commission} ${currency}`);
+
+        // Store commission
+        this.commissions.set(execId, { commission, currency });
+
+        this.auditEvent?.({
+          component: 'TwsAdapter',
+          level: 'info',
+          message: 'Commission report received',
+          metadata: {
+            execId,
+            commission,
+            currency,
+          },
+        });
+      });
+
       this.client.on('disconnected', () => {
         console.log('Disconnected from TWS');
         this.connected = false;
@@ -238,6 +323,35 @@ export class TwsAdapter extends BaseBrokerAdapter {
   }
 
   /**
+   * Restore orderIdMap from database (for restart recovery)
+   * Call this after connecting to rebuild the order ID mapping
+   */
+  async restoreOrderIdMapFromDB(orders: Array<{ id: string; brokerOrderId: string | null }>): Promise<void> {
+    let restoredCount = 0;
+
+    for (const order of orders) {
+      if (order.brokerOrderId) {
+        const brokerOrderIdNum = parseInt(order.brokerOrderId);
+        if (!isNaN(brokerOrderIdNum)) {
+          this.orderIdMap.set(order.id, brokerOrderIdNum);
+          restoredCount++;
+        }
+      }
+    }
+
+    console.log(`✓ Restored ${restoredCount} order ID mappings from database`);
+    this.auditEvent?.({
+      component: 'TwsAdapter',
+      level: 'info',
+      message: 'Order ID mappings restored from database',
+      metadata: {
+        restoredCount,
+        totalOrders: orders.length,
+      },
+    });
+  }
+
+  /**
    * Wait for TWS to provide the next valid order ID
    */
   private async waitForOrderId(timeoutMs: number = 5000): Promise<void> {
@@ -263,10 +377,98 @@ export class TwsAdapter extends BaseBrokerAdapter {
     console.log('='.repeat(60));
 
     this.auditEvent = env.auditEvent;
-    this.enforceOrderConstraints(plan, env);
+
+    // Apply buying power-based position sizing if enabled
+    let adjustedPlan = plan;
+    if (env.enableDynamicSizing && env.buyingPower) {
+      const buyingPowerFactor = env.buyingPowerFactor || 0.75;
+      const adjustedBuyingPower = env.buyingPower * buyingPowerFactor;
+      const entryPrice = plan.targetEntryPrice;
+
+      // Calculate max shares based on adjusted buying power
+      let maxSharesByBuyingPower = Math.floor(adjustedBuyingPower / entryPrice);
+      const limits: string[] = [];
+
+      // Apply YAML max shares
+      const originalQty = plan.qty;
+      if (maxSharesByBuyingPower > plan.qty) {
+        maxSharesByBuyingPower = plan.qty;
+        limits.push(`YAML max (${plan.qty})`);
+      } else {
+        limits.push(`${(buyingPowerFactor * 100).toFixed(0)}% buying power`);
+      }
+
+      // Apply MAX_ORDER_QTY if set
+      if (env.maxOrderQty !== undefined && maxSharesByBuyingPower > env.maxOrderQty) {
+        maxSharesByBuyingPower = env.maxOrderQty;
+        limits.push(`MAX_ORDER_QTY (${env.maxOrderQty})`);
+      }
+
+      // Apply MAX_NOTIONAL if set
+      if (env.maxNotionalPerSymbol !== undefined) {
+        const maxSharesByNotional = Math.floor(env.maxNotionalPerSymbol / entryPrice);
+        if (maxSharesByBuyingPower > maxSharesByNotional) {
+          maxSharesByBuyingPower = maxSharesByNotional;
+          limits.push(`MAX_NOTIONAL ($${env.maxNotionalPerSymbol})`);
+        }
+      }
+
+      // Check if we have at least 1 share
+      if (maxSharesByBuyingPower < 1) {
+        const error = `Position sizing resulted in 0 shares (adjusted buying power: $${adjustedBuyingPower.toFixed(2)}, entry: $${entryPrice.toFixed(2)})`;
+        console.log(`❌ ${error}`);
+        throw new Error(error);
+      }
+
+      const notionalValue = maxSharesByBuyingPower * entryPrice;
+      const utilizationPercent = (notionalValue / env.buyingPower) * 100;
+
+      // Create adjusted plan
+      adjustedPlan = { ...plan, qty: maxSharesByBuyingPower };
+
+      // Alert about adjustment
+      const wasAdjusted = maxSharesByBuyingPower !== originalQty;
+      if (wasAdjusted) {
+        console.log(`⚠️  POSITION SIZE ADJUSTED:`);
+        console.log(`   Original Qty: ${originalQty} shares`);
+        console.log(`   Adjusted Qty: ${maxSharesByBuyingPower} shares`);
+        console.log(`   Notional: $${notionalValue.toFixed(2)} (${utilizationPercent.toFixed(1)}% of buying power)`);
+        console.log(`   Applied Limits: ${limits.join(', ')}`);
+        console.log(`   Reason: Respecting portfolio buying power`);
+
+        env.auditEvent?.({
+          component: 'TwsAdapter',
+          level: 'warn',
+          message: `Position size adjusted from ${originalQty} to ${maxSharesByBuyingPower} to respect buying power`,
+          metadata: {
+            symbol: plan.symbol,
+            originalQty,
+            adjustedQty: maxSharesByBuyingPower,
+            notionalValue,
+            buyingPower: env.buyingPower,
+            adjustedBuyingPower,
+            buyingPowerFactor,
+            utilizationPercent,
+            appliedLimits: limits,
+          },
+        });
+      } else {
+        console.log(`✅ Position size within limits: ${maxSharesByBuyingPower} shares`);
+      }
+    } else if (env.buyingPower) {
+      // Even if dynamic sizing disabled, validate buying power
+      const requiredCapital = plan.qty * plan.targetEntryPrice;
+      if (requiredCapital > env.buyingPower) {
+        const error = `Insufficient buying power: Need $${requiredCapital.toFixed(2)} but only $${env.buyingPower.toFixed(2)} available`;
+        console.log(`❌ ${error}`);
+        throw new Error(error);
+      }
+    }
+
+    this.enforceOrderConstraints(adjustedPlan, env);
 
     // Print the bracket structure
-    console.log(this.formatBracketPayload(plan));
+    console.log(this.formatBracketPayload(adjustedPlan));
     console.log('');
 
     if (!env.dryRun) {
@@ -274,7 +476,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
       await this.connect();
     }
 
-    const expanded = this.expandSplitBracket(plan);
+    const expanded = this.expandSplitBracket(adjustedPlan);
     const submittedOrders: Order[] = [];
 
     try {
@@ -288,13 +490,17 @@ export class TwsAdapter extends BaseBrokerAdapter {
           console.log(`  Entry: ${bracket.entryOrder.qty} @ ${bracket.entryOrder.limitPrice}`);
           console.log(`  Take Profit: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`);
           console.log(`  Stop Loss: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
+
+          // Push all three orders in dry-run mode too
           submittedOrders.push(bracket.entryOrder);
+          submittedOrders.push(bracket.takeProfit);
+          submittedOrders.push(bracket.stopLoss);
         } else {
           // Real submission to TWS
           // Save original order ID before submitting
           const originalOrderId = bracket.entryOrder.id;
 
-          const parentOrder = await this.submitBracketToTWS(bracket, plan);
+          const parentOrder = await this.submitBracketToTWS(bracket, adjustedPlan);
           console.log('← Response: Bracket order submitted successfully');
           console.log(`  Parent Order ID: ${parentOrder.orderId}`);
           console.log(`  Order ID mapping: ${originalOrderId} -> ${parentOrder.orderId}`);
@@ -302,10 +508,39 @@ export class TwsAdapter extends BaseBrokerAdapter {
           // Map original order ID to TWS order ID for cancellation
           this.orderIdMap.set(originalOrderId, parentOrder.orderId);
 
-          // Update order object with TWS order ID
-          bracket.entryOrder.id = parentOrder.orderId.toString();
+          // Get bracket set with all three order IDs
+          const bracketSet = this.bracketOrders.get(parentOrder.orderId);
+          if (!bracketSet) {
+            throw new Error(`Bracket set not found for parent order ${parentOrder.orderId}`);
+          }
+
+          // Store TWS order IDs in brokerOrderId field (keep original IDs intact)
+          // This allows us to rebuild orderIdMap from database on restart
+          const entryOriginalId = bracket.entryOrder.id;
+          const tpOriginalId = bracket.takeProfit.id;
+          const slOriginalId = bracket.stopLoss.id;
+
+          // Set broker order IDs (for database persistence)
+          bracket.entryOrder.brokerOrderId = parentOrder.orderId.toString();
           bracket.entryOrder.status = 'submitted';
+
+          bracket.takeProfit.brokerOrderId = bracketSet.takeProfitOrderId.toString();
+          bracket.takeProfit.status = 'submitted';
+
+          bracket.stopLoss.brokerOrderId = bracketSet.stopLossOrderId.toString();
+          bracket.stopLoss.status = 'submitted';
+
+          // Map all three original IDs to TWS IDs for cancellation
+          this.orderIdMap.set(entryOriginalId, parentOrder.orderId);
+          this.orderIdMap.set(tpOriginalId, bracketSet.takeProfitOrderId);
+          this.orderIdMap.set(slOriginalId, bracketSet.stopLossOrderId);
+
+          // Push all three orders to submittedOrders for database persistence
           submittedOrders.push(bracket.entryOrder);
+          submittedOrders.push(bracket.takeProfit);
+          submittedOrders.push(bracket.stopLoss);
+
+          console.log(`  ✅ All three bracket orders added to submittedOrders: ${bracket.entryOrder.id}, ${bracket.takeProfit.id}, ${bracket.stopLoss.id}`);
 
           this.auditEvent?.({
             component: 'TwsAdapter',
@@ -433,8 +668,11 @@ export class TwsAdapter extends BaseBrokerAdapter {
       status: 'Submitted',
     });
 
-    order.id = orderId.toString();
+    // Store original ID and map to TWS order ID
+    const originalOrderId = order.id;
+    order.brokerOrderId = orderId.toString();
     order.status = 'submitted';
+    this.orderIdMap.set(originalOrderId, orderId);
 
     this.auditEvent?.({
       component: 'TwsAdapter',
@@ -602,8 +840,81 @@ export class TwsAdapter extends BaseBrokerAdapter {
 
     console.log(`✅ BRACKET PLACED for ${plan.symbol} successfully with orders: ${parentOrderId}, ${takeProfitOrderId}, ${stopLossOrderId}\n`);
 
-    // Wait a bit for confirmation
-    await this.sleep(500);
+    // 🔍 PHASE 2: Wait for initial status and validate all legs succeeded
+    console.log(`⏳ Validating bracket submission (waiting for TWS confirmation)...`);
+    await this.sleep(2000); // Wait 2 seconds for initial status updates
+
+    // Check if any orders were rejected
+    const rejectedOrders: Array<{ id: number; reason: string }> = [];
+
+    const checkOrder = (orderId: number, legName: string) => {
+      const order = this.pendingOrders.get(orderId);
+      const rejection = this.orderRejections.get(orderId);
+
+      if (rejection) {
+        rejectedOrders.push({
+          id: orderId,
+          reason: `${legName}: [${rejection.code}] ${rejection.message}`,
+        });
+        return false;
+      }
+
+      if (order && (order.status === 'Rejected' || order.status === 'Cancelled' || order.status === 'Inactive')) {
+        rejectedOrders.push({
+          id: orderId,
+          reason: `${legName}: Status=${order.status}${order.rejectionReason ? `, Reason: ${order.rejectionReason}` : ''}`,
+        });
+        return false;
+      }
+
+      return true;
+    };
+
+    const parentOk = checkOrder(parentOrderId, 'Parent');
+    const tpOk = checkOrder(takeProfitOrderId, 'TakeProfit');
+    const slOk = checkOrder(stopLossOrderId, 'StopLoss');
+
+    // If any leg failed, rollback the entire bracket
+    if (rejectedOrders.length > 0) {
+      console.error(`\n🚨 BRACKET VALIDATION FAILED - ${rejectedOrders.length}/3 leg(s) rejected:`);
+      for (const rej of rejectedOrders) {
+        console.error(`   ❌ Order ${rej.id}: ${rej.reason}`);
+      }
+
+      // Attempt to cancel any successfully placed orders
+      const orderIdsToCancel = [
+        parentOk ? parentOrderId : null,
+        tpOk ? takeProfitOrderId : null,
+        slOk ? stopLossOrderId : null,
+      ].filter((id): id is number => id !== null);
+
+      if (orderIdsToCancel.length > 0) {
+        console.warn(`🔄 Rolling back ${orderIdsToCancel.length} successfully placed order(s)...`);
+        for (const orderId of orderIdsToCancel) {
+          try {
+            this.client.cancelOrder(orderId);
+            this.pendingOrders.delete(orderId);
+            console.log(`   ✓ Cancelled order ${orderId}`);
+          } catch (rollbackErr) {
+            console.error(`   ✗ Failed to cancel order ${orderId}:`, rollbackErr);
+          }
+        }
+      }
+
+      // Clean up tracking
+      this.bracketOrders.delete(parentOrderId);
+      this.orderRejections.delete(parentOrderId);
+      this.orderRejections.delete(takeProfitOrderId);
+      this.orderRejections.delete(stopLossOrderId);
+
+      // Throw error with all rejection reasons
+      throw new Error(
+        `Bracket submission failed - ${rejectedOrders.length}/3 leg(s) rejected:\n` +
+        rejectedOrders.map(r => `  - Order ${r.id}: ${r.reason}`).join('\n')
+      );
+    }
+
+    console.log(`✅ All 3 bracket legs validated successfully\n`);
 
     return ibOrder;
   }
@@ -815,8 +1126,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
               phase: 'A_SEND_REQUEST',
             },
           });
-          // FAIL FAST: Throw immediately on first failure
-          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
+          // DON'T FAIL FAST - Continue attempting remaining cancellations
         }
         continue;
       }
@@ -846,8 +1156,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
               phase: 'A_SEND_REQUEST',
             },
           });
-          // FAIL FAST: Throw immediately on first failure
-          throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
+          // DON'T FAIL FAST - Continue attempting remaining cancellations
         }
       } else {
         // Order not found - this is a failure condition
@@ -868,8 +1177,7 @@ export class TwsAdapter extends BaseBrokerAdapter {
             orderIdMapSize: this.orderIdMap.size,
           },
         });
-        // FAIL FAST: Throw immediately when order not found
-        throw new Error(`Failed to cancel order ${order.id}: ${reason}`);
+        // DON'T FAIL FAST - Continue attempting remaining cancellations
       }
     }
 
@@ -913,18 +1221,33 @@ export class TwsAdapter extends BaseBrokerAdapter {
               verificationTimeoutMs: 10000,
             },
           });
-          // FAIL FAST: Don't proceed if cancellation wasn't confirmed
-          throw new Error(`Failed to verify cancellation of order ${originalId}: ${reason}`);
+          // DON'T FAIL FAST - Continue verifying remaining orders
         }
       }
 
       const verificationTime = Date.now() - verificationStartTime;
-      console.log(`\n✅ Phase B complete: All ${ordersToVerify.length} bracket(s) verified cancelled in ${verificationTime}ms`);
+      console.log(`\n✅ Phase B complete: ${ordersToVerify.length} bracket(s) processed in ${verificationTime}ms`);
+      console.log(`   Succeeded: ${result.succeeded.length}, Failed: ${result.failed.length}`);
     }
 
     console.log(`\n${'='.repeat(70)}`);
-    console.log(`SUMMARY: Cancelled ${result.succeeded.length} order(s) for ${symbol}`);
+    console.log(`SUMMARY: Cancelled ${result.succeeded.length}/${orders.length} order(s) for ${symbol}`);
+    if (result.failed.length > 0) {
+      console.error(`⚠️  Failed to cancel ${result.failed.length} order(s):`);
+      for (const failure of result.failed) {
+        console.error(`   - ${failure.orderId}: ${failure.reason}`);
+      }
+    }
     console.log(`${'='.repeat(70)}\n`);
+
+    // Throw error if any cancellations failed (after attempting all)
+    if (result.failed.length > 0) {
+      throw new Error(
+        `Failed to cancel ${result.failed.length}/${orders.length} order(s) for ${symbol}: ` +
+        result.failed.map(f => `${f.orderId}(${f.reason})`).join(', ')
+      );
+    }
+
     return result;
   }
 
@@ -1052,6 +1375,46 @@ export class TwsAdapter extends BaseBrokerAdapter {
     }
 
     return rejected;
+  }
+
+  /**
+   * Get execution details for an order
+   */
+  getOrderExecutions(orderId: number): Array<{ execId: string; time: string; qty: number; price: number; side: string }> {
+    return this.executions.get(orderId) || [];
+  }
+
+  /**
+   * Get all orders with executions
+   */
+  getAllExecutions(): Map<number, Array<{ execId: string; time: string; qty: number; price: number; side: string }>> {
+    return new Map(this.executions);
+  }
+
+  /**
+   * Get commission for an execution
+   */
+  getCommission(execId: string): { commission: number; currency: string } | undefined {
+    return this.commissions.get(execId);
+  }
+
+  /**
+   * Calculate total filled quantity and average price for an order
+   */
+  getOrderFillSummary(orderId: number): { totalFilled: number; avgPrice: number; executions: number } | null {
+    const fills = this.executions.get(orderId);
+    if (!fills || fills.length === 0) {
+      return null;
+    }
+
+    const totalFilled = fills.reduce((sum, fill) => sum + fill.qty, 0);
+    const avgPrice = fills.reduce((sum, fill) => sum + fill.price * fill.qty, 0) / totalFilled;
+
+    return {
+      totalFilled,
+      avgPrice,
+      executions: fills.length,
+    };
   }
 
   /**

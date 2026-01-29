@@ -75,6 +75,12 @@ export class StrategyEngine {
         this.barHistory.shift(); // Remove oldest bar
       }
 
+      // Sync open orders from broker if engine's state is empty but orders might exist
+      // This handles force-deployed orders or orders placed by other systems
+      if (this.state.openOrders.length === 0 && !this.replayMode) {
+        await this.syncOpenOrdersFromBroker();
+      }
+
       // Compute features for this bar
       await this.computeFeatures(bar);
 
@@ -248,10 +254,18 @@ export class StrategyEngine {
     try {
       const result = await this.evaluateCondition(condition);
 
-      // Always log feature values for important events (INVALIDATE, order placement), otherwise only in non-replay mode
+      // Log strategy: Only log successful transitions (TRUE) and important triggers
+      // Suppress verbose FALSE logs (INVALIDATE, ARMED->PLACED failures)
       const isTrigger = label === 'TRIGGER' || label.includes('->PLACED') || label === 'ARMED->PLACED';
       const isInvalidate = label === 'INVALIDATE';
-      const shouldLog = !this.replayMode || isTrigger || isInvalidate;
+
+      // Only log if:
+      // 1. Not in replay mode AND it's a trigger event AND result is TRUE
+      // 2. OR it's TRIGGER (always log TRIGGER even if false for debugging arm state)
+      const shouldLog = !this.replayMode && (
+        (isTrigger && result) ||  // Only log transitions when they succeed
+        (label === 'TRIGGER')     // Always log TRIGGER to see arm attempts
+      );
 
       if (shouldLog) {
         const relevantFeatures = this.extractRelevantFeatures(condition);
@@ -572,9 +586,136 @@ export class StrategyEngine {
               // Log order plan details before submission
               this.log('info', `📤 Submitting order plan: ${plan.id} | Side: ${plan.side} | Qty: ${plan.qty} | Entry: [${plan.entryZone[0]}, ${plan.entryZone[1]}] | Stop: ${plan.stopPrice}`);
 
+              // Apply buying power-based position sizing if enabled
+              let finalPlan = plan;
+              if (this.brokerEnv.enableDynamicSizing && this.brokerEnv.buyingPower) {
+                const buyingPowerFactor = this.brokerEnv.buyingPowerFactor || 0.75; // Default 75%
+                const adjustedBuyingPower = this.brokerEnv.buyingPower * buyingPowerFactor;
+                const entryPrice = plan.targetEntryPrice;
+
+                // Calculate max shares based on adjusted buying power
+                let maxSharesByBuyingPower = Math.floor(adjustedBuyingPower / entryPrice);
+
+                // Apply additional limits
+                const limits: string[] = [];
+
+                // Apply YAML max shares
+                if (maxSharesByBuyingPower > plan.qty) {
+                  maxSharesByBuyingPower = plan.qty;
+                  limits.push(`YAML max (${plan.qty})`);
+                } else {
+                  limits.push(`${(buyingPowerFactor * 100).toFixed(0)}% buying power`);
+                }
+
+                // Apply MAX_ORDER_QTY if set
+                if (this.brokerEnv.maxOrderQty !== undefined && maxSharesByBuyingPower > this.brokerEnv.maxOrderQty) {
+                  maxSharesByBuyingPower = this.brokerEnv.maxOrderQty;
+                  limits.push(`MAX_ORDER_QTY (${this.brokerEnv.maxOrderQty})`);
+                }
+
+                // Apply MAX_NOTIONAL if set
+                if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
+                  const maxSharesByNotional = Math.floor(this.brokerEnv.maxNotionalPerSymbol / entryPrice);
+                  if (maxSharesByBuyingPower > maxSharesByNotional) {
+                    maxSharesByBuyingPower = maxSharesByNotional;
+                    limits.push(`MAX_NOTIONAL ($${this.brokerEnv.maxNotionalPerSymbol})`);
+                  }
+                }
+
+                // Ensure at least 1 share if affordable
+                if (maxSharesByBuyingPower < 1) {
+                  this.log('error', `Position sizing resulted in 0 shares`, {
+                    adjustedBuyingPower: adjustedBuyingPower.toFixed(2),
+                    entryPrice: entryPrice.toFixed(2),
+                    buyingPowerFactor: `${(buyingPowerFactor * 100).toFixed(0)}%`,
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'error',
+                    message: 'Position sizing resulted in 0 shares - insufficient buying power',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      totalBuyingPower: this.brokerEnv.buyingPower,
+                      adjustedBuyingPower,
+                      entryPrice,
+                      buyingPowerFactor,
+                    },
+                  });
+                  return;
+                }
+
+                const notionalValue = maxSharesByBuyingPower * entryPrice;
+                const utilizationPercent = (notionalValue / this.brokerEnv.buyingPower) * 100;
+
+                // Create modified plan
+                finalPlan = { ...plan, qty: maxSharesByBuyingPower };
+
+                // Alert user about quantity adjustment
+                const wasAdjusted = maxSharesByBuyingPower !== plan.qty;
+                const alertLevel = wasAdjusted ? 'warn' : 'info';
+                const alertEmoji = wasAdjusted ? '⚠️' : '✅';
+
+                this.log(alertLevel, `${alertEmoji} Position Size ${wasAdjusted ? 'ADJUSTED' : 'Applied'}:`, {
+                  originalQty: plan.qty,
+                  finalQty: maxSharesByBuyingPower,
+                  notionalValue: notionalValue.toFixed(2),
+                  buyingPower: this.brokerEnv.buyingPower.toFixed(2),
+                  adjustedBuyingPower: adjustedBuyingPower.toFixed(2),
+                  utilizationPercent: `${utilizationPercent.toFixed(1)}%`,
+                  appliedLimits: limits.join(', '),
+                  reason: wasAdjusted ? 'Respecting portfolio buying power' : 'Within buying power limits',
+                });
+
+                this.brokerEnv.auditEvent?.({
+                  component: 'StrategyEngine',
+                  level: wasAdjusted ? 'warn' : 'info',
+                  message: wasAdjusted
+                    ? `Quantity adjusted from ${plan.qty} to ${maxSharesByBuyingPower} to respect buying power`
+                    : 'Position size within buying power limits',
+                  metadata: {
+                    symbol: this.ir.symbol,
+                    planId: action.planId,
+                    originalQty: plan.qty,
+                    finalQty: maxSharesByBuyingPower,
+                    notionalValue,
+                    totalBuyingPower: this.brokerEnv.buyingPower,
+                    adjustedBuyingPower,
+                    buyingPowerFactor,
+                    utilizationPercent,
+                    appliedLimits: limits,
+                  },
+                });
+              } else if (this.brokerEnv.buyingPower !== undefined) {
+                // Even if dynamic sizing is disabled, validate buying power
+                const requiredCapital = plan.qty * plan.targetEntryPrice;
+                if (requiredCapital > this.brokerEnv.buyingPower) {
+                  this.log('error', `⛔ Order BLOCKED - Insufficient buying power`, {
+                    requiredCapital: requiredCapital.toFixed(2),
+                    availableBuyingPower: this.brokerEnv.buyingPower.toFixed(2),
+                    shortfall: (requiredCapital - this.brokerEnv.buyingPower).toFixed(2),
+                  });
+                  this.brokerEnv.auditEvent?.({
+                    component: 'StrategyEngine',
+                    level: 'error',
+                    message: 'Order blocked - insufficient buying power',
+                    metadata: {
+                      symbol: this.ir.symbol,
+                      planId: action.planId,
+                      qty: plan.qty,
+                      entryPrice: plan.targetEntryPrice,
+                      requiredCapital,
+                      buyingPower: this.brokerEnv.buyingPower,
+                      shortfall: requiredCapital - this.brokerEnv.buyingPower,
+                    },
+                  });
+                  return;
+                }
+              }
+
               // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
-                plan,
+                finalPlan,
                 this.brokerEnv
               );
               this.state.openOrders.push(...orders);
@@ -690,6 +831,26 @@ export class StrategyEngine {
       `[Bar ${this.state.barCount}] [${level.toUpperCase()}] ${message}`,
       data ? JSON.stringify(data) : ''
     );
+  }
+
+  /**
+   * Sync open orders from broker (handles force-deployed orders or external order placement)
+   */
+  private async syncOpenOrdersFromBroker(): Promise<void> {
+    try {
+      const brokerOrders = await this.brokerAdapter.getOpenOrders(
+        this.ir.symbol,
+        this.brokerEnv
+      );
+
+      if (brokerOrders.length > 0) {
+        this.log('info', `Syncing ${brokerOrders.length} open order(s) from broker into engine state`);
+        this.state.openOrders = brokerOrders;
+      }
+    } catch (error) {
+      this.log('warn', `Failed to sync orders from broker: ${error}`);
+      // Don't fail bar processing if sync fails
+    }
   }
 
   /**

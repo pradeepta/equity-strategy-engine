@@ -439,6 +439,17 @@ export class StrategyRepository {
   }
 
   /**
+   * Update runtime state (called by orchestrator on FSM state transitions)
+   * This allows API server to read current FSM state without orchestrator dependency
+   */
+  async updateRuntimeState(strategyId: string, runtimeState: string): Promise<void> {
+    await this.prisma.strategy.update({
+      where: { id: strategyId },
+      data: { runtimeState },
+    });
+  }
+
+  /**
    * Get version history for a strategy
    */
   async getVersionHistory(strategyId: string): Promise<StrategyVersion[]> {
@@ -569,6 +580,34 @@ export class StrategyRepository {
   }
 
   /**
+   * Create force deploy audit entry
+   * Records manual entry trigger for audit trail
+   */
+  async createForceDeployAudit(params: {
+    strategyId: string;
+    changedBy: string;
+    reason: string;
+    metadata?: {
+      currentState: string;
+      currentPrice: number;
+      orderPlanId: string;
+      barTimestamp: number;
+    };
+  }): Promise<void> {
+    await this.prisma.strategyAuditLog.create({
+      data: {
+        strategyId: params.strategyId,
+        eventType: 'FORCE_DEPLOYED',
+        oldStatus: undefined,
+        newStatus: undefined,
+        changedBy: params.changedBy,
+        changeReason: params.reason,
+        metadata: params.metadata as Prisma.InputJsonValue | undefined,
+      },
+    });
+  }
+
+  /**
    * Find strategy by ID with all related data (versions, executions, evaluations, orders)
    */
   async findByIdWithRelations(strategyId: string) {
@@ -607,6 +646,99 @@ export class StrategyRepository {
         deletedAt: null,
       },
       orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  /**
+   * Get or create MANUAL strategy for a symbol
+   * Used by reconciliation service to import orphaned orders from TWS
+   */
+  async getOrCreateManualStrategy(params: {
+    symbol: string;
+    userId: string;
+    accountId?: string;
+  }): Promise<Strategy> {
+    const manualStrategyName = `MANUAL_${params.symbol}`;
+
+    // Try to find existing MANUAL strategy for this symbol
+    const existing = await this.prisma.strategy.findFirst({
+      where: {
+        name: manualStrategyName,
+        symbol: params.symbol,
+        isManual: true,
+        deletedAt: null,
+      },
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    // Create new MANUAL strategy
+    const placeholderYaml = `# SYSTEM GENERATED - DO NOT EDIT
+# This strategy is a container for manually placed orders imported from TWS
+# Status: ARCHIVED (never executed by orchestrator)
+# Purpose: Track manual orders detected during broker reconciliation
+
+meta:
+  name: "${manualStrategyName}"
+  symbol: "${params.symbol}"
+  timeframe: "1d"
+  description: "System-generated placeholder for manually placed orders imported from TWS"
+
+# No features, rules, or states - this is a data container only
+# Orders under this strategy were placed directly in TWS, not through automation
+`;
+
+    return this.prisma.$transaction(async (tx) => {
+      // Create MANUAL strategy with ARCHIVED status
+      // Note: accountId is optional since MANUAL strategies may not be associated with a specific account
+      const createData: any = {
+        userId: params.userId,
+        symbol: params.symbol,
+        name: manualStrategyName,
+        timeframe: '1d',
+        yamlContent: placeholderYaml,
+        description: 'System-generated placeholder for manually placed orders imported from TWS',
+        status: 'ARCHIVED', // Won't be loaded by orchestrator
+        isManual: true, // Flag for filtering
+      };
+
+      // Only include accountId if it's provided and not empty (avoids FK constraint errors)
+      if (params.accountId && params.accountId.trim().length > 0) {
+        createData.accountId = params.accountId;
+      }
+
+      const strategy = await tx.strategy.create({
+        data: createData,
+      });
+
+      // Create initial version
+      await tx.strategyVersion.create({
+        data: {
+          strategyId: strategy.id,
+          versionNumber: 1,
+          yamlContent: placeholderYaml,
+          name: manualStrategyName,
+          timeframe: '1d',
+          description: 'System-generated placeholder for manual orders',
+          changeReason: 'Auto-created by reconciliation service',
+          changeType: 'CREATED',
+        },
+      });
+
+      // Create audit log entry
+      await tx.strategyAuditLog.create({
+        data: {
+          strategyId: strategy.id,
+          eventType: 'CREATED',
+          newStatus: 'ARCHIVED',
+          changedBy: 'system:reconciliation',
+          changeReason: `Auto-created MANUAL strategy for ${params.symbol} to import orphaned orders from TWS`,
+        },
+      });
+
+      return strategy;
     });
   }
 }

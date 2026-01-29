@@ -6,8 +6,10 @@
 import { BaseBrokerAdapter } from '../../broker/broker';
 import { Order, BrokerEnvironment } from '../../spec/types';
 import { OrderRepository } from '../../database/repositories/OrderRepository';
+import { StrategyRepository } from '../../database/repositories/StrategyRepository';
 import { SystemLogRepository } from '../../database/repositories/SystemLogRepository';
 import { OrderAlertService } from '../alerts/OrderAlertService';
+import { OrderStatus } from '@prisma/client';
 
 export interface BrokerOrder {
   id: string;
@@ -40,11 +42,65 @@ export interface ReconciliationReport {
  * Service for reconciling broker state with database state
  */
 export class BrokerReconciliationService {
+  // Circuit breaker for auto-cancel to prevent runaway cancellations
+  private cancellationHistory: Array<{ timestamp: Date; count: number }> = [];
+  private readonly MAX_CANCELLATIONS_PER_HOUR = 20; // Max 20 cancellations per hour
+  private readonly CIRCUIT_BREAKER_WINDOW_MS = 60 * 60 * 1000; // 1 hour window
+  private circuitBreakerTripped = false;
+
   constructor(
     private orderRepo: OrderRepository,
+    private strategyRepo: StrategyRepository,
     private alertService: OrderAlertService,
     private systemLogRepo?: SystemLogRepository
   ) {}
+
+  /**
+   * Check if circuit breaker should trip (too many cancellations)
+   */
+  private checkCircuitBreaker(proposedCancellations: number): boolean {
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - this.CIRCUIT_BREAKER_WINDOW_MS);
+
+    // Remove old entries outside the window
+    this.cancellationHistory = this.cancellationHistory.filter(
+      entry => entry.timestamp >= windowStart
+    );
+
+    // Calculate total cancellations in window
+    const totalCancellations = this.cancellationHistory.reduce(
+      (sum, entry) => sum + entry.count,
+      0
+    );
+
+    // Check if adding proposed cancellations would exceed threshold
+    if (totalCancellations + proposedCancellations > this.MAX_CANCELLATIONS_PER_HOUR) {
+      this.circuitBreakerTripped = true;
+      console.error(`🚨 CIRCUIT BREAKER TRIPPED: ${totalCancellations} cancellations in last hour, refusing to cancel ${proposedCancellations} more orders`);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Record cancellations for circuit breaker tracking
+   */
+  private recordCancellations(count: number): void {
+    this.cancellationHistory.push({
+      timestamp: new Date(),
+      count,
+    });
+  }
+
+  /**
+   * Reset circuit breaker (manual intervention)
+   */
+  resetCircuitBreaker(): void {
+    this.circuitBreakerTripped = false;
+    this.cancellationHistory = [];
+    console.log('✓ Circuit breaker reset - auto-cancellation re-enabled');
+  }
 
   /**
    * Perform full reconciliation on startup
@@ -88,9 +144,21 @@ export class BrokerReconciliationService {
         // Find discrepancies
         const orphaned = this.findOrphanedOrders(brokerOrders, dbOrders);
         const missing = this.findMissingOrders(brokerOrders, dbOrders);
+        const statusMismatches = this.findStatusMismatches(brokerOrders, dbOrders);
 
         report.orphanedOrders.push(...orphaned);
         report.missingOrders.push(...missing);
+        report.statusMismatches.push(...statusMismatches.map(m => ({
+          orderId: m.orderId,
+          dbStatus: m.dbStatus,
+          brokerStatus: m.brokerStatus,
+        })));
+
+        // Handle status mismatches FIRST (before handling orphaned/missing)
+        if (statusMismatches.length > 0) {
+          console.warn(`⚠️ Found ${statusMismatches.length} status mismatches for ${symbol}`);
+          await this.handleStatusMismatches(statusMismatches, report);
+        }
 
         // Handle orphaned orders (auto-cancel per user preference)
         if (orphaned.length > 0) {
@@ -163,8 +231,63 @@ export class BrokerReconciliationService {
   }
 
   /**
-   * Handle orphaned orders: Auto-cancel them at broker
-   * Per user preference: automatically cancel any orders not tracked in DB
+   * Find orders with mismatched status between broker and database
+   */
+  private findStatusMismatches(
+    brokerOrders: Order[],
+    dbOrders: DbOrder[]
+  ): Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }> {
+    const mismatches: Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }> = [];
+
+    // Create a map of broker orders by ID for quick lookup
+    const brokerOrderMap = new Map(brokerOrders.map(bo => [bo.id, bo]));
+
+    // Check each DB order against broker state
+    for (const dbOrder of dbOrders) {
+      const brokerOrder = brokerOrderMap.get(dbOrder.id);
+
+      if (!brokerOrder) {
+        // Order not at broker - will be handled by findMissingOrders
+        continue;
+      }
+
+      // Normalize statuses for comparison (both to uppercase)
+      const dbStatus = dbOrder.status.toUpperCase();
+      const brokerStatus = brokerOrder.status.toUpperCase();
+
+      // Map broker statuses to our DB statuses
+      const statusMap: Record<string, string> = {
+        'PENDING': 'PENDING',
+        'PENDINGSUBMIT': 'PENDING',
+        'PENDINGCANCEL': 'PENDING',
+        'PRESUBMITTED': 'PENDING',
+        'SUBMITTED': 'SUBMITTED',
+        'FILLED': 'FILLED',
+        'PARTIALLYFILLED': 'PARTIALLY_FILLED',
+        'CANCELLED': 'CANCELLED',
+        'INACTIVE': 'REJECTED',
+        'REJECTED': 'REJECTED',
+      };
+
+      const normalizedBrokerStatus = statusMap[brokerStatus] || brokerStatus;
+
+      // Detect mismatch
+      if (dbStatus !== normalizedBrokerStatus) {
+        mismatches.push({
+          orderId: dbOrder.id,
+          dbStatus,
+          brokerStatus: normalizedBrokerStatus,
+          order: dbOrder,
+        });
+      }
+    }
+
+    return mismatches;
+  }
+
+  /**
+   * Handle orphaned orders: Import them into database as MANUAL orders
+   * Creates a MANUAL strategy for the symbol and associates orphaned orders with it
    */
   private async handleOrphanedOrders(
     orphanedOrders: BrokerOrder[],
@@ -189,95 +312,130 @@ export class BrokerReconciliationService {
       },
     });
 
-    const cancellable = orphanedOrders.filter((order) => order.type !== 'market');
-    const skipped = orphanedOrders.filter((order) => order.type === 'market');
-
-    if (skipped.length > 0) {
-      console.warn(
-        `⚠️ Skipping auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
-      );
-      report.actionsToken.push(
-        `Skipped auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
-      );
-      await this.systemLogRepo?.create({
-        level: 'WARN',
-        component: 'BrokerReconciliationService',
-        message: `Skipped auto-cancel for orphaned MARKET orders for ${symbol}`,
-        metadata: {
-          symbol,
-          orderIds: skipped.map(o => o.id),
-        },
-      });
-    }
-
-    if (cancellable.length === 0) {
-      return;
-    }
-
-    // Auto-cancel orphaned orders (per user preference)
-    console.log(`🔨 Auto-canceling ${cancellable.length} orphaned orders for ${symbol}...`);
+    console.log(`📥 Importing ${orphanedOrders.length} orphaned orders for ${symbol} into database...`);
 
     try {
-      // Convert BrokerOrder to Order format for cancellation
-      const ordersToCancel: Order[] = cancellable.map(bo => ({
-        id: bo.id,
-        planId: 'unknown',
-        symbol: bo.symbol,
-        side: bo.side,
-        qty: bo.qty,
-        type: bo.type,
-        status: 'pending',
-      }));
+      // Get or create MANUAL strategy for this symbol
+      const userId = process.env.USER_ID || process.env.SYSTEM_USER_ID || '1';
+      // Don't pass accountId for MANUAL strategies - they're not associated with any account
+      // (avoids FK constraint errors when TWS_ACCOUNT_ID is invalid or doesn't exist in DB)
 
-      const cancelResult = await brokerAdapter.cancelOpenEntries(
+      const manualStrategy = await this.strategyRepo.getOrCreateManualStrategy({
         symbol,
-        ordersToCancel,
-        brokerEnv
-      );
+        userId,
+        accountId: undefined, // MANUAL strategies don't need account association
+      });
 
-      if (cancelResult.succeeded.length > 0) {
-        console.log(`✓ Cancelled ${cancelResult.succeeded.length} orphaned orders for ${symbol}`);
+      let importedCount = 0;
+      let failedCount = 0;
+
+      // Import each orphaned order
+      for (const orphanedOrder of orphanedOrders) {
+        try {
+          // Check if order already exists in database (prevent duplicates)
+          const existing = await this.orderRepo.findByBrokerOrderId(orphanedOrder.id);
+          if (existing) {
+            console.log(`⏭️  Skipping ${orphanedOrder.id} - already exists in database`);
+            continue;
+          }
+
+          // Create order record
+          const createdOrder = await this.orderRepo.create({
+            brokerOrderId: orphanedOrder.id,
+            strategyId: manualStrategy.id,
+            planId: `manual:imported:${orphanedOrder.id}`, // Unique plan ID for imported orders
+            symbol: orphanedOrder.symbol,
+            side: orphanedOrder.side.toUpperCase() as 'BUY' | 'SELL',
+            qty: orphanedOrder.qty,
+            type: orphanedOrder.type.toUpperCase() as 'LIMIT' | 'MARKET' | 'STOP',
+          });
+
+          // Update status to match TWS status
+          const dbStatus = this.mapTWSStatusToDB(orphanedOrder.status);
+          if (dbStatus !== 'PENDING') {
+            await this.orderRepo.updateStatus(createdOrder.id, dbStatus as OrderStatus);
+          }
+
+          // Create audit log entry
+          await this.orderRepo.createAuditLog({
+            orderId: createdOrder.id,
+            brokerOrderId: orphanedOrder.id,
+            strategyId: manualStrategy.id,
+            eventType: 'RECONCILED',
+            newStatus: dbStatus as any,
+            metadata: {
+              reason: 'Reconciliation imported orphaned order from TWS',
+              source: 'manual_trading',
+              manualStrategyId: manualStrategy.id,
+              originalTWSStatus: orphanedOrder.status,
+            },
+          });
+
+          importedCount++;
+          console.log(`✓ Imported order ${orphanedOrder.id} (${orphanedOrder.side} ${orphanedOrder.qty} ${orphanedOrder.symbol})`);
+        } catch (error) {
+          failedCount++;
+          console.error(`✗ Failed to import order ${orphanedOrder.id}:`, error);
+        }
+      }
+
+      // Report results
+      if (importedCount > 0) {
+        console.log(`✓ Successfully imported ${importedCount} orphaned orders for ${symbol} into MANUAL_${symbol} strategy`);
         report.actionsToken.push(
-          `Cancelled ${cancelResult.succeeded.length} orphaned orders for ${symbol}`
+          `Imported ${importedCount} orphaned orders for ${symbol} into MANUAL strategy`
         );
 
-        // Alert about successful cancellation
-        await this.alertService.alertOrphanedOrder(
-          symbol,
-          cancelResult.succeeded,
-          'cancelled'
-        );
         await this.systemLogRepo?.create({
           level: 'INFO',
           component: 'BrokerReconciliationService',
-          message: `Cancelled orphaned orders for ${symbol}`,
+          message: `Imported orphaned orders for ${symbol}`,
           metadata: {
             symbol,
-            orderIds: cancelResult.succeeded,
+            importedCount,
+            manualStrategyId: manualStrategy.id,
+            manualStrategyName: manualStrategy.name,
           },
         });
       }
 
-      if (cancelResult.failed.length > 0) {
-        console.error(`✗ Failed to cancel ${cancelResult.failed.length} orphaned orders for ${symbol}`);
+      if (failedCount > 0) {
+        console.error(`✗ Failed to import ${failedCount} orphaned orders for ${symbol}`);
         report.actionsToken.push(
-          `Failed to cancel ${cancelResult.failed.length} orphaned orders for ${symbol}: ` +
-          cancelResult.failed.map(f => `${f.orderId}(${f.reason})`).join(', ')
+          `Failed to import ${failedCount} orphaned orders for ${symbol}`
         );
       }
     } catch (error) {
-      console.error(`Failed to cancel orphaned orders for ${symbol}:`, error);
-      report.actionsToken.push(`Failed to cancel orphaned orders for ${symbol}: ${error}`);
+      console.error(`Failed to import orphaned orders for ${symbol}:`, error);
+      report.actionsToken.push(`Failed to import orphaned orders for ${symbol}: ${error}`);
       await this.systemLogRepo?.create({
         level: 'ERROR',
         component: 'BrokerReconciliationService',
-        message: `Failed to cancel orphaned orders for ${symbol}`,
+        message: `Failed to import orphaned orders for ${symbol}`,
         metadata: {
           symbol,
           error: String(error),
         },
       });
     }
+  }
+
+  /**
+   * Map TWS order status to database order status
+   */
+  private mapTWSStatusToDB(twsStatus: string): string {
+    const statusMap: Record<string, string> = {
+      'PreSubmitted': 'PENDING',
+      'Submitted': 'SUBMITTED',
+      'Filled': 'FILLED',
+      'PartiallyFilled': 'PARTIALLY_FILLED',
+      'Cancelled': 'CANCELLED',
+      'PendingCancel': 'PENDING',
+      'ApiCancelled': 'CANCELLED',
+      'Inactive': 'CANCELLED',
+    };
+
+    return statusMap[twsStatus] || 'SUBMITTED';
   }
 
   /**
@@ -313,6 +471,67 @@ export class BrokerReconciliationService {
           message: `Failed to update missing order ${order.id}`,
           metadata: {
             orderId: order.id,
+            error: String(error),
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Handle status mismatches: Update DB to match broker state
+   */
+  private async handleStatusMismatches(
+    mismatches: Array<{ orderId: string; dbStatus: string; brokerStatus: string; order: DbOrder }>,
+    report: ReconciliationReport
+  ): Promise<void> {
+    for (const mismatch of mismatches) {
+      try {
+        const oldStatus = mismatch.dbStatus;
+        const newStatus = mismatch.brokerStatus;
+
+        console.log(`🔄 Status mismatch for order ${mismatch.orderId}: DB=${oldStatus}, Broker=${newStatus}`);
+
+        // Update status in database to match broker
+        await this.orderRepo.updateStatus(mismatch.orderId, newStatus as any);
+        await this.orderRepo.createAuditLog({
+          orderId: mismatch.orderId,
+          brokerOrderId: mismatch.order.brokerOrderId ?? undefined,
+          strategyId: mismatch.order.strategyId,
+          eventType: 'RECONCILED',
+          oldStatus: oldStatus as any,
+          newStatus: newStatus as any,
+          metadata: {
+            symbol: mismatch.order.symbol,
+            reconciliationType: 'status_sync',
+            previousDbStatus: oldStatus,
+            brokerStatus: newStatus,
+          },
+        });
+
+        console.log(`✓ Updated order ${mismatch.orderId} status: ${oldStatus} → ${newStatus}`);
+        report.actionsToken.push(`Updated order ${mismatch.orderId} status: ${oldStatus} → ${newStatus}`);
+
+        await this.systemLogRepo?.create({
+          level: 'INFO',
+          component: 'BrokerReconciliationService',
+          message: `Status mismatch resolved for order ${mismatch.orderId}`,
+          metadata: {
+            orderId: mismatch.orderId,
+            symbol: mismatch.order.symbol,
+            oldStatus,
+            newStatus,
+          },
+        });
+      } catch (error) {
+        console.error(`Failed to update status for order ${mismatch.orderId}:`, error);
+        report.actionsToken.push(`Failed to update status for order ${mismatch.orderId}: ${error}`);
+        await this.systemLogRepo?.create({
+          level: 'ERROR',
+          component: 'BrokerReconciliationService',
+          message: `Failed to resolve status mismatch for order ${mismatch.orderId}`,
+          metadata: {
+            orderId: mismatch.orderId,
             error: String(error),
           },
         });
@@ -358,9 +577,21 @@ export class BrokerReconciliationService {
 
         const orphaned = this.findOrphanedOrders(brokerOrders, dbOrders);
         const missing = this.findMissingOrders(brokerOrders, dbOrders);
+        const statusMismatches = this.findStatusMismatches(brokerOrders, dbOrders);
 
         report.orphanedOrders.push(...orphaned);
         report.missingOrders.push(...missing);
+        report.statusMismatches.push(...statusMismatches.map(m => ({
+          orderId: m.orderId,
+          dbStatus: m.dbStatus,
+          brokerStatus: m.brokerStatus,
+        })));
+
+        // Fix status mismatches automatically (safe operation)
+        if (statusMismatches.length > 0) {
+          console.warn(`⚠️ Periodic check found ${statusMismatches.length} status mismatches for ${symbol}`);
+          await this.handleStatusMismatches(statusMismatches, report);
+        }
 
         // Alert but don't auto-fix (periodic checks are informational)
         if (orphaned.length > 0) {

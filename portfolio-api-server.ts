@@ -164,7 +164,7 @@ const getStrategyMetrics = async () => {
     },
   });
 
-  return strategies.map(strategy => {
+  return await Promise.all(strategies.map(async strategy => {
     const filledOrders = strategy.orders;
     const totalTrades = filledOrders.length;
 
@@ -199,17 +199,54 @@ const getStrategyMetrics = async () => {
       }
     })();
 
+    // Get runtime state from database (persisted by orchestrator on state transitions)
+    const currentState = strategy.runtimeState || 'UNKNOWN';
+
+    // Count open orders from database
+    const openOrderCount = await prisma.order.count({
+      where: {
+        strategyId: strategy.id,
+        status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
+      },
+    });
+
+    // Fetch open order details for display in UI
+    const openOrders = await prisma.order.findMany({
+      where: {
+        strategyId: strategy.id,
+        status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
+      },
+      orderBy: { submittedAt: 'desc' },
+      select: {
+        id: true,
+        brokerOrderId: true,
+        planId: true,
+        symbol: true,
+        side: true,
+        qty: true,
+        type: true,
+        limitPrice: true,
+        stopPrice: true,
+        status: true,
+        submittedAt: true,
+        errorMessage: true,
+      },
+    });
+
     return {
       id: strategy.id,
       name: strategy.name,
       symbol: strategy.symbol,
       status: strategy.status,
+      currentState, // Runtime FSM state (IDLE, ARMED, PLACED, MANAGING, EXITED)
       timeframe: strategy.timeframe,
       totalTrades,
       wins,
       losses,
       winRate: parseFloat(winRate.toFixed(2)),
       totalPnL: parseFloat(totalPnL.toFixed(2)),
+      openOrderCount, // Current open orders from runtime
+      openOrders, // Open order details for UI display
       latestRecommendation: latestEvaluation?.recommendation || null,
       activatedAt: strategy.activatedAt,
       closedAt: strategy.closedAt,
@@ -218,7 +255,7 @@ const getStrategyMetrics = async () => {
       updatedAt: statusUpdatedAt,
       yamlContent: strategy.yamlContent,
     };
-  });
+  }));
 };
 
 // Get recent trades
@@ -723,6 +760,50 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     } else if (pathname === '/api/portfolio/stats') {
       const orderStats = await getOrderStats();
       sendJSON(res, { orderStats });
+    } else if (pathname === '/api/portfolio/tws-snapshot') {
+      // GET /api/portfolio/tws-snapshot?force_refresh=true - Get live TWS portfolio snapshot
+      const forceRefresh = url.searchParams.get('force_refresh') === 'true';
+
+      try {
+        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+        const twsHost = process.env.TWS_HOST || '127.0.0.1';
+        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+        const clientId = 5; // Client ID 5 for dashboard portfolio queries
+
+        const fetcher = new PortfolioDataFetcher(twsHost, twsPort, clientId);
+        await fetcher.connect();
+        const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
+        await fetcher.disconnect();
+
+        sendJSON(res, {
+          success: true,
+          snapshot: {
+            accountId: snapshot.accountId,
+            totalValue: snapshot.totalValue,
+            cash: snapshot.cash,
+            buyingPower: snapshot.buyingPower,
+            unrealizedPnL: snapshot.unrealizedPnL,
+            realizedPnL: snapshot.realizedPnL,
+            positions: snapshot.positions.map(pos => ({
+              symbol: pos.symbol,
+              quantity: pos.quantity,
+              avgCost: pos.avgCost,
+              currentPrice: pos.currentPrice,
+              marketValue: pos.marketValue,
+              unrealizedPnL: pos.unrealizedPnL,
+            })),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Failed to fetch TWS snapshot:', error);
+        sendJSON(res, {
+          success: false,
+          error: 'Failed to fetch TWS portfolio snapshot',
+          message: error.message,
+          note: 'Make sure TWS/IB Gateway is running and connected',
+        }, 500);
+      }
     } else if (pathname === '/api/logs') {
       // Get system logs with filters
       const params = {
@@ -738,6 +819,56 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
+    } else if (pathname === '/api/portfolio/rejections') {
+      // GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Get recent rejected orders
+      const sinceParam = url.searchParams.get('since');
+      const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 5 * 60 * 1000); // Default: last 5 minutes
+
+      try {
+        // Query order_audit_log for REJECTED events
+        const rejectedOrders = await prisma.orderAuditLog.findMany({
+          where: {
+            eventType: 'REJECTED',
+            createdAt: { gte: since },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        });
+
+        // Fetch strategy details for each rejection
+        const strategyIds = [...new Set(rejectedOrders.map(log => log.strategyId))];
+        const strategies = await prisma.strategy.findMany({
+          where: { id: { in: strategyIds } },
+          select: { id: true, name: true, symbol: true },
+        });
+
+        const strategyMap = new Map(strategies.map(s => [s.id, s]));
+
+        // Enrich rejections with strategy info
+        const enrichedRejections = rejectedOrders.map(log => {
+          const strategy = strategyMap.get(log.strategyId);
+          return {
+            id: log.id,
+            orderId: log.orderId,
+            brokerOrderId: log.brokerOrderId,
+            strategyId: log.strategyId,
+            strategyName: strategy?.name || 'Unknown',
+            symbol: strategy?.symbol || 'N/A',
+            errorMessage: log.errorMessage || 'Unknown reason',
+            createdAt: log.createdAt,
+            metadata: log.metadata,
+          };
+        });
+
+        sendJSON(res, {
+          rejections: enrichedRejections,
+          count: enrichedRejections.length,
+          since: since.toISOString(),
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error fetching rejected orders:', error);
+        sendJSON(res, { error: error.message || 'Failed to fetch rejected orders' }, 500);
+      }
     } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/bars')) {
       // GET /api/portfolio/strategies/:id/bars - Get historical bars for chart from cache
       if (req.method !== 'GET') {
@@ -766,7 +897,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const cachedBars = await barCacheService.getBars(
           strategy.symbol,
           strategy.timeframe,
-          limit
+          limit,
+          { forceRefresh: true } // Always get fresh data for chart
         );
 
         // Convert to API format (Bar already has correct structure, just format timestamp)
@@ -790,7 +922,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         console.error('[portfolio-api] Error fetching bars:', error);
         sendJSON(res, { error: error.message || 'Failed to fetch chart data' }, 500);
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars')) {
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/force-deploy') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars')) {
       // GET /api/portfolio/strategies/:id - Get single strategy details
       if (req.method !== 'GET') {
         sendJSON(res, { error: 'Method not allowed' }, 405);
@@ -922,6 +1054,251 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } catch (error: any) {
         console.error('[portfolio-api] Error reopening strategy:', error);
         sendJSON(res, { error: error.message || 'Failed to reopen strategy' }, 500);
+      }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/force-deploy')) {
+      // POST /api/portfolio/strategies/:id/force-deploy
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/force-deploy
+      const body = await parseBody(req);
+      const reason = body.reason || '';
+
+      // Validate reason is provided
+      if (!reason.trim()) {
+        sendJSON(res, { error: 'Reason is required' }, 400);
+        return;
+      }
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+      const execHistoryRepo = factory.getExecutionHistoryRepo();
+
+      let portfolioFetcher: any = null; // Declare outside try block for cleanup
+
+      try {
+        // 1. Get strategy and validate state
+        const strategy = await prisma.strategy.findUnique({
+          where: { id: strategyId },
+        });
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        if (strategy.status !== 'ACTIVE') {
+          sendJSON(res, { error: 'Only ACTIVE strategies can be force deployed' }, 400);
+          return;
+        }
+
+        // 2. Validate that no orders have been placed yet (check DB)
+        const openOrderCount = await prisma.order.count({
+          where: {
+            strategyId,
+            status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
+          },
+        });
+
+        if (openOrderCount > 0) {
+          sendJSON(res, {
+            error: `Cannot force deploy - strategy already has ${openOrderCount} open order(s)`
+          }, 400);
+          return;
+        }
+
+        // 3. Compile strategy YAML to get IR and extract order plan
+        const { StrategyCompiler } = await import('./compiler/compile');
+        const { createStandardRegistry } = await import('./features/registry');
+        const registry = createStandardRegistry();
+        const compiler = new StrategyCompiler(registry);
+        const ir = compiler.compileFromYAML(strategy.yamlContent);
+        const armedTransition = ir.transitions.find(
+          t => t.from === 'ARMED' && t.to === 'PLACED'
+        );
+
+        if (!armedTransition) {
+          sendJSON(res, { error: 'No entry transition found in strategy' }, 400);
+          return;
+        }
+
+        const submitAction = armedTransition.actions.find(
+          a => a.type === 'submit_order_plan'
+        );
+
+        if (!submitAction || !submitAction.planId) {
+          sendJSON(res, { error: 'No order plan found in entry transition' }, 400);
+          return;
+        }
+
+        const orderPlan = ir.orderPlans.find(p => p.id === submitAction.planId);
+        if (!orderPlan) {
+          sendJSON(res, { error: 'Order plan not found in compiled IR' }, 400);
+          return;
+        }
+
+        // 5. Fetch current bar data
+        const barCache = getBarCacheService();
+        const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 1);
+
+        if (bars.length === 0) {
+          sendJSON(res, { error: 'No market data available' }, 500);
+          return;
+        }
+
+        const currentBar = bars[bars.length - 1];
+
+        // 6. Fetch portfolio snapshot for position sizing
+        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+        portfolioFetcher = new PortfolioDataFetcher(
+          process.env.TWS_HOST || '127.0.0.1',
+          parseInt(process.env.TWS_PORT || '7497'),
+          3 // Portfolio client ID
+        );
+
+        let portfolioSnapshot;
+        try {
+          await portfolioFetcher.connect();
+          portfolioSnapshot = await portfolioFetcher.getPortfolioSnapshot(true); // Force refresh
+          console.log('[portfolio-api] Portfolio snapshot fetched', {
+            totalValue: portfolioSnapshot.totalValue,
+            buyingPower: portfolioSnapshot.buyingPower,
+          });
+        } catch (error) {
+          console.warn('[portfolio-api] Failed to fetch portfolio snapshot, continuing without position sizing', error);
+        }
+
+        // 7. Create broker adapter and environment (same config as orchestrator)
+        const { TwsAdapter } = await import('./broker/twsAdapter');
+        const twsHost = process.env.TWS_HOST || '127.0.0.1';
+        const twsPort = parseInt(process.env.TWS_PORT || '7497');
+        const twsClientId = 1; // Use different client ID from orchestrator (0)
+        const brokerAdapter = new TwsAdapter(twsHost, twsPort, twsClientId);
+
+        const brokerEnv = {
+          accountId: process.env.TWS_ACCOUNT_ID || 'paper',
+          dryRun: !(process.env.LIVE === 'true' || process.env.LIVE === '1'),
+          allowLiveOrders: process.env.ALLOW_LIVE_ORDERS !== 'false',
+          allowCancelEntries: process.env.ALLOW_CANCEL_ENTRIES === 'true',
+          maxOrdersPerSymbol: process.env.MAX_ORDERS_PER_SYMBOL
+            ? parseInt(process.env.MAX_ORDERS_PER_SYMBOL)
+            : undefined,
+          maxOrderQty: process.env.MAX_ORDER_QTY
+            ? parseInt(process.env.MAX_ORDER_QTY)
+            : undefined,
+          maxNotionalPerSymbol: process.env.MAX_NOTIONAL_PER_SYMBOL
+            ? parseFloat(process.env.MAX_NOTIONAL_PER_SYMBOL)
+            : undefined,
+          dailyLossLimit: process.env.DAILY_LOSS_LIMIT
+            ? parseFloat(process.env.DAILY_LOSS_LIMIT)
+            : undefined,
+          // Dynamic position sizing configuration
+          enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === 'true',
+          buyingPowerFactor: process.env.BUYING_POWER_FACTOR
+            ? parseFloat(process.env.BUYING_POWER_FACTOR)
+            : 0.75,
+          // Portfolio values from snapshot
+          accountValue: portfolioSnapshot?.totalValue,
+          buyingPower: portfolioSnapshot?.buyingPower,
+        };
+
+        // 7. Submit order plan via broker adapter
+        const orders = await brokerAdapter.submitOrderPlan(
+          orderPlan,
+          brokerEnv
+        );
+
+        // 8. Persist orders to database (CRITICAL: prevents reconciliation from canceling them as orphans)
+        const orderRepo = factory.getOrderRepo();
+        for (const order of orders) {
+          try {
+            // Map broker order type (lowercase) to Prisma OrderType (uppercase)
+            const orderType = order.type.toUpperCase() as 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT';
+
+            const dbOrder = await orderRepo.create({
+              strategyId,
+              brokerOrderId: order.id,
+              planId: orderPlan.id,
+              symbol: order.symbol,
+              side: order.side === 'buy' ? 'BUY' : 'SELL',
+              qty: order.qty,
+              type: orderType,
+              limitPrice: order.limitPrice,
+              stopPrice: order.stopPrice,
+            });
+
+            await orderRepo.createAuditLog({
+              orderId: dbOrder.id,
+              brokerOrderId: order.id,
+              strategyId,
+              eventType: 'SUBMITTED',
+              newStatus: 'SUBMITTED',
+              quantity: order.qty,
+              metadata: {
+                source: 'force_deploy',
+                orderPlanId: orderPlan.id,
+              },
+            });
+          } catch (error) {
+            console.error(`Failed to persist order ${order.id} to database:`, error);
+            // Continue with other orders - don't fail the entire operation
+          }
+        }
+
+        // 9. Create audit logs
+        const currentState = strategy.runtimeState || 'UNKNOWN';
+        await strategyRepo.createForceDeployAudit({
+          strategyId,
+          changedBy: 'user', // TODO: Get actual user ID from auth
+          reason,
+          metadata: {
+            currentState,
+            currentPrice: currentBar.close,
+            orderPlanId: orderPlan.id,
+            barTimestamp: currentBar.timestamp,
+          },
+        });
+
+        await execHistoryRepo.createForceEntry({
+          strategyId,
+          currentState,
+          orderPlanId: orderPlan.id,
+          currentPrice: currentBar.close,
+          currentVolume: BigInt(currentBar.volume),
+          barTimestamp: new Date(currentBar.timestamp),
+          orderCount: orders.length,
+          initiatedBy: 'user',
+          reason,
+        });
+
+        console.log(`[portfolio-api] Force deployed strategy ${strategyId}: ${strategy.name} (${strategy.symbol}) - ${orders.length} orders submitted`);
+
+        // Cleanup portfolio fetcher
+        if (portfolioFetcher) {
+          await portfolioFetcher.disconnect();
+        }
+
+        sendJSON(res, {
+          success: true,
+          strategy,
+          ordersSubmitted: orders.length,
+          message: `Force deployed ${orders.length} order(s) for ${strategy.name}`,
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Error force deploying strategy:', error);
+
+        // Cleanup portfolio fetcher on error
+        if (portfolioFetcher) {
+          try {
+            await portfolioFetcher.disconnect();
+          } catch (cleanupError) {
+            console.error('[portfolio-api] Error cleaning up portfolio fetcher:', cleanupError);
+          }
+        }
+
+        sendJSON(res, { error: error.message || 'Failed to force deploy strategy' }, 500);
       }
     } else if (pathname === '/api/portfolio/strategy-audit') {
       // GET /api/portfolio/strategy-audit?limit=100
@@ -1661,9 +2038,11 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategies - Strategy performance metrics`);
   console.log(`  GET /api/portfolio/trades?limit=20 - Recent trades`);
   console.log(`  GET /api/portfolio/stats - Order statistics`);
+  console.log(`  GET /api/portfolio/tws-snapshot?force_refresh=true - Live TWS portfolio snapshot`);
   console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
+  console.log(`  GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Recent rejected orders`);
   console.log(`  Market Data:`);
   console.log(`    GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades - Fetch recent bars`);
   console.log(`    GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m - Fetch bars by date range`);
