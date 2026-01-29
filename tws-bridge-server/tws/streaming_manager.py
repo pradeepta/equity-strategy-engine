@@ -30,13 +30,13 @@ class StreamingSubscription:
     def add_subscriber(self, connection_id: str):
         """Add a subscriber to this subscription."""
         self.subscribers.add(connection_id)
-        logger.info(f"📡 Added subscriber {connection_id} to {self.symbol} stream (total: {len(self.subscribers)})")
+        logger.debug(f"📡 Added subscriber {connection_id} to {self.symbol} stream (total: {len(self.subscribers)})")
 
     def remove_subscriber(self, connection_id: str):
         """Remove a subscriber from this subscription."""
         if connection_id in self.subscribers:
             self.subscribers.remove(connection_id)
-            logger.info(f"📡 Removed subscriber {connection_id} from {self.symbol} stream (remaining: {len(self.subscribers)})")
+            logger.debug(f"📡 Removed subscriber {connection_id} from {self.symbol} stream (remaining: {len(self.subscribers)})")
 
     def has_subscribers(self) -> bool:
         """Check if subscription has any active subscribers."""
@@ -79,8 +79,7 @@ class StreamingManager:
 
     def _handle_bar_update(self, reqId: int, bar):
         """Handle real-time bar updates from TWS (called from TWS thread)."""
-        # DEBUG: Log EVERY callback invocation
-        logger.info(f"🔔 _handle_bar_update CALLED: reqId={reqId}, bar.date={bar.date}")
+        logger.debug(f"🔔 _handle_bar_update CALLED: reqId={reqId}, bar.date={bar.date}")
         try:
             self._process_bar_update(reqId, bar)
         except Exception as e:
@@ -130,7 +129,7 @@ class StreamingManager:
                         callback(subscription.symbol, bar_data.to_dict()),
                         self.event_loop
                     )
-                    logger.info(f"✅ Scheduled callback for {subscription.symbol} (update #{subscription.update_count})")
+                    logger.debug(f"✅ Scheduled callback for {subscription.symbol} (update #{subscription.update_count})")
                 except Exception as e:
                     logger.error(f"❌ Failed to schedule callback for {subscription.symbol}: {e}")
             else:

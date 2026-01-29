@@ -96,3 +96,5 @@ strategies/
 
 /tws-bridge-server/venv
 /tws-bridge-server/**/__pycache__
+
+/uploads/

@@ -12,6 +12,7 @@ import WebSocket from 'ws';
 import { BacktestEngine } from './backtest/BacktestEngine';
 import { StrategyCompiler } from './compiler/compile';
 import { getChatRepo, getRepositoryFactory } from './database/RepositoryFactory';
+import { StrategyEvaluatorClient } from './evaluation/StrategyEvaluatorClient';
 import { createStandardRegistry } from './features/registry';
 import { generateDSLDocumentation } from './lib/dslDocGenerator';
 import { generateImageKey, getStorageProvider } from './lib/storage';
@@ -922,7 +923,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         console.error('[portfolio-api] Error fetching bars:', error);
         sendJSON(res, { error: error.message || 'Failed to fetch chart data' }, 500);
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/force-deploy') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars')) {
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/force-deploy') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars') && !pathname.endsWith('/review') && !pathname.endsWith('/swap')) {
       // GET /api/portfolio/strategies/:id - Get single strategy details
       if (req.method !== 'GET') {
         sendJSON(res, { error: 'Method not allowed' }, 405);
@@ -1397,6 +1398,206 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } catch (error: any) {
         console.error('[backtest] Error running backtest:', error);
         sendJSON(res, { error: error.message || 'Failed to run backtest' }, 500);
+      }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/review')) {
+      // POST /api/portfolio/strategies/:id/review - AI-powered strategy review
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/review
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        // Get strategy
+        const strategy = await strategyRepo.findById(strategyId);
+
+        if (!strategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        console.log(`[review] Starting AI review for strategy ${strategy.id} (${strategy.name})`);
+
+        // Gather market data
+        const barCache = getBarCacheService();
+        const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 100);
+        const latestBar = bars[bars.length - 1];
+
+        // Build review prompt
+        const prompt = `I need you to review this trading strategy and provide a recommendation.
+
+**Strategy Details:**
+- ID: ${strategy.id}
+- Name: ${strategy.name}
+- Symbol: ${strategy.symbol}
+- Timeframe: ${strategy.timeframe}
+- Status: ${strategy.status}
+- Activated: ${strategy.activatedAt ? new Date(strategy.activatedAt).toLocaleString() : 'Not activated'}
+
+**Strategy Configuration (YAML):**
+\`\`\`yaml
+${strategy.yamlContent}
+\`\`\`
+
+**Current Market Data (Last 5 bars):**
+${bars.slice(-5).map((bar: any, i: number) => `Bar ${i + 1}: O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close} V=${bar.volume}`).join('\n')}
+
+Current Price: $${latestBar.close}
+
+**Your Task:**
+Analyze this strategy based on:
+1. Current market trend and volatility (use the bar data provided)
+2. Strategy parameters alignment with current conditions
+3. Entry zone feasibility given current price
+4. Risk/reward profile
+
+**Use MCP tools for additional context:**
+- get_live_portfolio_snapshot() - Check current portfolio state
+- get_market_data("${strategy.symbol}", "${strategy.timeframe}", 100) - Analyze market conditions
+- get_sector_info("${strategy.symbol}") - Understand sector context
+
+**IMPORTANT: Provide a clear recommendation - CONTINUE or SWAP only (never recommend stopping)**
+- **CONTINUE**: Strategy is well-aligned with current conditions and should keep running
+- **SWAP**: Strategy needs improvement - provide a better replacement strategy with optimized parameters
+
+**If the current strategy has ANY issues (misaligned entry zones, poor risk/reward, unfavorable market conditions, etc.), you MUST recommend SWAP and provide a complete replacement YAML.**
+
+**Never recommend stopping the strategy. Always provide an alternative if the current one isn't optimal.**
+
+**Format your response EXACTLY as:**
+
+**Recommendation: [CONTINUE/SWAP]**
+
+**Analysis:**
+[Your detailed analysis here - explain trend, price action, and why this recommendation makes sense]
+
+**YAML (if SWAP):**
+\`\`\`yaml
+[Complete replacement strategy YAML here - REQUIRED if recommending SWAP]
+\`\`\`
+
+Be concise but thorough. Focus on actionable insights. If swapping, ensure the new strategy addresses the specific issues you identified.`;
+
+        // Use StrategyEvaluatorClient's WebSocket connection to ACP
+        const evalEndpoint = process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8787/acp';
+        const evaluatorClient = new StrategyEvaluatorClient(evalEndpoint, true);
+
+        console.log('[review] Connecting to ACP gateway...');
+
+        // Ensure WebSocket connection is established
+        await evaluatorClient.ensureConnection();
+
+        console.log('[review] Sending prompt to AI...');
+
+        // Send prompt through ACP gateway (which has access to MCP tools)
+        const analysisText = await evaluatorClient.sendPrompt(prompt, 120000); // 2 minute timeout
+
+        console.log('[review] Received AI analysis');
+        console.log(`[review] AI review completed for strategy ${strategy.id}`);
+
+        sendJSON(res, {
+          success: true,
+          analysis: analysisText,
+          prompt: prompt, // Also return the prompt so frontend can optionally send it
+          strategy: {
+            id: strategy.id,
+            name: strategy.name,
+            symbol: strategy.symbol,
+          },
+        });
+      } catch (error: any) {
+        console.error('[review] Error running AI review:', error);
+        sendJSON(res, { error: error.message || 'Failed to run AI review' }, 500);
+      }
+    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/swap')) {
+      // POST /api/portfolio/strategies/:id/swap - Swap strategy with new YAML
+      if (req.method !== 'POST') {
+        sendJSON(res, { error: 'Method not allowed' }, 405);
+        return;
+      }
+
+      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/swap
+      const body = await parseBody(req);
+      const { yamlContent, reason } = body;
+
+      if (!yamlContent) {
+        sendJSON(res, { error: 'yamlContent is required' }, 400);
+        return;
+      }
+
+      const factory = getRepositoryFactory();
+      const strategyRepo = factory.getStrategyRepo();
+
+      try {
+        // Get old strategy
+        const oldStrategy = await strategyRepo.findById(strategyId);
+        if (!oldStrategy) {
+          sendJSON(res, { error: 'Strategy not found' }, 404);
+          return;
+        }
+
+        console.log(`[swap] Starting manual swap for strategy ${strategyId} (${oldStrategy.name})`);
+
+        // Validate new YAML compiles
+        let compiled;
+        try {
+          const registry = createStandardRegistry();
+          const compiler = new StrategyCompiler(registry);
+          compiled = compiler.compileFromYAML(yamlContent);
+          console.log(`[swap] New YAML validation successful for ${compiled.symbol}`);
+        } catch (compileError: any) {
+          console.error('[swap] YAML validation failed:', compileError.message);
+          sendJSON(res, {
+            success: false,
+            error: `YAML validation failed: ${compileError.message}`
+          }, 400);
+          return;
+        }
+
+        // Create new strategy in database
+        const newStrategy = await strategyRepo.createWithVersion({
+          userId: oldStrategy.userId,
+          symbol: compiled.symbol,
+          name: `${oldStrategy.name} (Swapped)`,
+          timeframe: compiled.timeframe,
+          yamlContent: yamlContent,
+          changeReason: reason || 'Manual swap via UI review',
+        });
+
+        console.log(`[swap] Created new strategy ${newStrategy.id}`);
+
+        // Mark new strategy as PENDING so orchestrator picks it up
+        await factory.getPrisma().strategy.update({
+          where: { id: newStrategy.id },
+          data: { status: 'PENDING' },
+        });
+
+        // Close old strategy
+        await strategyRepo.close(
+          oldStrategy.id,
+          reason || 'Replaced with improved strategy via manual review',
+          'user'
+        );
+
+        console.log(`[swap] Closed old strategy ${oldStrategy.id}, new strategy ${newStrategy.id} is PENDING`);
+
+        sendJSON(res, {
+          success: true,
+          oldStrategyId: oldStrategy.id,
+          newStrategyId: newStrategy.id,
+          newStrategyName: newStrategy.name,
+          symbol: newStrategy.symbol,
+          status: 'PENDING',
+          message: 'Strategy swap successful. New strategy will be activated automatically.'
+        });
+
+      } catch (error: any) {
+        console.error('[swap] Error swapping strategy:', error);
+        sendJSON(res, { error: error.message || 'Failed to swap strategy' }, 500);
       }
     // ============================================================================
     // CHAT HISTORY ENDPOINTS
@@ -2043,6 +2244,12 @@ server.listen(PORT, () => {
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);
   console.log(`  GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Recent rejected orders`);
+  console.log(`  Strategy Actions:`);
+  console.log(`    POST /api/portfolio/strategies/:id/close - Close a strategy`);
+  console.log(`    POST /api/portfolio/strategies/:id/reopen - Reopen a closed strategy`);
+  console.log(`    POST /api/portfolio/strategies/:id/force-deploy - Force deploy pending strategy`);
+  console.log(`    POST /api/portfolio/strategies/:id/backtest - Run backtest (last 180 bars)`);
+  console.log(`    POST /api/portfolio/strategies/:id/review - Get AI review context data`);
   console.log(`  Market Data:`);
   console.log(`    GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades - Fetch recent bars`);
   console.log(`    GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m - Fetch bars by date range`);

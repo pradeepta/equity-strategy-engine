@@ -774,11 +774,110 @@ main {
   color: #1a1a1a;
 }
 
+/* Modal Tabs */
+.modal-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid #ebe6dd;
+  background: #faf8f5;
+}
+
+.modal-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #737373;
+  font-weight: 500;
+  font-size: 14px;
+  padding: 14px 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  position: relative;
+}
+
+.modal-tab:hover {
+  color: #1a1a1a;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.modal-tab.active {
+  color: #f55036;
+  font-weight: 600;
+  border-bottom-color: #f55036;
+  background: transparent;
+}
+
+/* Markdown rendering in modal review section */
+.modal-overlay .message-content h1,
+.modal-overlay .message-content h2,
+.modal-overlay .message-content h3,
+.modal-overlay .message-content h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.modal-overlay .message-content h2 {
+  font-size: 1.25rem;
+}
+
+.modal-overlay .message-content h3 {
+  font-size: 1.1rem;
+}
+
+.modal-overlay .message-content p {
+  margin-bottom: 0.75rem;
+}
+
+.modal-overlay .message-content strong {
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.modal-overlay .message-content ul,
+.modal-overlay .message-content ol {
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+
+.modal-overlay .message-content li {
+  margin-bottom: 0.25rem;
+}
+
+.modal-overlay .message-content code {
+  background: rgba(245, 80, 54, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  color: #c13b27;
+}
+
+.modal-overlay .message-content pre {
+  background: #f4f1eb;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  border: 1px solid #ebe6dd;
+}
+
+.modal-overlay .message-content pre code {
+  background: transparent;
+  padding: 0;
+  color: #1a1a1a;
+}
+
 .modal-body {
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  overflow-y: auto;
+  max-height: calc(90vh - 200px);
 }
 
 .modal-section {

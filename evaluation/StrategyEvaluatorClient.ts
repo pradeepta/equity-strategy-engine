@@ -241,7 +241,7 @@ export class StrategyEvaluatorClient {
     throw new Error("WebSocket evaluation not implemented. Using stub mode.");
   }
 
-  private async ensureConnection(): Promise<void> {
+  public async ensureConnection(): Promise<void> {
     if (!this.wsImpl) {
       throw new Error(
         "WebSocket is not available in this Node runtime. Install a ws polyfill."
@@ -325,7 +325,7 @@ export class StrategyEvaluatorClient {
     });
   }
 
-  private async sendPrompt(prompt: string, timeoutMs: number): Promise<string> {
+  public async sendPrompt(prompt: string, timeoutMs: number): Promise<string> {
     const id = this.nextRequestId();
     return new Promise((resolve, reject) => {
       this.pendingPrompt = { id, resolve, reject, buffer: "" };

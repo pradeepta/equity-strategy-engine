@@ -227,9 +227,9 @@ export class StrategyEngine {
         // Only one transition per bar
         break;
       } else {
-        // Transition failed - log why (only in non-replay mode)
+        // Condition not yet met - this is normal operation (only log in non-replay mode)
         if (!this.replayMode) {
-          this.log('debug', `❌ ${conditionLabel} FAILED`);
+          this.log('debug', `⏳ ${conditionLabel} (waiting for condition)`);
         }
       }
     }
@@ -254,18 +254,17 @@ export class StrategyEngine {
     try {
       const result = await this.evaluateCondition(condition);
 
-      // Log strategy: Only log successful transitions (TRUE) and important triggers
-      // Suppress verbose FALSE logs (INVALIDATE, ARMED->PLACED failures)
+      // Identify important transition types
       const isTrigger = label === 'TRIGGER' || label.includes('->PLACED') || label === 'ARMED->PLACED';
       const isInvalidate = label === 'INVALIDATE';
+      const isDisarm = label === 'DISARM' || label.includes('DISARM');
+      const isImportant = isTrigger || isInvalidate || isDisarm;
 
-      // Only log if:
-      // 1. Not in replay mode AND it's a trigger event AND result is TRUE
-      // 2. OR it's TRIGGER (always log TRIGGER even if false for debugging arm state)
-      const shouldLog = !this.replayMode && (
-        (isTrigger && result) ||  // Only log transitions when they succeed
-        (label === 'TRIGGER')     // Always log TRIGGER to see arm attempts
-      );
+      // Log feature values for important transitions, even when they fail
+      // Use sampling to reduce log spam: log every 20th failure
+      const shouldLogSuccess = !this.replayMode && result;
+      const shouldLogFailure = !this.replayMode && !result && isImportant && (this.state.barCount % 20 === 0);
+      const shouldLog = shouldLogSuccess || shouldLogFailure;
 
       if (shouldLog) {
         const relevantFeatures = this.extractRelevantFeatures(condition);
@@ -299,7 +298,11 @@ export class StrategyEngine {
               }
             })
             .join(', ');
-          this.log('info', `  [${label}] Values: ${valuesStr} => ${result ? 'TRUE' : 'FALSE'}`);
+
+          // Better status message: "✓" for met, "⏳" for waiting
+          const status = result ? '✓ MET' : '⏳ WAITING';
+          const logLevel = result ? 'info' : 'debug';
+          this.log(logLevel, `  [${label}] ${status}: ${valuesStr}`);
         }
       }
 
