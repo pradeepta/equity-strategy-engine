@@ -496,6 +496,25 @@ const TOOLS: Tool[] = [
       required: ['symbol', 'maxRiskPerTrade'],
     },
   },
+  {
+    name: 'close_strategy',
+    description: 'Close an active strategy. Transitions the strategy from ACTIVE to CLOSED status, creates an audit log entry, and cancels any open orders. The strategy can be reopened later if needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        strategy_id: {
+          type: 'string',
+          description: 'Strategy ID to close (integer as string, e.g., "123")',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional reason for closing the strategy (for audit log)',
+          default: 'Closed via MCP tool',
+        },
+      },
+      required: ['strategy_id'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -1092,6 +1111,70 @@ async function handleDeployStrategy(args: any) {
       error: 'Deployment failed',
       message: error.message,
       details: error.errors || error.stack,
+    };
+  }
+}
+
+/**
+ * Close strategy handler
+ */
+async function handleCloseStrategy(args: any) {
+  try {
+    const strategyId = args.strategy_id;
+    const reason = args.reason || 'Closed via MCP tool';
+
+    if (!strategyId || typeof strategyId !== 'string') {
+      return {
+        success: false,
+        error: 'Invalid strategy_id',
+        message: 'strategy_id must be provided as a string',
+      };
+    }
+
+    const factory = getRepositoryFactory();
+    const strategyRepo = factory.getStrategyRepo();
+
+    // Check if strategy exists and is active
+    const strategy = await strategyRepo.findById(strategyId);
+    if (!strategy) {
+      return {
+        success: false,
+        error: 'Strategy not found',
+        message: `Strategy with ID ${strategyId} does not exist`,
+      };
+    }
+
+    if (strategy.status !== 'ACTIVE') {
+      return {
+        success: false,
+        error: 'Strategy not active',
+        message: `Strategy ${strategy.name} (ID: ${strategyId}) is ${strategy.status}, not ACTIVE. Only ACTIVE strategies can be closed.`,
+        currentStatus: strategy.status,
+      };
+    }
+
+    // Close the strategy
+    const closedStrategy = await strategyRepo.close(strategyId, reason);
+
+    return {
+      success: true,
+      message: 'Strategy closed successfully',
+      strategy: {
+        id: closedStrategy.id,
+        name: closedStrategy.name,
+        symbol: closedStrategy.symbol,
+        status: closedStrategy.status,
+        closedAt: closedStrategy.closedAt,
+        closeReason: closedStrategy.closeReason,
+      },
+      instructions: 'Strategy has been closed. Any open orders have been cancelled. You can reopen it later if needed.',
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: 'Failed to close strategy',
+      message: error.message,
+      details: error.stack,
     };
   }
 }
@@ -1796,6 +1879,9 @@ function registerHandlers(server: Server): void {
           break;
         case 'propose_deterministic_strategy':
           result = await handleProposeDeterministicStrategy(args);
+          break;
+        case 'close_strategy':
+          result = await handleCloseStrategy(args);
           break;
         default:
           throw new Error(`Unknown tool: ${name}`);

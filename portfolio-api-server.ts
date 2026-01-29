@@ -36,6 +36,13 @@ const PORT = process.env.PORTFOLIO_API_PORT || 3002;
 
 let barCacheService: BarCacheServiceV2 | null = null;
 
+// Auto-swap service state
+let autoSwapEnabled = false;
+let autoSwapParallel = true; // Default to parallel mode
+let autoSwapInterval: NodeJS.Timeout | null = null;
+let isAutoSwapping = false; // Prevent overlapping executions
+const MAX_CONCURRENT_EVALUATIONS = 5; // Process max 5 strategies at a time in parallel mode
+
 function getBarCacheService(): BarCacheServiceV2 {
   if (!barCacheService) {
     const twsHost = process.env.TWS_HOST || "127.0.0.1";
@@ -712,6 +719,212 @@ const fetchTradeCheckAnalysis = async (
 };
 
 // Request handler
+// Helper: Process array in batches with concurrency limit
+async function processBatch<T>(
+  items: T[],
+  batchSize: number,
+  processor: (item: T) => Promise<any>
+): Promise<PromiseSettledResult<any>[]> {
+  const results: PromiseSettledResult<any>[] = [];
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    console.log(`[auto-swap] Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)} (${batch.length} strategies)`);
+
+    const batchResults = await Promise.allSettled(
+      batch.map(item => processor(item))
+    );
+
+    results.push(...batchResults);
+
+    // Small delay between batches to let other requests process
+    if (i + batchSize < items.length) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  return results;
+}
+
+// Auto-swap execution function
+async function executeAutoSwap() {
+  if (isAutoSwapping) {
+    console.log('[auto-swap] Skipping - previous cycle still in progress');
+    return;
+  }
+
+  isAutoSwapping = true;
+  console.log(`[auto-swap] Starting evaluation cycle (mode: ${autoSwapParallel ? 'parallel' : 'serial'})`);
+
+  try {
+    const factory = getRepositoryFactory();
+
+    // Get all active strategies (across all users)
+    const activeStrategies = await prisma.strategy.findMany({
+      where: {
+        status: 'ACTIVE',
+        deletedAt: null,
+      },
+      orderBy: { activatedAt: 'asc' },
+    });
+
+    if (activeStrategies.length === 0) {
+      console.log('[auto-swap] No active strategies to evaluate');
+      return;
+    }
+
+    console.log(`[auto-swap] Evaluating ${activeStrategies.length} active strategies...`);
+
+    if (autoSwapParallel) {
+      // Parallel mode: evaluate in batches to avoid overwhelming the server
+      const results = await processBatch(
+        activeStrategies,
+        MAX_CONCURRENT_EVALUATIONS,
+        evaluateAndSwapStrategy
+      );
+
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      console.log(`[auto-swap] Completed (parallel): ${succeeded} succeeded, ${failed} failed`);
+    } else {
+      // Serial mode: evaluate one at a time
+      let succeeded = 0;
+      let failed = 0;
+
+      for (const strategy of activeStrategies) {
+        try {
+          await evaluateAndSwapStrategy(strategy);
+          succeeded++;
+        } catch (error: any) {
+          console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+          failed++;
+        }
+      }
+
+      console.log(`[auto-swap] Completed (serial): ${succeeded} succeeded, ${failed} failed`);
+    }
+  } catch (error: any) {
+    console.error('[auto-swap] Execution error:', error);
+  } finally {
+    isAutoSwapping = false;
+  }
+}
+
+// Evaluate and swap a single strategy
+async function evaluateAndSwapStrategy(strategy: any) {
+  const factory = getRepositoryFactory();
+  const strategyRepo = factory.getStrategyRepo();
+
+  console.log(`[auto-swap] Evaluating ${strategy.name} (${strategy.symbol})`);
+
+  try {
+    // Get market data
+    const barCache = getBarCacheService();
+    const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 100);
+    const latestBar = bars[bars.length - 1];
+
+    // Build evaluation prompt
+    const prompt = `Review this trading strategy and provide a recommendation.
+
+**Strategy Details:**
+- Name: ${strategy.name}
+- Symbol: ${strategy.symbol}
+- Timeframe: ${strategy.timeframe}
+- Status: ${strategy.status}
+
+**Strategy YAML:**
+\`\`\`yaml
+${strategy.yamlContent}
+\`\`\`
+
+**Current Market (Last 5 bars):**
+${bars.slice(-5).map((bar: any, i: number) => `Bar ${i + 1}: O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close} V=${bar.volume}`).join('\n')}
+
+Current Price: $${latestBar.close}
+
+**Task:** Analyze and recommend CONTINUE or SWAP.
+
+Use MCP tools:
+- get_live_portfolio_snapshot()
+- get_market_data("${strategy.symbol}", "${strategy.timeframe}", 100)
+- get_sector_info("${strategy.symbol}")
+
+**Response format:**
+
+**Recommendation: [CONTINUE/SWAP]**
+
+**Analysis:**
+[Your analysis]
+
+**YAML (if SWAP):**
+\`\`\`yaml
+[Complete replacement strategy]
+\`\`\``;
+
+    // Use StrategyEvaluatorClient
+    const evalEndpoint = process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8787/acp';
+    const evaluatorClient = new StrategyEvaluatorClient(evalEndpoint, true);
+
+    await evaluatorClient.ensureConnection();
+    const analysisText = await evaluatorClient.sendPrompt(prompt, 120000);
+
+    // Parse recommendation
+    const recommendationMatch = analysisText.match(/\*\*Recommendation:\s*(CONTINUE|SWAP)\*\*/i);
+
+    if (!recommendationMatch) {
+      console.warn(`[auto-swap] Could not parse recommendation for ${strategy.name}`);
+      return;
+    }
+
+    const recommendation = recommendationMatch[1].toUpperCase();
+
+    if (recommendation === 'SWAP') {
+      // Extract YAML
+      const yamlMatch = analysisText.match(/```yaml\n([\s\S]*?)\n```/);
+
+      if (!yamlMatch) {
+        console.error(`[auto-swap] No YAML found for ${strategy.name}`);
+        return;
+      }
+
+      const newYaml = yamlMatch[1];
+
+      console.log(`[auto-swap] Swapping ${strategy.name}...`);
+
+      // Validate and compile new strategy
+      const compiler = new StrategyCompiler(createStandardRegistry());
+      const compiled = compiler.compileFromYAML(newYaml);
+
+      // Create new strategy
+      const newStrategy = await strategyRepo.createWithVersion({
+        userId: strategy.userId,
+        accountId: strategy.accountId,
+        symbol: compiled.symbol,
+        name: `${strategy.name} (Auto-swapped)`,
+        timeframe: compiled.timeframe,
+        yamlContent: newYaml,
+        changeReason: 'Auto-swap (background evaluation)',
+      });
+
+      // Mark new strategy as PENDING
+      await factory.getPrisma().strategy.update({
+        where: { id: newStrategy.id },
+        data: { status: 'PENDING' },
+      });
+
+      // Close old strategy
+      await strategyRepo.close(strategy.id, 'Auto-swapped by background evaluator');
+
+      console.log(`[auto-swap] Successfully swapped ${strategy.name} → ${newStrategy.id}`);
+    } else {
+      console.log(`[auto-swap] ${strategy.name}: CONTINUE (no swap needed)`);
+    }
+  } catch (error: any) {
+    console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+    throw error;
+  }
+}
+
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   setCORSHeaders(res);
 
@@ -2217,6 +2430,73 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         }, 500);
       }
 
+    } else if (pathname === '/api/portfolio/auto-swap/enable' && req.method === 'POST') {
+      // Enable auto-swap with configuration
+      const body = await parseBody(req);
+      const parallel = body.parallel !== undefined ? body.parallel : true;
+
+      autoSwapEnabled = true;
+      autoSwapParallel = parallel;
+
+      // Clear existing interval if any
+      if (autoSwapInterval) {
+        clearInterval(autoSwapInterval);
+      }
+
+      // Start new interval (every 30 minutes)
+      autoSwapInterval = setInterval(executeAutoSwap, 30 * 60 * 1000);
+
+      // Run immediately
+      executeAutoSwap().catch(err => console.error('[auto-swap] Initial execution error:', err));
+
+      console.log(`[auto-swap] Enabled (mode: ${parallel ? 'parallel' : 'serial'})`);
+
+      sendJSON(res, {
+        success: true,
+        enabled: true,
+        parallel,
+        message: 'Auto-swap enabled',
+      });
+    } else if (pathname === '/api/portfolio/auto-swap/disable' && req.method === 'POST') {
+      // Disable auto-swap
+      autoSwapEnabled = false;
+
+      if (autoSwapInterval) {
+        clearInterval(autoSwapInterval);
+        autoSwapInterval = null;
+      }
+
+      console.log('[auto-swap] Disabled');
+
+      sendJSON(res, {
+        success: true,
+        enabled: false,
+        message: 'Auto-swap disabled',
+      });
+    } else if (pathname === '/api/portfolio/auto-swap/status' && req.method === 'GET') {
+      // Get auto-swap status
+      sendJSON(res, {
+        enabled: autoSwapEnabled,
+        parallel: autoSwapParallel,
+        isRunning: isAutoSwapping,
+      });
+    } else if (pathname === '/api/portfolio/auto-swap/execute' && req.method === 'POST') {
+      // Manual trigger (for testing)
+      if (isAutoSwapping) {
+        sendJSON(res, {
+          success: false,
+          error: 'Auto-swap cycle already in progress',
+        }, 409);
+        return;
+      }
+
+      // Execute in background
+      executeAutoSwap().catch(err => console.error('[auto-swap] Manual execution error:', err));
+
+      sendJSON(res, {
+        success: true,
+        message: 'Auto-swap execution started',
+      });
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
     } else {
@@ -2257,6 +2537,11 @@ server.listen(PORT, () => {
   console.log(`    GET  /api/dsl/schema - Get DSL schema (dynamically from feature registry)`);
   console.log(`    POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy`);
   console.log(`    POST /api/tradecheck/analyze-and-convert - Fetch from TradeCheck + convert to YAML`);
+  console.log(`  Auto-Swap (Background Service):`);
+  console.log(`    POST /api/portfolio/auto-swap/enable - Enable auto-swap (body: {parallel: true/false})`);
+  console.log(`    POST /api/portfolio/auto-swap/disable - Disable auto-swap`);
+  console.log(`    GET  /api/portfolio/auto-swap/status - Get auto-swap status`);
+  console.log(`    POST /api/portfolio/auto-swap/execute - Manual trigger (for testing)`);
   console.log(`  Chat History:`);
   console.log(`    GET  /api/chat/sessions - List chat sessions`);
   console.log(`    POST /api/chat/sessions - Create chat session`);

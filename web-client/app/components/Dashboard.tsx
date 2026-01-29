@@ -63,6 +63,21 @@ export function Dashboard() {
     new Date()
   );
 
+  // Auto-swap feature state
+  const [autoSwapEnabled, setAutoSwapEnabled] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("autoSwapEnabled") === "true";
+    }
+    return false;
+  });
+  const [autoSwapParallel, setAutoSwapParallel] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("autoSwapParallel");
+      return stored !== null ? stored === "true" : true; // Default to parallel
+    }
+    return true;
+  });
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -182,6 +197,81 @@ export function Dashboard() {
       clearInterval(interval);
     };
   }, [lastRejectionCheck]);
+
+  // Auto-swap: Control backend service
+  useEffect(() => {
+    const syncAutoSwap = async () => {
+      try {
+        if (autoSwapEnabled) {
+          // Enable on backend
+          const response = await fetch(`${API_BASE}/api/portfolio/auto-swap/enable`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parallel: autoSwapParallel }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Failed to enable auto-swap on backend");
+          }
+
+          console.log(`[AutoSwap] Backend service enabled (mode: ${autoSwapParallel ? "parallel" : "serial"})`);
+        } else {
+          // Disable on backend
+          const response = await fetch(`${API_BASE}/api/portfolio/auto-swap/disable`, {
+            method: "POST",
+          });
+
+          if (!response.ok) {
+            throw new Error("Failed to disable auto-swap on backend");
+          }
+
+          console.log("[AutoSwap] Backend service disabled");
+        }
+      } catch (error: any) {
+        console.error("[AutoSwap] Error syncing with backend:", error);
+        setNotification({
+          type: "error",
+          message: `Auto-swap sync failed: ${error.message}`,
+        });
+      }
+    };
+
+    syncAutoSwap();
+  }, [autoSwapEnabled, autoSwapParallel]);
+
+  // Toggle auto-swap handler
+  const handleToggleAutoSwap = () => {
+    const newValue = !autoSwapEnabled;
+    setAutoSwapEnabled(newValue);
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("autoSwapEnabled", String(newValue));
+    }
+
+    setNotification({
+      type: "success",
+      message: newValue
+        ? "Auto-swap enabled (evaluating every 30 minutes)"
+        : "Auto-swap disabled",
+    });
+  };
+
+  // Toggle parallel/serial mode handler
+  const handleToggleParallel = () => {
+    const newValue = !autoSwapParallel;
+    setAutoSwapParallel(newValue);
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("autoSwapParallel", String(newValue));
+    }
+
+    setNotification({
+      type: "success",
+      message: newValue
+        ? "Auto-swap mode: Parallel (faster)"
+        : "Auto-swap mode: Serial (one at a time)",
+    });
+  };
 
   // Close strategy handler
   const handleCloseStrategy = async () => {
@@ -507,6 +597,95 @@ export function Dashboard() {
 
   return (
     <div className="dashboard">
+      {/* Auto-Swap Toggle */}
+      <div
+        style={{
+          position: "fixed",
+          top: "20px",
+          right: "20px",
+          zIndex: 1000,
+          background: autoSwapEnabled ? "#22c55e" : "#f4f1eb",
+          padding: "12px 20px",
+          borderRadius: "8px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          cursor: "pointer",
+          transition: "all 0.2s",
+          border: autoSwapEnabled ? "2px solid #16a34a" : "2px solid #ebe6dd",
+        }}
+        onClick={handleToggleAutoSwap}
+      >
+        <div style={{
+          fontSize: "20px",
+        }}>
+          {autoSwapEnabled ? "🔄" : "⏸️"}
+        </div>
+        <div>
+          <div style={{
+            fontWeight: 600,
+            fontSize: "14px",
+            color: autoSwapEnabled ? "white" : "#1a1a1a",
+            marginBottom: "2px",
+          }}>
+            Auto-Swap {autoSwapEnabled ? "ON" : "OFF"}
+          </div>
+          <div style={{
+            fontSize: "11px",
+            color: autoSwapEnabled ? "rgba(255,255,255,0.9)" : "#737373",
+          }}>
+            {autoSwapEnabled ? "Evaluating every 30min" : "Click to enable"}
+          </div>
+        </div>
+      </div>
+
+      {/* Parallel/Serial Mode Toggle (only show when auto-swap is enabled) */}
+      {autoSwapEnabled && (
+        <div
+          style={{
+            position: "fixed",
+            top: "90px",
+            right: "20px",
+            zIndex: 1000,
+            background: "#f4f1eb",
+            padding: "8px 16px",
+            borderRadius: "6px",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            cursor: "pointer",
+            transition: "all 0.2s",
+            border: "1px solid #ebe6dd",
+          }}
+          onClick={handleToggleParallel}
+        >
+          <div style={{ fontSize: "14px" }}>
+            {autoSwapParallel ? "⚡" : "➡️"}
+          </div>
+          <div>
+            <div
+              style={{
+                fontWeight: 600,
+                fontSize: "12px",
+                color: "#1a1a1a",
+              }}
+            >
+              {autoSwapParallel ? "Parallel" : "Serial"}
+            </div>
+            <div
+              style={{
+                fontSize: "10px",
+                color: "#737373",
+              }}
+            >
+              {autoSwapParallel ? "All at once" : "One at a time"}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Evaluation Error Banner */}
       {evaluationErrors.length > 0 && (
         <div
