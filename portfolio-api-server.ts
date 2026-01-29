@@ -43,6 +43,10 @@ let autoSwapInterval: NodeJS.Timeout | null = null;
 let isAutoSwapping = false; // Prevent overlapping executions
 const MAX_CONCURRENT_EVALUATIONS = 5; // Process max 5 strategies at a time in parallel mode
 
+// Hysteresis tracking: require 2 consecutive SWAP recommendations before executing
+// Map<strategyId, swapCandidateCount>
+const swapCandidateCount = new Map<string, number>();
+
 function getBarCacheService(): BarCacheServiceV2 {
   if (!barCacheService) {
     const twsHost = process.env.TWS_HOST || "127.0.0.1";
@@ -810,6 +814,74 @@ async function executeAutoSwap() {
   }
 }
 
+// Selective auto-swap execution function (for one-time manual trigger with selected strategies)
+async function executeAutoSwapSelective(strategyIds?: string[]) {
+  if (isAutoSwapping) {
+    console.log('[auto-swap] Skipping - previous cycle still in progress');
+    return;
+  }
+
+  isAutoSwapping = true;
+  console.log(`[auto-swap] Starting selective evaluation cycle (mode: ${autoSwapParallel ? 'parallel' : 'serial'})`);
+
+  try {
+    // Get active strategies (optionally filtered by IDs)
+    const whereClause: any = {
+      status: 'ACTIVE',
+      deletedAt: null,
+    };
+
+    if (strategyIds && strategyIds.length > 0) {
+      whereClause.id = { in: strategyIds };
+    }
+
+    const activeStrategies = await prisma.strategy.findMany({
+      where: whereClause,
+      orderBy: { activatedAt: 'asc' },
+    });
+
+    if (activeStrategies.length === 0) {
+      console.log('[auto-swap] No active strategies to evaluate');
+      return;
+    }
+
+    console.log(`[auto-swap] Evaluating ${activeStrategies.length} selected strategies...`);
+
+    if (autoSwapParallel) {
+      // Parallel mode: evaluate in batches to avoid overwhelming the server
+      const results = await processBatch(
+        activeStrategies,
+        MAX_CONCURRENT_EVALUATIONS,
+        evaluateAndSwapStrategy
+      );
+
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      console.log(`[auto-swap] Completed (parallel): ${succeeded} succeeded, ${failed} failed`);
+    } else {
+      // Serial mode: evaluate one at a time
+      let succeeded = 0;
+      let failed = 0;
+
+      for (const strategy of activeStrategies) {
+        try {
+          await evaluateAndSwapStrategy(strategy);
+          succeeded++;
+        } catch (error: any) {
+          console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+          failed++;
+        }
+      }
+
+      console.log(`[auto-swap] Completed (serial): ${succeeded} succeeded, ${failed} failed`);
+    }
+  } catch (error: any) {
+    console.error('[auto-swap] Execution error:', error);
+  } finally {
+    isAutoSwapping = false;
+  }
+}
+
 // Evaluate and swap a single strategy
 async function evaluateAndSwapStrategy(strategy: any) {
   const factory = getRepositoryFactory();
@@ -823,42 +895,158 @@ async function evaluateAndSwapStrategy(strategy: any) {
     const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 100);
     const latestBar = bars[bars.length - 1];
 
+    // Calculate time since activation
+    const activatedAt = strategy.activatedAt ? new Date(strategy.activatedAt) : null;
+    const hoursSinceActivation = activatedAt
+      ? Math.floor((Date.now() - activatedAt.getTime()) / (1000 * 60 * 60))
+      : null;
+
     // Build evaluation prompt
     const prompt = `Review this trading strategy and provide a recommendation.
 
-**Strategy Details:**
+You MUST follow these rules:
+- Default to CONTINUE unless a SWAP is explicitly allowed by the SWAP RULES below.
+- Do NOT invent narratives (earnings/news) unless you have evidence from the provided bars.
+- Close vs touch: any rule using 'close' is evaluated on bar close only (not intrabar high/low).
+
+SWAP RULES (only recommend SWAP if ONE of these is true):
+
+1) INVALID STRATEGY (structural math errors):
+   - BUY: stopPrice >= entryZone[1] (stop on wrong side of entry)
+   - SELL: stopPrice <= entryZone[0] (stop on wrong side of entry)
+   - OR rrWorst_final numerator <= 0 (target not beyond worst fill)
+   - Compute: rrWorst_final = (T_final - entryZone[1]) / (entryZone[1] - stopPrice) for BUY
+   - Compute: rrWorst_final = (entryZone[0] - T_final) / (stopPrice - entryZone[0]) for SELL
+
+2) INVALIDATED / EXITED (close-based rules triggered):
+   - Invalidate rule condition is TRUE on latest bar CLOSE
+   - BUY: close <= stopPrice (if stop is close-based)
+   - SELL: close >= stopPrice (if stop is close-based)
+
+3) STALE / TIMEOUT (all conditions must be met):
+   - OrdersPlaced == 0 (no orders submitted yet)
+   - AND barsSinceActivated >= entryTimeoutBars (timeout reached)
+   - AND entryDistancePct > maxEntryDistancePct (zone unreachable)
+
+4) MISSED-ENTRY (SELL only, all conditions must be met):
+   - OrdersPlaced == 0
+   - AND barsSinceActivated >= 3
+   - AND (eL - currentClose) / eL > missedMovePct
+   - missedMovePct: 0.7% (5m), 1.2% (15m), 2.0% (1h)
+
+5) MARKET REGIME CHANGE (extreme events only):
+   - VIX spike >50% (from tools/market data), OR
+   - Confirmed multi-week trend reversal (not single-day moves)
+
+VOLATILITY GUARD: Before recommending SWAP for rules 3 or 4, compute last 20 bars range% = (maxHigh - minLow) / currentClose. If range% > 3%, CONTINUE instead (high volatility makes zones appear unreachable temporarily).
+
+DO NOT SWAP if:
+- Strategy is "waiting" (price hasn't reached entry zone yet) - this is NORMAL operation
+- Only a few hours/bars have passed since activation (strategies need time to work)
+- Minor price fluctuations within expected volatility
+- You're uncertain about market conditions
+
+ENTRYZONE SEMANTICS (critical for preventing false swaps):
+
+BUY Strategies:
+- Current price ABOVE entryZone = WAITING (normal operation, not an error)
+- Only recommend SWAP if:
+  (a) Strategy reached entryTimeoutBars with zero orders, OR
+  (b) entryDistancePct > maxEntryDistancePct (unreachable zone)
+- Calculate: entryDistancePct = abs(entryMid - currentClose) / currentClose
+- Distance thresholds (5m timeframe):
+  • <= 0.75%: CONTINUE (zone is reachable)
+  • 0.75-2%: CONTINUE unless timeout reached
+  • > 2%: Allow SWAP only if timeout OR other stale conditions met
+
+SELL Strategies (mirror logic with missed-entry protection):
+- Current price BELOW entryZone low (eL) = TWO-STEP WAIT (not an error)
+  → Price must rally above eL, then fall back into zone
+- Current price ABOVE entryZone high (eH) = SIMPLE WAIT (price falls into zone)
+- Only recommend SWAP if:
+  (a) Strategy reached entryTimeoutBars with zero orders, OR
+  (b) entryDistancePct > maxEntryDistancePct (unreachable zone), OR
+  (c) MISSED-ENTRY threshold exceeded (breakdown already happened)
+
+MISSED-ENTRY RULE (SELL only):
+- If currentClose < eL by more than missedMovePct AND barsSinceActivated >= 3 with zero orders
+- Then treat as "missed entry" (breakdown already occurred) and allow SWAP
+- missedMovePct thresholds by timeframe:
+  • 5m: 0.7%
+  • 15m: 1.2%
+  • 1h: 2.0%
+- This prevents waiting for price to rally back up after the move already happened
+
+VOLATILITY GUARD (both BUY/SELL):
+- Before recommending SWAP, check recent volatility:
+  • Calculate last 20 bars range% = (maxHigh - minLow) / currentClose
+  • If range% > 3% (high volatility), DO NOT swap for minor price movement
+- High volatility makes "unreachable" zones temporarily appear further than they are
+
+NOTE: Hysteresis (2-strike rule) is enforced by the system. Your recommendation will be tracked, and swap will only execute after TWO consecutive SWAP recommendations. Just provide your honest assessment.
+
+CLOSE vs TOUCH:
+- Rules using 'close' only trigger on bar close (NOT intrabar high/low)
+- For SELL breakdown strategies: 'close < level' means you may miss intrabar breakdowns that bounce
+- This is intentional to reduce noise and false signals
+
+STRATEGY CONTEXT:
 - Name: ${strategy.name}
 - Symbol: ${strategy.symbol}
 - Timeframe: ${strategy.timeframe}
 - Status: ${strategy.status}
+- ActivatedAt: ${strategy.activatedAt || 'Unknown'}
+- HoursSinceActivation: ${hoursSinceActivation !== null ? hoursSinceActivation : 'Unknown'}
 
-**Strategy YAML:**
+STRATEGY YAML:
 \`\`\`yaml
 ${strategy.yamlContent}
 \`\`\`
 
-**Current Market (Last 5 bars):**
-${bars.slice(-5).map((bar: any, i: number) => `Bar ${i + 1}: O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close} V=${bar.volume}`).join('\n')}
+CURRENT MARKET (Last 10 bars):
+${bars.slice(-10).map((bar: any, i: number) => {
+  const idx = bars.length - 10 + i;
+  return `Bar ${idx + 1}: O=${bar.open.toFixed(2)} H=${bar.high.toFixed(2)} L=${bar.low.toFixed(2)} C=${bar.close.toFixed(2)} V=${bar.volume}`;
+}).join('\n')}
 
-Current Price: $${latestBar.close}
+Current Price: $${latestBar.close.toFixed(2)}
 
-**Task:** Analyze and recommend CONTINUE or SWAP.
+REQUIRED ACTIONS (you MUST do these before deciding):
 
-Use MCP tools:
-- get_live_portfolio_snapshot()
-- get_market_data("${strategy.symbol}", "${strategy.timeframe}", 100)
-- get_sector_info("${strategy.symbol}")
+1. CALL get_market_data("${strategy.symbol}", "${strategy.timeframe}", 100)
+   - Get full 100-bar history for trend analysis
+   - Calculate barsSinceActivated (if not provided, infer from bars)
+   - Calculate last 20 bars volatility: range% = (maxHigh - minLow) / currentClose
 
-**Response format:**
+2. COMPUTE these values from the YAML:
+   - entryZone: [eL, eH] (extract from entryZone field)
+   - entryMid = (eL + eH) / 2
+   - entryDistancePct = abs(entryMid - currentClose) / currentClose
+   - stopPrice (extract from stopLoss field)
+   - targets: T_final = max(targets) for BUY, min(targets) for SELL
+   - rrWorst_final = worst-case R:R using zone boundary and stop
+   - entryTimeoutBars (extract from entryTimeoutBars field, default to 78 if missing)
+   - maxEntryDistancePct (extract from maxEntryDistancePct field, default to 2% if missing)
+
+3. OPTIONAL TOOLS (for additional context):
+   - get_live_portfolio_snapshot() - Portfolio state, buying power
+   - get_sector_info("${strategy.symbol}") - Sector classification
+
+DO NOT make claims about distance, R:R, or timeout without computing these values.
+DO NOT invent narratives (earnings/news) unless visible in the provided bar data.
+
+RESPONSE FORMAT (required):
 
 **Recommendation: [CONTINUE/SWAP]**
 
-**Analysis:**
-[Your analysis]
+**Reasoning:**
+[Explain which SWAP RULE applies (if SWAP) or why strategy should continue (if CONTINUE)]
+[Reference specific bars, price levels, and entry zone status]
+[Do NOT invent earnings/news narratives unless visible in bar data]
 
-**YAML (if SWAP):**
+**YAML (only if SWAP):**
 \`\`\`yaml
-[Complete replacement strategy]
+[Complete replacement strategy YAML]
 \`\`\``;
 
     // Use StrategyEvaluatorClient
@@ -878,7 +1066,20 @@ Use MCP tools:
 
     const recommendation = recommendationMatch[1].toUpperCase();
 
+    // Hysteresis: Require 2 consecutive SWAP recommendations before executing
     if (recommendation === 'SWAP') {
+      const currentCount = swapCandidateCount.get(strategy.id) || 0;
+      const newCount = currentCount + 1;
+      swapCandidateCount.set(strategy.id, newCount);
+
+      if (newCount < 2) {
+        console.log(`[auto-swap] ${strategy.name}: SWAP signal (${newCount}/2) - waiting for confirmation`);
+        return; // Don't execute swap yet, wait for next evaluation
+      }
+
+      // Reset counter after executing swap
+      swapCandidateCount.delete(strategy.id);
+
       // Extract YAML
       const yamlMatch = analysisText.match(/```yaml\n([\s\S]*?)\n```/);
 
@@ -889,7 +1090,7 @@ Use MCP tools:
 
       const newYaml = yamlMatch[1];
 
-      console.log(`[auto-swap] Swapping ${strategy.name}...`);
+      console.log(`[auto-swap] ${strategy.name}: SWAP signal confirmed (2/2) - executing swap...`);
 
       // Validate and compile new strategy
       const compiler = new StrategyCompiler(createStandardRegistry());
@@ -917,7 +1118,14 @@ Use MCP tools:
 
       console.log(`[auto-swap] Successfully swapped ${strategy.name} → ${newStrategy.id}`);
     } else {
-      console.log(`[auto-swap] ${strategy.name}: CONTINUE (no swap needed)`);
+      // CONTINUE recommendation - reset counter
+      const previousCount = swapCandidateCount.get(strategy.id) || 0;
+      if (previousCount > 0) {
+        console.log(`[auto-swap] ${strategy.name}: CONTINUE (reset swap counter from ${previousCount} to 0)`);
+        swapCandidateCount.delete(strategy.id);
+      } else {
+        console.log(`[auto-swap] ${strategy.name}: CONTINUE (no swap needed)`);
+      }
     }
   } catch (error: any) {
     console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
@@ -2481,7 +2689,7 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         isRunning: isAutoSwapping,
       });
     } else if (pathname === '/api/portfolio/auto-swap/execute' && req.method === 'POST') {
-      // Manual trigger (for testing)
+      // Manual trigger - can optionally filter by strategy IDs
       if (isAutoSwapping) {
         sendJSON(res, {
           success: false,
@@ -2490,12 +2698,17 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         return;
       }
 
-      // Execute in background
-      executeAutoSwap().catch(err => console.error('[auto-swap] Manual execution error:', err));
+      const body = await parseBody(req);
+      const strategyIds = body.strategyIds; // Optional array of strategy IDs to evaluate
+
+      // Execute in background with optional filtering
+      executeAutoSwapSelective(strategyIds).catch(err => console.error('[auto-swap] Manual execution error:', err));
 
       sendJSON(res, {
         success: true,
-        message: 'Auto-swap execution started',
+        message: strategyIds
+          ? `Auto-swap execution started for ${strategyIds.length} selected strategies`
+          : 'Auto-swap execution started for all active strategies',
       });
     } else if (pathname === '/health') {
       sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });

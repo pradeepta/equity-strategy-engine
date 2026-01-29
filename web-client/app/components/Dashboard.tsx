@@ -6,6 +6,7 @@ import { CloseStrategyModal } from "./CloseStrategyModal";
 import { ReopenStrategyModal } from "./ReopenStrategyModal";
 import { ForceDeployModal } from "./ForceDeployModal";
 import { NotificationBanner } from "./NotificationBanner";
+import { OneTimeSwapModal } from "./OneTimeSwapModal";
 
 const API_BASE = "http://localhost:3002";
 
@@ -271,6 +272,49 @@ export function Dashboard() {
         ? "Auto-swap mode: Parallel (faster)"
         : "Auto-swap mode: Serial (one at a time)",
     });
+  };
+
+  // One-time swap evaluation handler
+  const [showOneTimeSwapModal, setShowOneTimeSwapModal] = useState(false);
+  const [isRunningOneTimeSwap, setIsRunningOneTimeSwap] = useState(false);
+
+  const handleRunOneTimeSwap = async (selectedIds: string[]) => {
+    if (selectedIds.length === 0) {
+      setNotification({
+        type: "error",
+        message: "Please select at least one strategy to evaluate",
+      });
+      return;
+    }
+
+    setIsRunningOneTimeSwap(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/portfolio/auto-swap/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategyIds: selectedIds }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to run one-time swap");
+      }
+
+      setNotification({
+        type: "success",
+        message: `One-time swap evaluation started for ${selectedIds.length} strateg${selectedIds.length === 1 ? 'y' : 'ies'}.`,
+      });
+
+      // Close modal
+      setShowOneTimeSwapModal(false);
+    } catch (error: any) {
+      setNotification({
+        type: "error",
+        message: `One-time swap failed: ${error.message}`,
+      });
+    } finally {
+      setIsRunningOneTimeSwap(false);
+    }
   };
 
   // Close strategy handler
@@ -685,6 +729,52 @@ export function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* One-Time Swap Evaluation Button */}
+      <div
+        style={{
+          position: "fixed",
+          top: autoSwapEnabled ? "150px" : "90px",
+          right: "20px",
+          zIndex: 1000,
+          background: isRunningOneTimeSwap ? "#fbbf24" : "#f55036",
+          padding: "10px 18px",
+          borderRadius: "6px",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          cursor: isRunningOneTimeSwap ? "not-allowed" : "pointer",
+          transition: "all 0.2s",
+          border: "2px solid",
+          borderColor: isRunningOneTimeSwap ? "#f59e0b" : "#dc2626",
+          opacity: isRunningOneTimeSwap ? 0.7 : 1,
+        }}
+        onClick={isRunningOneTimeSwap ? undefined : () => setShowOneTimeSwapModal(true)}
+      >
+        <div style={{ fontSize: "16px" }}>
+          {isRunningOneTimeSwap ? "⏳" : "🔄"}
+        </div>
+        <div>
+          <div
+            style={{
+              fontWeight: 600,
+              fontSize: "13px",
+              color: "white",
+            }}
+          >
+            {isRunningOneTimeSwap ? "Evaluating..." : "Run Swap Once"}
+          </div>
+          <div
+            style={{
+              fontSize: "10px",
+              color: "rgba(255,255,255,0.9)",
+            }}
+          >
+            {isRunningOneTimeSwap ? "Please wait" : "Select strategies to evaluate"}
+          </div>
+        </div>
+      </div>
 
       {/* Evaluation Error Banner */}
       {evaluationErrors.length > 0 && (
@@ -1374,6 +1464,18 @@ export function Dashboard() {
           }}
           onReasonChange={setForceDeployReason}
           onConfirm={handleConfirmForceDeploy}
+        />
+      )}
+
+      {/* One-Time Swap Modal */}
+      {showOneTimeSwapModal && (
+        <OneTimeSwapModal
+          strategies={
+            portfolioData?.strategies?.filter((s: any) => s.status === "ACTIVE") || []
+          }
+          isEvaluating={isRunningOneTimeSwap}
+          onClose={() => setShowOneTimeSwapModal(false)}
+          onExecute={handleRunOneTimeSwap}
         />
       )}
 
