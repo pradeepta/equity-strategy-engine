@@ -70,6 +70,10 @@ export class TwsAdapter extends BaseBrokerAdapter {
         port: this.port,
       });
 
+      // Increase max listeners to support many concurrent strategies
+      // Each strategy may temporarily add listeners during getOpenOrders()
+      this.client.setMaxListeners(100);
+
       // Set up event handlers
       this.client.on('connected', () => {
         console.log(`✓ Connected to TWS at ${this.host}:${this.port}`);
@@ -1292,18 +1296,21 @@ export class TwsAdapter extends BaseBrokerAdapter {
         completed = true;
       };
 
-      this.client.on('openOrder', onOpenOrder);
-      this.client.once('openOrderEnd', onOpenOrderEnd);
+      try {
+        this.client.on('openOrder', onOpenOrder);
+        this.client.once('openOrderEnd', onOpenOrderEnd);
 
-      // Request all open orders and wait briefly for callbacks
-      this.client.reqAllOpenOrders();
-      const start = Date.now();
-      while (!completed && Date.now() - start < 1500) {
-        await this.sleep(50);
+        // Request all open orders and wait briefly for callbacks
+        this.client.reqAllOpenOrders();
+        const start = Date.now();
+        while (!completed && Date.now() - start < 1500) {
+          await this.sleep(50);
+        }
+      } finally {
+        // Always clean up listeners, even if an error occurred
+        this.client.off('openOrder', onOpenOrder);
+        this.client.off('openOrderEnd', onOpenOrderEnd);
       }
-
-      this.client.off('openOrder', onOpenOrder);
-      this.client.off('openOrderEnd', onOpenOrderEnd);
 
       // Fallback to pendingOrders if broker didn't emit open orders
       const orders: Order[] = collected.length > 0 ? collected : [];
