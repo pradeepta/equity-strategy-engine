@@ -288,7 +288,11 @@ export class TwsAdapter extends BaseBrokerAdapter {
           console.log(`  Entry: ${bracket.entryOrder.qty} @ ${bracket.entryOrder.limitPrice}`);
           console.log(`  Take Profit: ${bracket.takeProfit.qty} @ ${bracket.takeProfit.limitPrice}`);
           console.log(`  Stop Loss: ${bracket.stopLoss.qty} @ ${bracket.stopLoss.limitPrice}`);
+
+          // Push all three orders in dry-run mode too
           submittedOrders.push(bracket.entryOrder);
+          submittedOrders.push(bracket.takeProfit);
+          submittedOrders.push(bracket.stopLoss);
         } else {
           // Real submission to TWS
           // Save original order ID before submitting
@@ -302,10 +306,28 @@ export class TwsAdapter extends BaseBrokerAdapter {
           // Map original order ID to TWS order ID for cancellation
           this.orderIdMap.set(originalOrderId, parentOrder.orderId);
 
-          // Update order object with TWS order ID
+          // Get bracket set with all three order IDs
+          const bracketSet = this.bracketOrders.get(parentOrder.orderId);
+          if (!bracketSet) {
+            throw new Error(`Bracket set not found for parent order ${parentOrder.orderId}`);
+          }
+
+          // Update all three order objects with TWS order IDs
           bracket.entryOrder.id = parentOrder.orderId.toString();
           bracket.entryOrder.status = 'submitted';
+
+          bracket.takeProfit.id = bracketSet.takeProfitOrderId.toString();
+          bracket.takeProfit.status = 'submitted';
+
+          bracket.stopLoss.id = bracketSet.stopLossOrderId.toString();
+          bracket.stopLoss.status = 'submitted';
+
+          // Push all three orders to submittedOrders for database persistence
           submittedOrders.push(bracket.entryOrder);
+          submittedOrders.push(bracket.takeProfit);
+          submittedOrders.push(bracket.stopLoss);
+
+          console.log(`  ✅ All three bracket orders added to submittedOrders: ${bracket.entryOrder.id}, ${bracket.takeProfit.id}, ${bracket.stopLoss.id}`);
 
           this.auditEvent?.({
             component: 'TwsAdapter',

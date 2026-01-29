@@ -62,6 +62,7 @@ export class MultiStrategyManager {
       strategy.name,
       this.brokerAdapter,
       this.brokerEnv,
+      this.strategyRepo,  // Pass repository for state persistence
       strategy.activatedAt || undefined  // Pass activation timestamp
     );
 

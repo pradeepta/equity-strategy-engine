@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { StrategyDetailModal } from "./StrategyDetailModal";
 import { CloseStrategyModal } from "./CloseStrategyModal";
 import { ReopenStrategyModal } from "./ReopenStrategyModal";
+import { ForceDeployModal } from "./ForceDeployModal";
 import { NotificationBanner } from "./NotificationBanner";
 
 const API_BASE = "http://localhost:3002";
@@ -28,10 +29,13 @@ export function Dashboard() {
   const [showStrategyModal, setShowStrategyModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [showReopenModal, setShowReopenModal] = useState(false);
+  const [showForceDeployModal, setShowForceDeployModal] = useState(false);
   const [closeReason, setCloseReason] = useState("");
   const [reopenReason, setReopenReason] = useState("");
+  const [forceDeployReason, setForceDeployReason] = useState("");
   const [isClosing, setIsClosing] = useState(false);
   const [isReopening, setIsReopening] = useState(false);
+  const [isForceDeploying, setIsForceDeploying] = useState(false);
 
   // Backtest states
   const [backtestResult, setBacktestResult] = useState<any>(null);
@@ -46,6 +50,11 @@ export function Dashboard() {
 
   // Evaluation error state
   const [evaluationErrors, setEvaluationErrors] = useState<any[]>([]);
+
+  // Track last rejection check timestamp to avoid duplicate notifications
+  const [lastRejectionCheck, setLastRejectionCheck] = useState<Date>(
+    new Date()
+  );
 
   useEffect(() => {
     const fetchData = async () => {
@@ -89,6 +98,55 @@ export function Dashboard() {
     const interval = setInterval(fetchEvaluationErrors, 15000); // Refresh every 15s
     return () => clearInterval(interval);
   }, []);
+
+  // Poll for order rejections and show notifications
+  useEffect(() => {
+    const checkForRejections = async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/portfolio/rejections?since=${lastRejectionCheck.toISOString()}`,
+        );
+        if (response.ok) {
+          const data = await response.json();
+
+          // Show notification if there are new rejections
+          if (data.rejections && data.rejections.length > 0) {
+            const rejectionCount = data.rejections.length;
+            const firstRejection = data.rejections[0];
+
+            // Create detailed error message
+            let message = `Order rejected: ${firstRejection.symbol} - ${firstRejection.errorMessage}`;
+            if (rejectionCount > 1) {
+              message = `${rejectionCount} orders rejected. Latest: ${firstRejection.symbol} - ${firstRejection.errorMessage}`;
+            }
+
+            setNotification({
+              type: "error",
+              message,
+            });
+
+            console.warn("[Dashboard] Order rejections detected:", data.rejections);
+          }
+
+          // Update check timestamp for next poll
+          setLastRejectionCheck(new Date());
+        }
+      } catch (err) {
+        console.error("Failed to check for order rejections:", err);
+      }
+    };
+
+    // Initial check after 5 seconds (let dashboard load first)
+    const initialTimeout = setTimeout(checkForRejections, 5000);
+
+    // Then check every 10 seconds
+    const interval = setInterval(checkForRejections, 10000);
+
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [lastRejectionCheck]);
 
   // Close strategy handler
   const handleCloseStrategy = async () => {
@@ -191,6 +249,73 @@ export function Dashboard() {
       });
     } finally {
       setIsReopening(false);
+    }
+  };
+
+  // Force deploy handler
+  const handleForceDeployClick = (strategy: any) => {
+    // Validate that no orders have been placed yet
+    if (strategy.openOrderCount > 0) {
+      setNotification({
+        type: "error",
+        message: `Cannot force deploy - strategy already has ${strategy.openOrderCount} open order(s)`,
+      });
+      return;
+    }
+
+    setSelectedStrategy(strategy);
+    setForceDeployReason('');
+    setShowForceDeployModal(true);
+  };
+
+  const handleConfirmForceDeploy = async () => {
+    if (!selectedStrategy || !forceDeployReason.trim()) {
+      setNotification({
+        type: "error",
+        message: "Please provide a reason for force deploying the strategy",
+      });
+      return;
+    }
+
+    setIsForceDeploying(true);
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/portfolio/strategies/${selectedStrategy.id}/force-deploy`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: forceDeployReason }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to force deploy strategy");
+      }
+
+      // Success - show notification and refresh data
+      setNotification({
+        type: "success",
+        message: `Strategy "${selectedStrategy.name}" force deployed successfully (${data.ordersSubmitted} orders)`,
+      });
+      setShowForceDeployModal(false);
+      setShowStrategyModal(false);
+      setForceDeployReason('');
+
+      // Refresh portfolio data
+      const refreshResponse = await fetch(`${API_BASE}/api/portfolio/overview`);
+      if (refreshResponse.ok) {
+        const refreshData = await refreshResponse.json();
+        setPortfolioData(refreshData);
+      }
+    } catch (error: any) {
+      setNotification({
+        type: "error",
+        message: error.message || "Failed to force deploy strategy",
+      });
+    } finally {
+      setIsForceDeploying(false);
     }
   };
 
@@ -645,6 +770,7 @@ export function Dashboard() {
           onClose={() => setShowStrategyModal(false)}
           onCloseStrategy={() => setShowCloseModal(true)}
           onReopenStrategy={() => setShowReopenModal(true)}
+          onForceDeployStrategy={handleForceDeployClick}
           onRunBacktest={handleRunBacktest}
         />
       )}
@@ -676,6 +802,21 @@ export function Dashboard() {
           }}
           onReasonChange={setReopenReason}
           onConfirm={handleReopenStrategy}
+        />
+      )}
+
+      {/* Force Deploy Strategy Confirmation Modal */}
+      {showForceDeployModal && selectedStrategy && (
+        <ForceDeployModal
+          strategy={selectedStrategy}
+          forceDeployReason={forceDeployReason}
+          isDeploying={isForceDeploying}
+          onClose={() => {
+            setShowForceDeployModal(false);
+            setForceDeployReason("");
+          }}
+          onReasonChange={setForceDeployReason}
+          onConfirm={handleConfirmForceDeploy}
         />
       )}
 

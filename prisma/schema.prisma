@@ -105,6 +105,7 @@ model Strategy {
 
   // Status
   status            StrategyStatus    @default(DRAFT)
+  runtimeState      String?           // FSM state: IDLE, ARMED, PLACED, MANAGING, EXITED (set by orchestrator)
 
   // Metadata extracted from YAML
   description       String?           @db.Text
@@ -250,6 +251,7 @@ enum ExecutionEventType {
   BAR_PROCESSED   // Bar processed (can log periodically)
   ERROR           // Execution error
   INVALIDATED     // Rule invalidation triggered
+  FORCE_ENTRY     // Manual force deploy entry
 }
 
 model StrategyEvaluation {
@@ -594,6 +596,7 @@ enum StrategyEventType {
   SWAPPED_OUT     // Strategy was swapped out (became closed)
   DELETED
   STATUS_CHANGED  // Generic status change
+  FORCE_DEPLOYED  // Manual force deploy (bypass arm/trigger)
 }
 
 // ============================================================================

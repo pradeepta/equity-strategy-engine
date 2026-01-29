@@ -75,6 +75,12 @@ export class StrategyEngine {
         this.barHistory.shift(); // Remove oldest bar
       }
 
+      // Sync open orders from broker if engine's state is empty but orders might exist
+      // This handles force-deployed orders or orders placed by other systems
+      if (this.state.openOrders.length === 0 && !this.replayMode) {
+        await this.syncOpenOrdersFromBroker();
+      }
+
       // Compute features for this bar
       await this.computeFeatures(bar);
 
@@ -690,6 +696,26 @@ export class StrategyEngine {
       `[Bar ${this.state.barCount}] [${level.toUpperCase()}] ${message}`,
       data ? JSON.stringify(data) : ''
     );
+  }
+
+  /**
+   * Sync open orders from broker (handles force-deployed orders or external order placement)
+   */
+  private async syncOpenOrdersFromBroker(): Promise<void> {
+    try {
+      const brokerOrders = await this.brokerAdapter.getOpenOrders(
+        this.ir.symbol,
+        this.brokerEnv
+      );
+
+      if (brokerOrders.length > 0) {
+        this.log('info', `Syncing ${brokerOrders.length} open order(s) from broker into engine state`);
+        this.state.openOrders = brokerOrders;
+      }
+    } catch (error) {
+      this.log('warn', `Failed to sync orders from broker: ${error}`);
+      // Don't fail bar processing if sync fails
+    }
   }
 
   /**

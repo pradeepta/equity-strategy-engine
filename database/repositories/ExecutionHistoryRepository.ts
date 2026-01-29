@@ -70,6 +70,39 @@ export class ExecutionHistoryRepository {
   }
 
   /**
+   * Log force entry execution event
+   */
+  async createForceEntry(params: {
+    strategyId: string;
+    currentState: string;
+    orderPlanId: string;
+    currentPrice: number;
+    currentVolume: bigint;
+    barTimestamp: Date;
+    orderCount: number;
+    initiatedBy: string;
+    reason: string;
+  }): Promise<StrategyExecution> {
+    return this.prisma.strategyExecution.create({
+      data: {
+        strategyId: params.strategyId,
+        eventType: 'FORCE_ENTRY',
+        currentState: params.currentState,
+        currentPrice: params.currentPrice,
+        currentVolume: params.currentVolume,
+        barTimestamp: params.barTimestamp,
+        openOrderCount: params.orderCount,
+        metadata: {
+          orderPlanId: params.orderPlanId,
+          forceDeployReason: params.reason,
+          initiatedBy: params.initiatedBy,
+        },
+        completedAt: new Date(),
+      },
+    });
+  }
+
+  /**
    * Log evaluation
    */
   async logEvaluation(params: {

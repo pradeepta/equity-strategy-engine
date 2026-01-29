@@ -27,6 +27,19 @@ import { upsertBars } from "../broker/marketData/database";
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
 
+// Global orchestrator instance for API access (force deploy, etc.)
+export let globalOrchestrator: LiveTradingOrchestrator | null = null;
+
+/**
+ * Set global orchestrator instance
+ * Called from live-multi.ts after orchestrator creation
+ */
+export function setGlobalOrchestrator(
+  orchestrator: LiveTradingOrchestrator
+): void {
+  globalOrchestrator = orchestrator;
+}
+
 export interface OrchestratorConfig {
   brokerAdapter: BaseBrokerAdapter;
   brokerEnv: BrokerEnvironment;
@@ -995,5 +1008,26 @@ export class LiveTradingOrchestrator {
    */
   getEvaluatorClient(): StrategyEvaluatorClient {
     return this.evaluatorClient;
+  }
+
+  /**
+   * Get strategy instance by ID (for force deploy)
+   */
+  getStrategyInstance(strategyId: string) {
+    return this.multiStrategyManager.getStrategyById(strategyId);
+  }
+
+  /**
+   * Get broker adapter (for force deploy)
+   */
+  getBrokerAdapter(): BaseBrokerAdapter {
+    return this.config.brokerAdapter;
+  }
+
+  /**
+   * Get broker environment (for force deploy)
+   */
+  getBrokerEnv(): BrokerEnvironment {
+    return this.config.brokerEnv;
   }
 }

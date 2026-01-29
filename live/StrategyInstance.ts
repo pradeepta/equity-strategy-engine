@@ -10,6 +10,7 @@ import { StrategyEngine } from '../runtime/engine';
 import { BaseBrokerAdapter } from '../broker/broker';
 import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationResult, Order } from '../spec/types';
 import { RealtimeBarClient } from './streaming/RealtimeBarClient';
+import { StrategyRepository } from '../database/repositories/StrategyRepository';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -21,6 +22,7 @@ export class StrategyInstance {
   private compiler: StrategyCompiler;
   private brokerAdapter: BaseBrokerAdapter;
   private brokerEnv: BrokerEnvironment;
+  private strategyRepo: StrategyRepository;  // For persisting runtime state
   private ir!: CompiledIR;
   private barsSinceLastEval: number = 0;
   private yamlContent: string;
@@ -41,6 +43,7 @@ export class StrategyInstance {
     name: string,
     adapter: BaseBrokerAdapter,
     brokerEnv: BrokerEnvironment,
+    strategyRepo: StrategyRepository,
     activatedAt?: Date  // Optional - defaults to now
   ) {
     this.strategyId = strategyId;
@@ -50,6 +53,7 @@ export class StrategyInstance {
     this.strategyName = name;
     this.brokerAdapter = adapter;
     this.brokerEnv = brokerEnv;
+    this.strategyRepo = strategyRepo;
     this.activatedAt = activatedAt || new Date();
 
     // Create compiler with standard registry
@@ -123,6 +127,14 @@ export class StrategyInstance {
       if (currentStateName !== this.lastStateName) {
         console.log(`[${this.symbol}] State transition: ${this.lastStateName || 'init'} → ${currentStateName}`);
         this.lastStateName = currentStateName;
+
+        // Persist state to database for API access
+        try {
+          await this.strategyRepo.updateRuntimeState(this.strategyId, currentStateName);
+        } catch (error) {
+          console.error(`[${this.symbol}] Failed to persist runtime state:`, error);
+          // Don't fail strategy processing if DB write fails
+        }
 
         // Start or stop streaming based on new state
         await this.updateStreamingForState(currentStateName);
@@ -410,6 +422,17 @@ export class StrategyInstance {
    */
   getTimeframe(): string {
     return this.ir.timeframe;
+  }
+
+  /**
+   * Get compiled IR (for force deploy)
+   * Exposes internal IR to allow external order submission
+   */
+  getCompiledIR(): CompiledIR {
+    if (!this.initialized) {
+      throw new Error('Strategy not initialized');
+    }
+    return this.ir;
   }
 
   /**

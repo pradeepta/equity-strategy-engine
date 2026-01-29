@@ -439,6 +439,17 @@ export class StrategyRepository {
   }
 
   /**
+   * Update runtime state (called by orchestrator on FSM state transitions)
+   * This allows API server to read current FSM state without orchestrator dependency
+   */
+  async updateRuntimeState(strategyId: string, runtimeState: string): Promise<void> {
+    await this.prisma.strategy.update({
+      where: { id: strategyId },
+      data: { runtimeState },
+    });
+  }
+
+  /**
    * Get version history for a strategy
    */
   async getVersionHistory(strategyId: string): Promise<StrategyVersion[]> {
@@ -565,6 +576,34 @@ export class StrategyRepository {
     return this.prisma.strategyAuditLog.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
+    });
+  }
+
+  /**
+   * Create force deploy audit entry
+   * Records manual entry trigger for audit trail
+   */
+  async createForceDeployAudit(params: {
+    strategyId: string;
+    changedBy: string;
+    reason: string;
+    metadata?: {
+      currentState: string;
+      currentPrice: number;
+      orderPlanId: string;
+      barTimestamp: number;
+    };
+  }): Promise<void> {
+    await this.prisma.strategyAuditLog.create({
+      data: {
+        strategyId: params.strategyId,
+        eventType: 'FORCE_DEPLOYED',
+        oldStatus: undefined,
+        newStatus: undefined,
+        changedBy: params.changedBy,
+        changeReason: params.reason,
+        metadata: params.metadata as Prisma.InputJsonValue | undefined,
+      },
     });
   }
 

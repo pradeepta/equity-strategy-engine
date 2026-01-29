@@ -7,7 +7,7 @@ import * as dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import { LiveTradingOrchestrator } from './live/LiveTradingOrchestrator';
+import { LiveTradingOrchestrator, setGlobalOrchestrator } from './live/LiveTradingOrchestrator';
 import { TwsAdapter } from './broker/twsAdapter';
 import { BrokerEnvironment } from './spec/types';
 import { LoggerFactory } from './logging/logger';
@@ -95,6 +95,9 @@ async function main() {
 
   // Create orchestrator
   const orchestrator = new LiveTradingOrchestrator(config);
+
+  // Set global orchestrator instance for API access (force deploy, etc.)
+  setGlobalOrchestrator(orchestrator);
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {

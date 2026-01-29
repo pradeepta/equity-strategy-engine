@@ -997,6 +997,45 @@ main {
   background: #15803d;
 }
 
+/* Force Deploy Button Styles */
+.force-deploy-button {
+  background-color: #f59e0b;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.force-deploy-button:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+.force-deploy-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirm-force-deploy-button {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.confirm-force-deploy-button:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+/* Warning Box */
+.warning-box {
+  padding: 12px;
+  background-color: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
 .modal-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
