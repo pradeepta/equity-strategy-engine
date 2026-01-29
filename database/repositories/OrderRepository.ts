@@ -28,7 +28,7 @@ export class OrderRepository {
   }
 
   /**
-   * Create order with idempotency check
+   * Create order with idempotency check (with audit log for new orders)
    * If orders with the same planId + strategyId exist, returns existing orders instead
    */
   async create(params: {
@@ -59,9 +59,33 @@ export class OrderRepository {
       return existing;
     }
 
-    return this.prisma.order.create({
+    // Create new order
+    const order = await this.prisma.order.create({
       data: params,
     });
+
+    // Create audit log for new order
+    await this.createAuditLog({
+      orderId: order.id,
+      brokerOrderId: params.brokerOrderId,
+      strategyId: params.strategyId,
+      eventType: 'SUBMITTED',
+      newStatus: 'PENDING',
+      quantity: params.qty,
+      price: params.limitPrice,
+      metadata: {
+        source: 'order_creation',
+        planId: params.planId,
+        symbol: params.symbol,
+        side: params.side,
+        type: params.type,
+        limitPrice: params.limitPrice,
+        stopPrice: params.stopPrice,
+        isParent: params.isParent,
+      },
+    });
+
+    return order;
   }
 
   /**
@@ -112,9 +136,31 @@ export class OrderRepository {
   }
 
   /**
-   * Update order status
+   * Map OrderStatus to OrderEventType for audit logs
    */
-  async updateStatus(orderId: string, status: OrderStatus): Promise<Order> {
+  private mapStatusToEventType(status: OrderStatus): "SUBMITTED" | "CANCELLED" | "FILLED" | "PARTIALLY_FILLED" | "REJECTED" {
+    const mapping: Record<OrderStatus, "SUBMITTED" | "CANCELLED" | "FILLED" | "PARTIALLY_FILLED" | "REJECTED"> = {
+      PENDING: "SUBMITTED",
+      SUBMITTED: "SUBMITTED",
+      FILLED: "FILLED",
+      PARTIALLY_FILLED: "PARTIALLY_FILLED",
+      CANCELLED: "CANCELLED",
+      REJECTED: "REJECTED",
+    };
+    return mapping[status];
+  }
+
+  /**
+   * Update order status (with audit log)
+   */
+  async updateStatus(orderId: string, status: OrderStatus, metadata?: Record<string, unknown>): Promise<Order> {
+    // Fetch current order state
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const oldStatus = order.status;
+
+    // Build updates
     const updates: any = { status };
 
     if (status === "SUBMITTED") {
@@ -125,10 +171,28 @@ export class OrderRepository {
       updates.cancelledAt = new Date();
     }
 
-    return this.prisma.order.update({
+    // Update order
+    const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: updates,
     });
+
+    // Create audit log
+    await this.createAuditLog({
+      orderId,
+      brokerOrderId: order.brokerOrderId ?? undefined,
+      strategyId: order.strategyId,
+      eventType: this.mapStatusToEventType(status),
+      oldStatus: oldStatus,
+      newStatus: status,
+      quantity: order.qty,
+      metadata: {
+        source: 'status_update',
+        ...metadata,
+      },
+    });
+
+    return updatedOrder;
   }
 
   /**
@@ -262,16 +326,42 @@ export class OrderRepository {
   }
 
   /**
-   * Mark order as rejected
+   * Mark order as rejected (with audit log)
    */
   async markRejected(orderId: string, errorMessage: string): Promise<Order> {
-    return this.prisma.order.update({
+    // Fetch current order state
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const oldStatus = order.status;
+
+    // Update order
+    const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: {
         status: "REJECTED",
         errorMessage,
       },
     });
+
+    // Create audit log
+    await this.createAuditLog({
+      orderId,
+      brokerOrderId: order.brokerOrderId ?? undefined,
+      strategyId: order.strategyId,
+      eventType: 'REJECTED',
+      oldStatus,
+      newStatus: 'REJECTED',
+      errorMessage,
+      quantity: order.qty,
+      metadata: {
+        source: 'rejection',
+        rejectionReason: errorMessage,
+        symbol: order.symbol,
+      },
+    });
+
+    return updatedOrder;
   }
 
   /**
@@ -315,21 +405,51 @@ export class OrderRepository {
   }
 
   /**
-   * Cancel all open orders for a strategy
+   * Cancel all open orders for a strategy (with audit logs for each order)
    */
-  async cancelOpenOrders(strategyId: string): Promise<number> {
-    const result = await this.prisma.order.updateMany({
+  async cancelOpenOrders(strategyId: string, reason?: string): Promise<number> {
+    // Fetch orders first so we can create audit logs
+    const orders = await this.prisma.order.findMany({
       where: {
         strategyId,
         status: { in: ["PENDING", "SUBMITTED"] },
       },
-      data: {
-        status: "CANCELLED",
-        cancelledAt: new Date(),
-      },
     });
 
-    return result.count;
+    // Cancel each order individually with audit log
+    let cancelledCount = 0;
+    for (const order of orders) {
+      const oldStatus = order.status;
+
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+        },
+      });
+
+      // Create audit log
+      await this.createAuditLog({
+        orderId: order.id,
+        brokerOrderId: order.brokerOrderId ?? undefined,
+        strategyId: order.strategyId,
+        eventType: 'CANCELLED',
+        oldStatus,
+        newStatus: 'CANCELLED',
+        quantity: order.qty,
+        metadata: {
+          source: 'bulk_cancellation',
+          reason: reason || 'Bulk cancellation',
+          symbol: order.symbol,
+          planId: order.planId,
+        },
+      });
+
+      cancelledCount++;
+    }
+
+    return cancelledCount;
   }
 
   /**

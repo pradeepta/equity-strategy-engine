@@ -127,6 +127,7 @@ export class LiveTradingOrchestrator {
     // Initialize reconciliation service
     this.reconciliationService = new BrokerReconciliationService(
       this.repositoryFactory.getOrderRepo(),
+      this.repositoryFactory.getStrategyRepo(),
       this.alertService,
       this.repositoryFactory.getSystemLogRepo()
     );
@@ -156,6 +157,7 @@ export class LiveTradingOrchestrator {
       config.brokerAdapter,
       config.brokerEnv,
       strategyRepo,
+      execHistoryRepo,  // Pass execution history repository
       this.barCacheService  // Pass bar cache service
     );
 
@@ -702,8 +704,11 @@ export class LiveTradingOrchestrator {
       // Load strategy
       await this.multiStrategyManager.loadStrategy(strategy.id);
 
-      // Mark as active
+      // Mark as active (creates strategy audit log)
       await this.repositoryFactory.getStrategyRepo().activate(strategy.id);
+
+      // Log activation to execution history
+      await this.repositoryFactory.getExecutionHistoryRepo().logActivation(strategy.id);
 
       logger.info(`✓ Successfully loaded strategy ${strategy.name}`);
 

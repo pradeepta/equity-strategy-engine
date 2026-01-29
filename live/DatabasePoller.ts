@@ -93,6 +93,12 @@ export class DatabasePoller {
 
       // Check for new strategies we haven't seen before (or that were closed and reopened)
       for (const strategy of pendingStrategies) {
+        // Skip MANUAL strategies (auto-generated for orphaned order import)
+        if (strategy.isManual) {
+          console.log(`⏭️  Skipping MANUAL strategy: ${strategy.name} (never executed by orchestrator)`);
+          continue;
+        }
+
         if (!this.knownStrategies.has(strategy.id)) {
           console.log(`📋 New strategy detected: ${strategy.name} (${strategy.symbol})`);
           this.knownStrategies.add(strategy.id);

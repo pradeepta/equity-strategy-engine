@@ -6,8 +6,10 @@
 import { BaseBrokerAdapter } from '../../broker/broker';
 import { Order, BrokerEnvironment } from '../../spec/types';
 import { OrderRepository } from '../../database/repositories/OrderRepository';
+import { StrategyRepository } from '../../database/repositories/StrategyRepository';
 import { SystemLogRepository } from '../../database/repositories/SystemLogRepository';
 import { OrderAlertService } from '../alerts/OrderAlertService';
+import { OrderStatus } from '@prisma/client';
 
 export interface BrokerOrder {
   id: string;
@@ -48,6 +50,7 @@ export class BrokerReconciliationService {
 
   constructor(
     private orderRepo: OrderRepository,
+    private strategyRepo: StrategyRepository,
     private alertService: OrderAlertService,
     private systemLogRepo?: SystemLogRepository
   ) {}
@@ -283,8 +286,8 @@ export class BrokerReconciliationService {
   }
 
   /**
-   * Handle orphaned orders: Auto-cancel them at broker
-   * Per user preference: automatically cancel any orders not tracked in DB
+   * Handle orphaned orders: Import them into database as MANUAL orders
+   * Creates a MANUAL strategy for the symbol and associates orphaned orders with it
    */
   private async handleOrphanedOrders(
     orphanedOrders: BrokerOrder[],
@@ -309,126 +312,130 @@ export class BrokerReconciliationService {
       },
     });
 
-    const cancellable = orphanedOrders.filter((order) => order.type !== 'market');
-    const skipped = orphanedOrders.filter((order) => order.type === 'market');
-
-    if (skipped.length > 0) {
-      console.warn(
-        `⚠️ Skipping auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
-      );
-      report.actionsToken.push(
-        `Skipped auto-cancel for ${skipped.length} orphaned MARKET order(s) for ${symbol}`
-      );
-      await this.systemLogRepo?.create({
-        level: 'WARN',
-        component: 'BrokerReconciliationService',
-        message: `Skipped auto-cancel for orphaned MARKET orders for ${symbol}`,
-        metadata: {
-          symbol,
-          orderIds: skipped.map(o => o.id),
-        },
-      });
-    }
-
-    if (cancellable.length === 0) {
-      return;
-    }
-
-    // 🚨 CIRCUIT BREAKER CHECK: Prevent runaway cancellations
-    if (this.checkCircuitBreaker(cancellable.length)) {
-      const errorMsg = `Circuit breaker tripped - refusing to auto-cancel ${cancellable.length} orders for ${symbol}. Manual intervention required.`;
-      console.error(`🚨 ${errorMsg}`);
-      report.actionsToken.push(errorMsg);
-
-      await this.systemLogRepo?.create({
-        level: 'ERROR',
-        component: 'BrokerReconciliationService',
-        message: 'Circuit breaker tripped - auto-cancel disabled',
-        metadata: {
-          symbol,
-          proposedCancellations: cancellable.length,
-          orderIds: cancellable.map(o => o.id),
-          cancellationHistoryCount: this.cancellationHistory.length,
-          threshold: this.MAX_CANCELLATIONS_PER_HOUR,
-        },
-      });
-
-      await this.alertService.alertReconciliationFailure(symbol, {
-        type: 'circuit_breaker_tripped',
-        count: cancellable.length,
-        orderIds: cancellable.map(o => o.id),
-      });
-
-      return; // Exit without canceling
-    }
-
-    // Auto-cancel orphaned orders (per user preference)
-    console.log(`🔨 Auto-canceling ${cancellable.length} orphaned orders for ${symbol}...`);
+    console.log(`📥 Importing ${orphanedOrders.length} orphaned orders for ${symbol} into database...`);
 
     try {
-      // Convert BrokerOrder to Order format for cancellation
-      const ordersToCancel: Order[] = cancellable.map(bo => ({
-        id: bo.id,
-        planId: 'unknown',
-        symbol: bo.symbol,
-        side: bo.side,
-        qty: bo.qty,
-        type: bo.type,
-        status: 'pending',
-      }));
+      // Get or create MANUAL strategy for this symbol
+      const userId = process.env.USER_ID || process.env.SYSTEM_USER_ID || '1';
+      // Don't pass accountId for MANUAL strategies - they're not associated with any account
+      // (avoids FK constraint errors when TWS_ACCOUNT_ID is invalid or doesn't exist in DB)
 
-      const cancelResult = await brokerAdapter.cancelOpenEntries(
+      const manualStrategy = await this.strategyRepo.getOrCreateManualStrategy({
         symbol,
-        ordersToCancel,
-        brokerEnv
-      );
+        userId,
+        accountId: undefined, // MANUAL strategies don't need account association
+      });
 
-      if (cancelResult.succeeded.length > 0) {
-        console.log(`✓ Cancelled ${cancelResult.succeeded.length} orphaned orders for ${symbol}`);
+      let importedCount = 0;
+      let failedCount = 0;
+
+      // Import each orphaned order
+      for (const orphanedOrder of orphanedOrders) {
+        try {
+          // Check if order already exists in database (prevent duplicates)
+          const existing = await this.orderRepo.findByBrokerOrderId(orphanedOrder.id);
+          if (existing) {
+            console.log(`⏭️  Skipping ${orphanedOrder.id} - already exists in database`);
+            continue;
+          }
+
+          // Create order record
+          const createdOrder = await this.orderRepo.create({
+            brokerOrderId: orphanedOrder.id,
+            strategyId: manualStrategy.id,
+            planId: `manual:imported:${orphanedOrder.id}`, // Unique plan ID for imported orders
+            symbol: orphanedOrder.symbol,
+            side: orphanedOrder.side.toUpperCase() as 'BUY' | 'SELL',
+            qty: orphanedOrder.qty,
+            type: orphanedOrder.type.toUpperCase() as 'LIMIT' | 'MARKET' | 'STOP',
+          });
+
+          // Update status to match TWS status
+          const dbStatus = this.mapTWSStatusToDB(orphanedOrder.status);
+          if (dbStatus !== 'PENDING') {
+            await this.orderRepo.updateStatus(createdOrder.id, dbStatus as OrderStatus);
+          }
+
+          // Create audit log entry
+          await this.orderRepo.createAuditLog({
+            orderId: createdOrder.id,
+            brokerOrderId: orphanedOrder.id,
+            strategyId: manualStrategy.id,
+            eventType: 'RECONCILED',
+            newStatus: dbStatus as any,
+            metadata: {
+              reason: 'Reconciliation imported orphaned order from TWS',
+              source: 'manual_trading',
+              manualStrategyId: manualStrategy.id,
+              originalTWSStatus: orphanedOrder.status,
+            },
+          });
+
+          importedCount++;
+          console.log(`✓ Imported order ${orphanedOrder.id} (${orphanedOrder.side} ${orphanedOrder.qty} ${orphanedOrder.symbol})`);
+        } catch (error) {
+          failedCount++;
+          console.error(`✗ Failed to import order ${orphanedOrder.id}:`, error);
+        }
+      }
+
+      // Report results
+      if (importedCount > 0) {
+        console.log(`✓ Successfully imported ${importedCount} orphaned orders for ${symbol} into MANUAL_${symbol} strategy`);
         report.actionsToken.push(
-          `Cancelled ${cancelResult.succeeded.length} orphaned orders for ${symbol}`
+          `Imported ${importedCount} orphaned orders for ${symbol} into MANUAL strategy`
         );
 
-        // Record cancellations for circuit breaker
-        this.recordCancellations(cancelResult.succeeded.length);
-
-        // Alert about successful cancellation
-        await this.alertService.alertOrphanedOrder(
-          symbol,
-          cancelResult.succeeded,
-          'cancelled'
-        );
         await this.systemLogRepo?.create({
           level: 'INFO',
           component: 'BrokerReconciliationService',
-          message: `Cancelled orphaned orders for ${symbol}`,
+          message: `Imported orphaned orders for ${symbol}`,
           metadata: {
             symbol,
-            orderIds: cancelResult.succeeded,
+            importedCount,
+            manualStrategyId: manualStrategy.id,
+            manualStrategyName: manualStrategy.name,
           },
         });
       }
 
-      if (cancelResult.failed.length > 0) {
-        console.error(`✗ Failed to cancel ${cancelResult.failed.length} orphaned orders for ${symbol}`);
+      if (failedCount > 0) {
+        console.error(`✗ Failed to import ${failedCount} orphaned orders for ${symbol}`);
         report.actionsToken.push(
-          `Failed to cancel ${cancelResult.failed.length} orphaned orders for ${symbol}: ` +
-          cancelResult.failed.map(f => `${f.orderId}(${f.reason})`).join(', ')
+          `Failed to import ${failedCount} orphaned orders for ${symbol}`
         );
       }
     } catch (error) {
-      console.error(`Failed to cancel orphaned orders for ${symbol}:`, error);
-      report.actionsToken.push(`Failed to cancel orphaned orders for ${symbol}: ${error}`);
+      console.error(`Failed to import orphaned orders for ${symbol}:`, error);
+      report.actionsToken.push(`Failed to import orphaned orders for ${symbol}: ${error}`);
       await this.systemLogRepo?.create({
         level: 'ERROR',
         component: 'BrokerReconciliationService',
-        message: `Failed to cancel orphaned orders for ${symbol}`,
+        message: `Failed to import orphaned orders for ${symbol}`,
         metadata: {
           symbol,
           error: String(error),
         },
       });
     }
+  }
+
+  /**
+   * Map TWS order status to database order status
+   */
+  private mapTWSStatusToDB(twsStatus: string): string {
+    const statusMap: Record<string, string> = {
+      'PreSubmitted': 'PENDING',
+      'Submitted': 'SUBMITTED',
+      'Filled': 'FILLED',
+      'PartiallyFilled': 'PARTIALLY_FILLED',
+      'Cancelled': 'CANCELLED',
+      'PendingCancel': 'PENDING',
+      'ApiCancelled': 'CANCELLED',
+      'Inactive': 'CANCELLED',
+    };
+
+    return statusMap[twsStatus] || 'SUBMITTED';
   }
 
   /**

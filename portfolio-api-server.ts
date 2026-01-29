@@ -760,6 +760,50 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     } else if (pathname === '/api/portfolio/stats') {
       const orderStats = await getOrderStats();
       sendJSON(res, { orderStats });
+    } else if (pathname === '/api/portfolio/tws-snapshot') {
+      // GET /api/portfolio/tws-snapshot?force_refresh=true - Get live TWS portfolio snapshot
+      const forceRefresh = url.searchParams.get('force_refresh') === 'true';
+
+      try {
+        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+        const twsHost = process.env.TWS_HOST || '127.0.0.1';
+        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+        const clientId = 5; // Client ID 5 for dashboard portfolio queries
+
+        const fetcher = new PortfolioDataFetcher(twsHost, twsPort, clientId);
+        await fetcher.connect();
+        const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
+        await fetcher.disconnect();
+
+        sendJSON(res, {
+          success: true,
+          snapshot: {
+            accountId: snapshot.accountId,
+            totalValue: snapshot.totalValue,
+            cash: snapshot.cash,
+            buyingPower: snapshot.buyingPower,
+            unrealizedPnL: snapshot.unrealizedPnL,
+            realizedPnL: snapshot.realizedPnL,
+            positions: snapshot.positions.map(pos => ({
+              symbol: pos.symbol,
+              quantity: pos.quantity,
+              avgCost: pos.avgCost,
+              currentPrice: pos.currentPrice,
+              marketValue: pos.marketValue,
+              unrealizedPnL: pos.unrealizedPnL,
+            })),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error: any) {
+        console.error('[portfolio-api] Failed to fetch TWS snapshot:', error);
+        sendJSON(res, {
+          success: false,
+          error: 'Failed to fetch TWS portfolio snapshot',
+          message: error.message,
+          note: 'Make sure TWS/IB Gateway is running and connected',
+        }, 500);
+      }
     } else if (pathname === '/api/logs') {
       // Get system logs with filters
       const params = {
@@ -1994,6 +2038,7 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategies - Strategy performance metrics`);
   console.log(`  GET /api/portfolio/trades?limit=20 - Recent trades`);
   console.log(`  GET /api/portfolio/stats - Order statistics`);
+  console.log(`  GET /api/portfolio/tws-snapshot?force_refresh=true - Live TWS portfolio snapshot`);
   console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
   console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
   console.log(`  GET /api/logs/stats - Log statistics`);

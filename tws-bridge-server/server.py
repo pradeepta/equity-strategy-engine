@@ -43,6 +43,10 @@ logging.basicConfig(
     ]
 )
 
+# Suppress noisy IB API wrapper logs
+logging.getLogger('ibapi.wrapper').setLevel(logging.CRITICAL)  # Only show critical errors
+logging.getLogger('ibapi.client').setLevel(logging.WARNING)    # Reduce client noise
+
 logger = logging.getLogger(__name__)
 
 

@@ -15,6 +15,8 @@ const API_BASE = "http://localhost:3002";
  */
 export function Dashboard() {
   const [portfolioData, setPortfolioData] = useState<any>(null);
+  const [twsData, setTwsData] = useState<any>(null);
+  const [twsError, setTwsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,6 +25,11 @@ export function Dashboard() {
     useState<string>("ALL");
   const [tradeStatusFilter, setTradeStatusFilter] = useState<string>("ALL");
   const [symbolFilter, setSymbolFilter] = useState<string>("");
+  // Date filter defaults to today
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const today = new Date();
+    return today.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+  });
 
   // Modal states
   const [selectedStrategy, setSelectedStrategy] = useState<any>(null);
@@ -75,6 +82,34 @@ export function Dashboard() {
 
     fetchData();
     const interval = setInterval(fetchData, 10000); // Refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch TWS snapshot data separately
+  useEffect(() => {
+    const fetchTWSData = async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/portfolio/tws-snapshot?force_refresh=false`,
+        );
+        if (!response.ok) {
+          throw new Error("Failed to fetch TWS data");
+        }
+        const data = await response.json();
+        if (data.success) {
+          setTwsData(data.snapshot);
+          setTwsError(null);
+        } else {
+          setTwsError(data.message || "TWS connection failed");
+        }
+      } catch (err: any) {
+        setTwsError(err.message || "Failed to connect to TWS");
+        console.error("TWS fetch error:", err);
+      }
+    };
+
+    fetchTWSData();
+    const interval = setInterval(fetchTWSData, 10000); // Refresh every 10s
     return () => clearInterval(interval);
   }, []);
 
@@ -409,7 +444,33 @@ export function Dashboard() {
       const matchesSymbol =
         !symbolFilter ||
         strategy.symbol.toLowerCase().includes(symbolFilter.toLowerCase());
-      return matchesStatus && matchesSymbol;
+
+      // Date filter: check if strategy was active on the selected date
+      let matchesDate = true;
+      if (selectedDate) {
+        const filterDate = new Date(selectedDate);
+        filterDate.setHours(0, 0, 0, 0);
+        const filterDateEnd = new Date(selectedDate);
+        filterDateEnd.setHours(23, 59, 59, 999);
+
+        // Check if strategy was activated before or on the selected date
+        const activatedAt = strategy.activatedAt ? new Date(strategy.activatedAt) : null;
+        const closedAt = strategy.closedAt ? new Date(strategy.closedAt) : null;
+        const createdAt = strategy.createdAt ? new Date(strategy.createdAt) : null;
+
+        // Strategy should have been created/activated by the selected date
+        const wasActiveByDate = Boolean(
+          (activatedAt && activatedAt <= filterDateEnd) ||
+          (createdAt && createdAt <= filterDateEnd)
+        );
+
+        // Strategy should not have been closed before the selected date
+        const wasNotClosedYet = !closedAt || closedAt >= filterDate;
+
+        matchesDate = wasActiveByDate && wasNotClosedYet;
+      }
+
+      return matchesStatus && matchesSymbol && matchesDate;
     }) || [];
 
   const getStrategyTimestamp = (strategy: any) => {
@@ -504,64 +565,344 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* P&L Summary */}
+      {/* Portfolio Reconciliation: Database vs TWS */}
       <div className="dashboard-section">
-        <h2 className="dashboard-title">Portfolio Summary</h2>
-        <div className="dashboard-cards">
-          <div className="dashboard-card">
-            <div className="card-label">Realized P&L</div>
-            <div
-              className={`card-value ${(pnl?.realizedPnL || 0) >= 0 ? "positive" : "negative"}`}
+        <h2 className="dashboard-title">
+          Portfolio Reconciliation
+          {twsError && (
+            <span
+              style={{
+                fontSize: "14px",
+                color: "#f55036",
+                marginLeft: "12px",
+                fontWeight: "normal",
+              }}
             >
-              ${pnl?.realizedPnL?.toFixed(2) || "0.00"}
+              ⚠️ TWS: {twsError}
+            </span>
+          )}
+        </h2>
+
+        <div style={{ marginBottom: "24px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "16px",
+              marginBottom: "16px",
+            }}
+          >
+            {/* Database Column */}
+            <div>
+              <h3
+                style={{
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  marginBottom: "12px",
+                  color: "#737373",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                📊 Database (Internal Records)
+              </h3>
+              <div className="dashboard-cards">
+                <div className="dashboard-card">
+                  <div className="card-label">Realized P&L</div>
+                  <div
+                    className={`card-value ${(pnl?.realizedPnL || 0) >= 0 ? "positive" : "negative"}`}
+                  >
+                    ${pnl?.realizedPnL?.toFixed(2) || "0.00"}
+                  </div>
+                </div>
+                <div className="dashboard-card">
+                  <div className="card-label">Open Positions</div>
+                  <div className="card-value">{pnl?.totalPositions || 0}</div>
+                </div>
+                <div className="dashboard-card">
+                  <div className="card-label">Active Strategies</div>
+                  <div className="card-value">
+                    {strategies?.filter((s: any) => s.status === "ACTIVE")
+                      .length || 0}
+                  </div>
+                </div>
+                <div className="dashboard-card">
+                  <div className="card-label">Total Orders</div>
+                  <div className="card-value">
+                    {Object.values(orderStats || {}).reduce(
+                      (a: number, b: unknown) => a + (b as number),
+                      0,
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="dashboard-card">
-            <div className="card-label">Open Positions</div>
-            <div className="card-value">{pnl?.totalPositions || 0}</div>
-          </div>
-          <div className="dashboard-card">
-            <div className="card-label">Active Strategies</div>
-            <div className="card-value">
-              {strategies?.filter((s: any) => s.status === "ACTIVE").length ||
-                0}
-            </div>
-          </div>
-          <div className="dashboard-card">
-            <div className="card-label">Total Orders</div>
-            <div className="card-value">
-              {Object.values(orderStats || {}).reduce(
-                (a: number, b: unknown) => a + (b as number),
-                0,
+
+            {/* TWS Column */}
+            <div>
+              <h3
+                style={{
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  marginBottom: "12px",
+                  color: "#737373",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                🔴 TWS (Live Broker)
+              </h3>
+              {twsData ? (
+                <div className="dashboard-cards">
+                  <div className="dashboard-card">
+                    <div className="card-label">Realized P&L</div>
+                    <div
+                      className={`card-value ${(twsData.realizedPnL || 0) >= 0 ? "positive" : "negative"}`}
+                      style={{
+                        fontWeight: Math.abs((pnl?.realizedPnL || 0) - (twsData.realizedPnL || 0)) > 0.01 ? "700" : undefined,
+                        color: Math.abs((pnl?.realizedPnL || 0) - (twsData.realizedPnL || 0)) > 0.01 ? "#f55036" : undefined,
+                      }}
+                    >
+                      ${twsData.realizedPnL?.toFixed(2) || "0.00"}
+                    </div>
+                  </div>
+                  <div className="dashboard-card">
+                    <div className="card-label">Account Value</div>
+                    <div className="card-value">
+                      ${twsData.totalValue?.toFixed(2) || "0.00"}
+                    </div>
+                  </div>
+                  <div className="dashboard-card">
+                    <div className="card-label">Unrealized P&L</div>
+                    <div
+                      className={`card-value ${(twsData.unrealizedPnL || 0) >= 0 ? "positive" : "negative"}`}
+                    >
+                      ${twsData.unrealizedPnL?.toFixed(2) || "0.00"}
+                    </div>
+                  </div>
+                  <div className="dashboard-card">
+                    <div className="card-label">Buying Power</div>
+                    <div className="card-value">
+                      ${twsData.buyingPower?.toFixed(2) || "0.00"}
+                    </div>
+                  </div>
+                  <div className="dashboard-card">
+                    <div className="card-label">Cash</div>
+                    <div
+                      className={`card-value ${(twsData.cash || 0) >= 0 ? "positive" : "negative"}`}
+                    >
+                      ${twsData.cash?.toFixed(2) || "0.00"}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    padding: "24px",
+                    textAlign: "center",
+                    color: "#999",
+                    background: "#faf8f5",
+                    borderRadius: "8px",
+                    border: "1px solid #ebe6dd",
+                  }}
+                >
+                  {twsError
+                    ? "TWS connection unavailable"
+                    : "Loading TWS data..."}
+                </div>
               )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Current Positions */}
-      {pnl?.currentPositions && pnl.currentPositions.length > 0 && (
+      {/* Position Reconciliation */}
+      {((pnl?.currentPositions && pnl.currentPositions.length > 0) ||
+        (twsData?.positions && twsData.positions.length > 0)) && (
         <div className="dashboard-section">
-          <h2 className="dashboard-title">Current Positions</h2>
+          <h2 className="dashboard-title">Position Reconciliation</h2>
           <div className="dashboard-table">
             <table>
               <thead>
                 <tr>
                   <th>Symbol</th>
-                  <th>Quantity</th>
-                  <th>Avg Price</th>
+                  <th>DB Qty</th>
+                  <th>TWS Qty</th>
+                  <th>DB Avg Price</th>
+                  <th>TWS Avg Cost</th>
+                  <th>TWS Current Price</th>
+                  <th>TWS Market Value</th>
+                  <th>TWS Unrealized P&L</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {pnl.currentPositions.map((pos: any, idx: number) => (
-                  <tr key={idx}>
-                    <td className="symbol-cell">{pos.symbol}</td>
-                    <td>{pos.qty}</td>
-                    <td>${pos.avgPrice.toFixed(2)}</td>
-                  </tr>
-                ))}
+                {(() => {
+                  // Create a map of all symbols from both sources
+                  const allSymbols = new Set<string>();
+                  pnl?.currentPositions?.forEach((p: any) =>
+                    allSymbols.add(p.symbol),
+                  );
+                  twsData?.positions?.forEach((p: any) =>
+                    allSymbols.add(p.symbol),
+                  );
+
+                  return Array.from(allSymbols)
+                    .map((symbol) => {
+                      const dbPos = pnl?.currentPositions?.find(
+                        (p: any) => p.symbol === symbol,
+                      );
+                      const twsPos = twsData?.positions?.find(
+                        (p: any) => p.symbol === symbol,
+                      );
+
+                      const dbQty = dbPos?.qty || 0;
+                      const twsQty = twsPos?.quantity || 0;
+
+                      // Skip symbols with no positions in either system
+                      if (dbQty === 0 && twsQty === 0) {
+                        return null;
+                      }
+
+                      const qtyMismatch = Math.abs(dbQty - twsQty) > 0.01;
+
+                      const dbAvgPrice = dbPos?.avgPrice || 0;
+                      const twsAvgCost = twsPos?.avgCost || 0;
+                      const priceMismatch =
+                        dbAvgPrice > 0 &&
+                        twsAvgCost > 0 &&
+                        Math.abs(dbAvgPrice - twsAvgCost) > 0.01;
+
+                      const hasMismatch = qtyMismatch || priceMismatch;
+                      // Only flag as missing if there's actually a non-zero position
+                      const missingInDB = twsQty > 0 && dbQty === 0;
+                      const missingInTWS = dbQty > 0 && twsQty === 0;
+
+                    return (
+                      <tr
+                        key={symbol}
+                        style={{
+                          backgroundColor: hasMismatch
+                            ? "rgba(245, 80, 54, 0.05)"
+                            : undefined,
+                        }}
+                      >
+                        <td className="symbol-cell">{symbol}</td>
+                        <td
+                          style={{
+                            color: missingInDB
+                              ? "#f55036"
+                              : qtyMismatch
+                                ? "#f55036"
+                                : undefined,
+                            fontWeight: qtyMismatch ? "600" : undefined,
+                          }}
+                        >
+                          {dbQty > 0 ? dbQty : missingInDB ? "-" : "0"}
+                        </td>
+                        <td
+                          style={{
+                            color: missingInTWS
+                              ? "#f55036"
+                              : qtyMismatch
+                                ? "#f55036"
+                                : undefined,
+                            fontWeight: qtyMismatch ? "600" : undefined,
+                          }}
+                        >
+                          {twsQty > 0 ? twsQty : missingInTWS ? "-" : "0"}
+                        </td>
+                        <td
+                          style={{
+                            color: priceMismatch ? "#f55036" : undefined,
+                            fontWeight: priceMismatch ? "600" : undefined,
+                          }}
+                        >
+                          {dbAvgPrice > 0
+                            ? `$${dbAvgPrice.toFixed(2)}`
+                            : "-"}
+                        </td>
+                        <td
+                          style={{
+                            color: priceMismatch ? "#f55036" : undefined,
+                            fontWeight: priceMismatch ? "600" : undefined,
+                          }}
+                        >
+                          {twsAvgCost > 0
+                            ? `$${twsAvgCost.toFixed(2)}`
+                            : "-"}
+                        </td>
+                        <td>
+                          {twsPos?.currentPrice
+                            ? `$${twsPos.currentPrice.toFixed(2)}`
+                            : "-"}
+                        </td>
+                        <td>
+                          {twsPos?.marketValue
+                            ? `$${twsPos.marketValue.toFixed(2)}`
+                            : "-"}
+                        </td>
+                        <td
+                          className={
+                            twsPos?.unrealizedPnL
+                              ? twsPos.unrealizedPnL >= 0
+                                ? "positive"
+                                : "negative"
+                              : ""
+                          }
+                        >
+                          {twsPos?.unrealizedPnL
+                            ? `$${twsPos.unrealizedPnL.toFixed(2)}`
+                            : "-"}
+                        </td>
+                        <td>
+                          {missingInDB ? (
+                            <span style={{ color: "#f55036", fontSize: "14px" }}>
+                              ⚠️ In TWS, not tracked in database (acquired outside system)
+                            </span>
+                          ) : missingInTWS ? (
+                            <span style={{ color: "#f55036", fontSize: "14px" }}>
+                              ⚠️ In database, missing from TWS (closed outside system?)
+                            </span>
+                          ) : hasMismatch ? (
+                            <span style={{ color: "#f55036", fontSize: "14px" }}>
+                              ⚠️ Quantity/price mismatch (DB: {dbQty} @ ${dbAvgPrice.toFixed(2)}, TWS: {twsQty} @ ${twsAvgCost.toFixed(2)})
+                            </span>
+                          ) : (
+                            <span style={{ color: "#10b981", fontSize: "14px" }}>
+                              ✓ Synced
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                  .filter((row) => row !== null); // Remove symbols with no positions
+                })()}
               </tbody>
             </table>
+          </div>
+
+          {/* Reconciliation Summary */}
+          <div
+            style={{
+              marginTop: "16px",
+              padding: "12px 16px",
+              background: "#faf8f5",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#666",
+            }}
+          >
+            <strong>Legend:</strong>
+            <span style={{ marginLeft: "16px" }}>
+              <span style={{ color: "#10b981", fontSize: "18px" }}>✓</span> =
+              Match
+            </span>
+            <span style={{ marginLeft: "16px" }}>
+              <span style={{ color: "#f55036", fontSize: "18px" }}>⚠️</span> =
+              Discrepancy (red highlight)
+            </span>
           </div>
         </div>
       )}
@@ -590,6 +931,33 @@ export function Dashboard() {
                 <option value="DRAFT">Draft</option>
                 <option value="PENDING">Pending</option>
               </select>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="filter-input"
+                style={{ width: "150px" }}
+                title="Filter by date"
+              />
+              {selectedDate && (
+                <button
+                  onClick={() => setSelectedDate("")}
+                  className="filter-clear-button"
+                  title="Clear date filter"
+                  style={{
+                    padding: "6px 12px",
+                    background: "#f55036",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "14px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Clear Date
+                </button>
+              )}
             </div>
           </div>
           <div className="dashboard-table-container">

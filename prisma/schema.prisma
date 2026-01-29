@@ -106,6 +106,7 @@ model Strategy {
   // Status
   status            StrategyStatus    @default(DRAFT)
   runtimeState      String?           // FSM state: IDLE, ARMED, PLACED, MANAGING, EXITED (set by orchestrator)
+  isManual          Boolean           @default(false) // System-generated strategy for manual orders (never executed)
 
   // Metadata extracted from YAML
   description       String?           @db.Text

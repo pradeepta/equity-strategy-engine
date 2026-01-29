@@ -254,10 +254,18 @@ export class StrategyEngine {
     try {
       const result = await this.evaluateCondition(condition);
 
-      // Always log feature values for important events (INVALIDATE, order placement), otherwise only in non-replay mode
+      // Log strategy: Only log successful transitions (TRUE) and important triggers
+      // Suppress verbose FALSE logs (INVALIDATE, ARMED->PLACED failures)
       const isTrigger = label === 'TRIGGER' || label.includes('->PLACED') || label === 'ARMED->PLACED';
       const isInvalidate = label === 'INVALIDATE';
-      const shouldLog = !this.replayMode || isTrigger || isInvalidate;
+
+      // Only log if:
+      // 1. Not in replay mode AND it's a trigger event AND result is TRUE
+      // 2. OR it's TRIGGER (always log TRIGGER even if false for debugging arm state)
+      const shouldLog = !this.replayMode && (
+        (isTrigger && result) ||  // Only log transitions when they succeed
+        (label === 'TRIGGER')     // Always log TRIGGER to see arm attempts
+      );
 
       if (shouldLog) {
         const relevantFeatures = this.extractRelevantFeatures(condition);

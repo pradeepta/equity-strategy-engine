@@ -237,4 +237,70 @@ export class ExecutionHistoryRepository {
       orderBy: { createdAt: 'desc' },
     });
   }
+
+  /**
+   * Log bar processed event (for periodic tracking)
+   */
+  async logBarProcessed(params: {
+    strategyId: string;
+    barTimestamp: Date;
+    currentState: string;
+    currentPrice: number;
+    currentVolume?: bigint;
+    barsProcessed: number;
+    openOrderCount?: number;
+    featuresComputed?: number;
+    transitionsEvaluated?: number;
+  }): Promise<StrategyExecution> {
+    return this.prisma.strategyExecution.create({
+      data: {
+        strategyId: params.strategyId,
+        eventType: 'BAR_PROCESSED',
+        currentState: params.currentState,
+        currentPrice: params.currentPrice,
+        currentVolume: params.currentVolume,
+        barTimestamp: params.barTimestamp,
+        barsProcessed: params.barsProcessed,
+        openOrderCount: params.openOrderCount,
+        metadata: {
+          featuresComputed: params.featuresComputed,
+          transitionsEvaluated: params.transitionsEvaluated,
+        },
+      },
+    });
+  }
+
+  /**
+   * Log state transition event
+   */
+  async logStateTransition(params: {
+    strategyId: string;
+    fromState: string;
+    toState: string;
+    triggerCondition?: string;
+    barTimestamp: Date;
+    currentPrice: number;
+    currentVolume?: bigint;
+    barsProcessed?: number;
+    openOrderCount?: number;
+  }): Promise<StrategyExecution> {
+    return this.prisma.strategyExecution.create({
+      data: {
+        strategyId: params.strategyId,
+        eventType: 'BAR_PROCESSED', // Use BAR_PROCESSED for state transitions
+        currentState: params.toState,
+        currentPrice: params.currentPrice,
+        currentVolume: params.currentVolume,
+        barTimestamp: params.barTimestamp,
+        barsProcessed: params.barsProcessed,
+        openOrderCount: params.openOrderCount,
+        metadata: {
+          stateTransition: true,
+          fromState: params.fromState,
+          toState: params.toState,
+          triggerCondition: params.triggerCondition,
+        },
+      },
+    });
+  }
 }
