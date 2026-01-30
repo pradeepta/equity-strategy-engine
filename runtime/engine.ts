@@ -412,13 +412,16 @@ export class StrategyEngine {
       }
 
       // FIX 3: MANAGING requires broker truth (live orders or position)
-      // Give 1 bar grace period for order submission/tracking
-      if (transition.to === 'MANAGING' && this.state.stateBarCount > 0) {
+      // CRITICAL: Always check, even at stateBarCount=0, to prevent invalid state transitions
+      // This prevents strategies from entering MANAGING when orders fail to submit
+      if (transition.to === 'MANAGING') {
         const hasLiveOrders = this.state.openOrders.length > 0;
         const hasPosition = this.state.positionSize !== 0;
 
         if (!hasLiveOrders && !hasPosition) {
-          this.log('warn', `⛔ Blocked MANAGING transition: no live orders or position after ${this.state.stateBarCount} bars in PLACED (orders: ${this.state.openOrders.length}, position: ${this.state.positionSize})`);
+          if (!this.replayMode) {
+            this.log('warn', `⛔ Blocked MANAGING transition: no live orders or position (bars in PLACED: ${this.state.stateBarCount}, orders: ${this.state.openOrders.length}, position: ${this.state.positionSize})`);
+          }
           continue; // Skip this transition
         }
       }

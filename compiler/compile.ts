@@ -219,11 +219,13 @@ export class StrategyCompiler {
       ],
     });
 
-    // PLACED -> MANAGING: entry filled (stub: assume instant fill for now)
+    // PLACED -> MANAGING: entry filled
+    // Engine safety check enforces that orders/position must exist before allowing this transition
+    // Condition is always true, but engine blocks transition if no orders/position exist
     transitions.push({
       from: 'PLACED',
       to: 'MANAGING',
-      when: { type: 'literal', value: true }, // Simplified: could check order fills
+      when: { type: 'literal', value: true },
       actions: [{ type: 'log', message: 'Entry filled, managing position' }],
     });
 

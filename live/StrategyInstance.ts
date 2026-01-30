@@ -12,6 +12,7 @@ import { Bar, CompiledIR, StrategyRuntimeState, BrokerEnvironment, CancellationR
 import { RealtimeBarClient } from './streaming/RealtimeBarClient';
 import { StrategyRepository } from '../database/repositories/StrategyRepository';
 import { ExecutionHistoryRepository } from '../database/repositories/ExecutionHistoryRepository';
+import { OrderRepository } from '../database/repositories/OrderRepository';
 
 export class StrategyInstance {
   readonly strategyId: string;  // Database ID
@@ -25,6 +26,7 @@ export class StrategyInstance {
   private brokerEnv: BrokerEnvironment;
   private strategyRepo: StrategyRepository;  // For persisting runtime state
   private execHistoryRepo: ExecutionHistoryRepository;  // For logging execution events
+  private orderRepo: OrderRepository;  // For persisting orders
   private ir!: CompiledIR;
   private barsSinceLastEval: number = 0;
   private yamlContent: string;
@@ -36,6 +38,7 @@ export class StrategyInstance {
   private streamingClient: RealtimeBarClient | null = null;  // Real-time bar streaming
   private isStreaming: boolean = false;  // Track streaming state
   private lastStateName: string | null = null;  // Track state changes
+  private persistedOrderIds: Set<string> = new Set();  // Track which orders are persisted
 
   constructor(
     strategyId: string,
@@ -47,6 +50,7 @@ export class StrategyInstance {
     brokerEnv: BrokerEnvironment,
     strategyRepo: StrategyRepository,
     execHistoryRepo: ExecutionHistoryRepository,
+    orderRepo: OrderRepository,
     activatedAt?: Date  // Optional - defaults to now
   ) {
     this.strategyId = strategyId;
@@ -58,6 +62,7 @@ export class StrategyInstance {
     this.brokerEnv = brokerEnv;
     this.strategyRepo = strategyRepo;
     this.execHistoryRepo = execHistoryRepo;
+    this.orderRepo = orderRepo;
     this.activatedAt = activatedAt || new Date();
 
     // Create compiler with standard registry
@@ -198,6 +203,51 @@ export class StrategyInstance {
             console.error(`[${this.symbol}] Failed to log terminal state audit:`, error);
           }
         }
+      }
+
+      // Persist any new orders to database (after state transitions)
+      await this.persistNewOrders(currentState);
+    }
+  }
+
+  /**
+   * Persist orders that haven't been saved to database yet
+   */
+  private async persistNewOrders(state: StrategyRuntimeState): Promise<void> {
+    const newOrders = state.openOrders.filter(order => !this.persistedOrderIds.has(order.id));
+
+    if (newOrders.length === 0) {
+      return;
+    }
+
+    console.log(`[${this.symbol}] Persisting ${newOrders.length} new order(s) to database`);
+
+    for (const order of newOrders) {
+      try {
+        await this.orderRepo.create({
+          brokerOrderId: order.brokerOrderId || order.id,
+          planId: order.planId,
+          strategyId: this.strategyId,
+          symbol: order.symbol,
+          side: order.side.toUpperCase() as any, // Map 'buy' → 'BUY', 'sell' → 'SELL'
+          qty: order.qty,
+          type: order.type.toUpperCase() as any, // Map 'limit' → 'LIMIT', 'market' → 'MARKET'
+          limitPrice: order.limitPrice,
+          stopPrice: order.stopPrice,
+        });
+
+        // Create audit log entry for order submission
+        await this.orderRepo.createAuditLog({
+          brokerOrderId: order.brokerOrderId || order.id,
+          strategyId: this.strategyId,
+          eventType: 'SUBMITTED',
+        });
+
+        this.persistedOrderIds.add(order.id);
+        console.log(`[${this.symbol}] ✓ Persisted order ${order.id} (${order.side} ${order.qty} @ ${order.type})`);
+      } catch (error) {
+        console.error(`[${this.symbol}] Failed to persist order ${order.id}:`, error);
+        // Don't fail bar processing if order persistence fails
       }
     }
   }

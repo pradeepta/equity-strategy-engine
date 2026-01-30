@@ -279,4 +279,5 @@ export interface BrokerEnvironment {
     message: string;
     metadata?: Record<string, unknown>;
   }) => void;
+  persistOrder?: (order: Order, strategyId: string) => Promise<void>;
 }

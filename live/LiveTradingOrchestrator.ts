@@ -158,6 +158,7 @@ export class LiveTradingOrchestrator {
       config.brokerEnv,
       strategyRepo,
       execHistoryRepo,  // Pass execution history repository
+      orderRepo,  // Pass order repository for order persistence
       this.barCacheService  // Pass bar cache service
     );
 
