@@ -128,10 +128,13 @@ export class StrategyEngine {
       // Recompute dynamic stop/target levels (if any order plans use expressions)
       this.recomputeDynamicLevels();
 
-      // Freeze *after* levels are computed so the frozen snapshot is up-to-date.
-      // Also ensures deferred freeze-on-startup actually happens.
-      if (this.ir.execution.freezeLevelsOn) {
-        this.checkAndFreezeLevels(this.state.currentState);
+      // Per-bar freeze check (for deferred startup scenarios only)
+      // This handles cases where we restored state with ARMED/PLACED but levels weren't initialized yet.
+      // Transition-time freezing is handled in evaluateTransitions() via checkAndFreezeLevels(transition.to).
+      if (this.ir.execution.freezeLevelsOn && !this.levelsFrozen) {
+        if (this.state.currentState === "ARMED" || this.state.currentState === "PLACED") {
+          this.checkAndFreezeLevels(this.state.currentState);
+        }
       }
 
       // Tick timers
@@ -615,6 +618,17 @@ export class StrategyEngine {
         // FIX 2: Reset state bar counter on state change
         this.state.stateBarCount = 0;
 
+        // FIX 11: Auto-unfreeze when trade cycle ends
+        const endedCycle =
+          (previousState === "MANAGING" && transition.to === "EXITED") ||
+          (previousState === "ARMED" && transition.to === "IDLE") ||
+          (previousState === "PLACED" && transition.to === "IDLE");
+
+        if (endedCycle) {
+          this.levelsFrozen = false;
+          this.log("info", "🔓 Dynamic levels UNFROZEN (cycle ended)");
+        }
+
         // Check if levels should be frozen at this new state
         this.checkAndFreezeLevels(transition.to);
 
@@ -780,6 +794,18 @@ export class StrategyEngine {
       const t1 = plan.brackets?.[0]?.price;
       if (typeof t1 === "number") {
         base.set("t1", t1);
+      }
+    }
+
+    // Detect collisions between features and builtins (features win)
+    // evaluateExpression() checks features first, then builtins (see compiler/expr.ts:168-174)
+    const builtinNames = ["open", "high", "low", "close", "volume", "price"];
+    for (const k of builtinNames) {
+      if (base.has(k)) {
+        this.log(
+          "warn",
+          `⚠️  Rule context collision: "${k}" exists in both features and builtins; feature value will override builtin bar field`,
+        );
       }
     }
 
