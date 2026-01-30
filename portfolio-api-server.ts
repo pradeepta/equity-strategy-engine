@@ -8,6 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import 'dotenv/config';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Pool } from 'pg';
+import PQueue from 'p-queue';
 import WebSocket from 'ws';
 import { BacktestEngine } from './backtest/BacktestEngine';
 import { StrategyCompiler } from './compiler/compile';
@@ -46,6 +47,40 @@ const MAX_CONCURRENT_EVALUATIONS = 5; // Process max 5 strategies at a time in p
 // Hysteresis tracking: require 2 consecutive SWAP recommendations before executing
 // Map<strategyId, swapCandidateCount>
 const swapCandidateCount = new Map<string, number>();
+
+// PQueue instances for auto-swap processing
+let evaluationQueue: PQueue | null = null;
+
+function getEvaluationQueue(): PQueue {
+  if (!evaluationQueue) {
+    evaluationQueue = new PQueue({
+      concurrency: autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1,
+      timeout: 180000, // 3 minutes per strategy evaluation
+      throwOnTimeout: false,
+    });
+
+    // Monitor queue events
+    evaluationQueue.on('active', () => {
+      console.log(`[auto-swap-queue] Working on task. Queue size: ${evaluationQueue!.size}, pending: ${evaluationQueue!.pending}`);
+    });
+
+    evaluationQueue.on('idle', () => {
+      console.log('[auto-swap-queue] Queue is idle (all tasks completed)');
+    });
+
+    evaluationQueue.on('error', (error) => {
+      console.error('[auto-swap-queue] Queue error:', error);
+    });
+  }
+
+  // Update concurrency if mode changed
+  if (evaluationQueue.concurrency !== (autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1)) {
+    evaluationQueue.concurrency = autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1;
+    console.log(`[auto-swap-queue] Concurrency updated to ${evaluationQueue.concurrency}`);
+  }
+
+  return evaluationQueue;
+}
 
 function getBarCacheService(): BarCacheServiceV2 {
   if (!barCacheService) {
@@ -723,34 +758,7 @@ const fetchTradeCheckAnalysis = async (
 };
 
 // Request handler
-// Helper: Process array in batches with concurrency limit
-async function processBatch<T>(
-  items: T[],
-  batchSize: number,
-  processor: (item: T) => Promise<any>
-): Promise<PromiseSettledResult<any>[]> {
-  const results: PromiseSettledResult<any>[] = [];
-
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    console.log(`[auto-swap] Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)} (${batch.length} strategies)`);
-
-    const batchResults = await Promise.allSettled(
-      batch.map(item => processor(item))
-    );
-
-    results.push(...batchResults);
-
-    // Small delay between batches to let other requests process
-    if (i + batchSize < items.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-
-  return results;
-}
-
-// Auto-swap execution function
+// Auto-swap execution function using PQueue
 async function executeAutoSwap() {
   if (isAutoSwapping) {
     console.log('[auto-swap] Skipping - previous cycle still in progress');
@@ -761,8 +769,6 @@ async function executeAutoSwap() {
   console.log(`[auto-swap] Starting evaluation cycle (mode: ${autoSwapParallel ? 'parallel' : 'serial'})`);
 
   try {
-    const factory = getRepositoryFactory();
-
     // Get all active strategies (across all users)
     const activeStrategies = await prisma.strategy.findMany({
       where: {
@@ -779,34 +785,42 @@ async function executeAutoSwap() {
 
     console.log(`[auto-swap] Evaluating ${activeStrategies.length} active strategies...`);
 
-    if (autoSwapParallel) {
-      // Parallel mode: evaluate in batches to avoid overwhelming the server
-      const results = await processBatch(
-        activeStrategies,
-        MAX_CONCURRENT_EVALUATIONS,
-        evaluateAndSwapStrategy
-      );
+    // Get evaluation queue
+    const queue = getEvaluationQueue();
 
-      const succeeded = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      console.log(`[auto-swap] Completed (parallel): ${succeeded} succeeded, ${failed} failed`);
-    } else {
-      // Serial mode: evaluate one at a time
-      let succeeded = 0;
-      let failed = 0;
+    // Clear any existing tasks
+    queue.clear();
 
-      for (const strategy of activeStrategies) {
-        try {
-          await evaluateAndSwapStrategy(strategy);
-          succeeded++;
-        } catch (error: any) {
-          console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
-          failed++;
+    // Add all strategies to queue
+    const tasks = activeStrategies.map((strategy) =>
+      queue.add(
+        async () => {
+          try {
+            await evaluateAndSwapStrategy(strategy);
+            return { success: true, strategyId: strategy.id, name: strategy.name };
+          } catch (error: any) {
+            console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+            return { success: false, strategyId: strategy.id, name: strategy.name, error: error.message };
+          }
+        },
+        {
+          // Higher priority for strategies activated longer ago
+          priority: strategy.activatedAt ? -new Date(strategy.activatedAt).getTime() : 0,
         }
-      }
+      )
+    );
 
-      console.log(`[auto-swap] Completed (serial): ${succeeded} succeeded, ${failed} failed`);
-    }
+    // Wait for all tasks to complete
+    const results = await Promise.allSettled(tasks);
+
+    const succeeded = results.filter(
+      (r) => r.status === 'fulfilled' && r.value && r.value.success
+    ).length;
+    const failed = results.filter(
+      (r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value && !r.value.success)
+    ).length;
+
+    console.log(`[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`);
   } catch (error: any) {
     console.error('[auto-swap] Execution error:', error);
   } finally {
@@ -847,34 +861,42 @@ async function executeAutoSwapSelective(strategyIds?: string[]) {
 
     console.log(`[auto-swap] Evaluating ${activeStrategies.length} selected strategies...`);
 
-    if (autoSwapParallel) {
-      // Parallel mode: evaluate in batches to avoid overwhelming the server
-      const results = await processBatch(
-        activeStrategies,
-        MAX_CONCURRENT_EVALUATIONS,
-        evaluateAndSwapStrategy
-      );
+    // Get evaluation queue
+    const queue = getEvaluationQueue();
 
-      const succeeded = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      console.log(`[auto-swap] Completed (parallel): ${succeeded} succeeded, ${failed} failed`);
-    } else {
-      // Serial mode: evaluate one at a time
-      let succeeded = 0;
-      let failed = 0;
+    // Clear any existing tasks
+    queue.clear();
 
-      for (const strategy of activeStrategies) {
-        try {
-          await evaluateAndSwapStrategy(strategy);
-          succeeded++;
-        } catch (error: any) {
-          console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
-          failed++;
+    // Add all strategies to queue
+    const tasks = activeStrategies.map((strategy) =>
+      queue.add(
+        async () => {
+          try {
+            await evaluateAndSwapStrategy(strategy);
+            return { success: true, strategyId: strategy.id, name: strategy.name };
+          } catch (error: any) {
+            console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+            return { success: false, strategyId: strategy.id, name: strategy.name, error: error.message };
+          }
+        },
+        {
+          // Higher priority for strategies activated longer ago
+          priority: strategy.activatedAt ? -new Date(strategy.activatedAt).getTime() : 0,
         }
-      }
+      )
+    );
 
-      console.log(`[auto-swap] Completed (serial): ${succeeded} succeeded, ${failed} failed`);
-    }
+    // Wait for all tasks to complete
+    const results = await Promise.allSettled(tasks);
+
+    const succeeded = results.filter(
+      (r) => r.status === 'fulfilled' && r.value && r.value.success
+    ).length;
+    const failed = results.filter(
+      (r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value && !r.value.success)
+    ).length;
+
+    console.log(`[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`);
   } catch (error: any) {
     console.error('[auto-swap] Execution error:', error);
   } finally {
