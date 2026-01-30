@@ -278,7 +278,24 @@ export class StrategyEngine {
     }
 
     if (freezeTrigger === "armed" && this.state.currentState === "ARMED") {
-      this.checkAndFreezeLevels("ARMED");
+      // Defer freeze unless plan levels look initialized
+      const plan = this.ir.orderPlans?.[0];
+      const initialized =
+        !!plan &&
+        Array.isArray(plan.entryZone) &&
+        Number.isFinite(plan.entryZone[0]) &&
+        Number.isFinite(plan.entryZone[1]) &&
+        Number.isFinite(plan.stopPrice) &&
+        (plan.brackets?.every((b: any) => Number.isFinite(b.price)) ?? true);
+
+      if (initialized) {
+        this.checkAndFreezeLevels("ARMED");
+      } else {
+        this.log(
+          "debug",
+          "Deferred freeze on startup - plan levels not yet initialized (will freeze on first bar)"
+        );
+      }
     }
 
     if (freezeTrigger === "triggered" && this.state.currentState === "PLACED") {
@@ -319,9 +336,7 @@ export class StrategyEngine {
     }
 
     for (const plan of this.ir.orderPlans) {
-      // Build evaluation context with current features + special "entry" variable
-      const entryPrice = plan.targetEntryPrice; // Use target as proxy until actual fill
-
+      // Build evaluation context with current features
       const context: EvaluationContext = {
         features: new Map(this.state.features),
         builtins: new Map(),
@@ -329,69 +344,7 @@ export class StrategyEngine {
         featureHistory: this.featureHistory,
       };
 
-      // Add "entry" variable (actual entry price)
-      context.features.set("entry", entryPrice);
-
-      // Recompute stop price if expression exists
-      if (plan.stopPriceExpr) {
-        try {
-          const oldStop = plan.stopPrice;
-          const newStop = evaluateExpression(
-            plan.stopPriceExpr,
-            context,
-          ) as number;
-
-          if (Math.abs(newStop - oldStop) > 0.01) {
-            // Changed by more than 1 cent
-            plan.stopPrice = newStop;
-            this.log(
-              "debug",
-              `Dynamic stop updated: ${oldStop.toFixed(2)} → ${newStop.toFixed(
-                2,
-              )} (${plan.name})`,
-            );
-          }
-        } catch (err: any) {
-          this.log(
-            "warn",
-            `Failed to evaluate stop expression for ${plan.name}: ${err.message}`,
-          );
-        }
-      }
-
-      // Recompute target prices if expressions exist
-      for (let i = 0; i < plan.brackets.length; i++) {
-        const bracket = plan.brackets[i];
-        if (bracket.priceExpr) {
-          try {
-            const oldPrice = bracket.price;
-            const newPrice = evaluateExpression(
-              bracket.priceExpr,
-              context,
-            ) as number;
-
-            if (Math.abs(newPrice - oldPrice) > 0.01) {
-              // Changed by more than 1 cent
-              bracket.price = newPrice;
-              this.log(
-                "debug",
-                `Dynamic target ${i + 1} updated: ${oldPrice.toFixed(
-                  2,
-                )} → ${newPrice.toFixed(2)} (${plan.name})`,
-              );
-            }
-          } catch (err: any) {
-            this.log(
-              "warn",
-              `Failed to evaluate target ${i + 1} expression for ${
-                plan.name
-              }: ${err.message}`,
-            );
-          }
-        }
-      }
-
-      // Recompute entry zone if expressions exist
+      // 1) Recompute entry zone FIRST (may update targetEntryPrice)
       if (plan.entryZoneExpr) {
         let needsUpdate = false;
         const oldZone = [...plan.entryZone];
@@ -447,6 +400,68 @@ export class StrategyEngine {
               2,
             )}, ${plan.entryZone[1].toFixed(2)}] (${plan.name})`,
           );
+        }
+      }
+
+      // 2) Now set "entry" variable using updated targetEntryPrice
+      context.features.set("entry", plan.targetEntryPrice);
+
+      // 3) Recompute stop price if expression exists
+      if (plan.stopPriceExpr) {
+        try {
+          const oldStop = plan.stopPrice;
+          const newStop = evaluateExpression(
+            plan.stopPriceExpr,
+            context,
+          ) as number;
+
+          if (Math.abs(newStop - oldStop) > 0.01) {
+            // Changed by more than 1 cent
+            plan.stopPrice = newStop;
+            this.log(
+              "debug",
+              `Dynamic stop updated: ${oldStop.toFixed(2)} → ${newStop.toFixed(
+                2,
+              )} (${plan.name})`,
+            );
+          }
+        } catch (err: any) {
+          this.log(
+            "warn",
+            `Failed to evaluate stop expression for ${plan.name}: ${err.message}`,
+          );
+        }
+      }
+
+      // 4) Recompute target prices if expressions exist
+      for (let i = 0; i < plan.brackets.length; i++) {
+        const bracket = plan.brackets[i];
+        if (bracket.priceExpr) {
+          try {
+            const oldPrice = bracket.price;
+            const newPrice = evaluateExpression(
+              bracket.priceExpr,
+              context,
+            ) as number;
+
+            if (Math.abs(newPrice - oldPrice) > 0.01) {
+              // Changed by more than 1 cent
+              bracket.price = newPrice;
+              this.log(
+                "debug",
+                `Dynamic target ${i + 1} updated: ${oldPrice.toFixed(
+                  2,
+                )} → ${newPrice.toFixed(2)} (${plan.name})`,
+              );
+            }
+          } catch (err: any) {
+            this.log(
+              "warn",
+              `Failed to evaluate target ${i + 1} expression for ${
+                plan.name
+              }: ${err.message}`,
+            );
+          }
         }
       }
     }
