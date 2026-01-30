@@ -84,7 +84,7 @@ export class StrategyInstance {
 
       // Create engine
       const featureRegistry = createStandardRegistry();
-      this.engine = new StrategyEngine(this.ir, featureRegistry, this.brokerAdapter, this.brokerEnv);
+      this.engine = new StrategyEngine(this.ir, featureRegistry, this.brokerAdapter, this.brokerEnv, this.strategyId);
 
       this.initialized = true;
       console.log(`✓ Initialized strategy: ${this.strategyName} for ${this.symbol} (ID: ${this.strategyId})`);
@@ -224,6 +224,18 @@ export class StrategyInstance {
 
     for (const order of newOrders) {
       try {
+        // Filter out invalid numeric values (Infinity, NaN, Number.MAX_VALUE)
+        const limitPrice = isFinite(order.limitPrice ?? NaN) ? order.limitPrice : undefined;
+        const stopPrice = isFinite(order.stopPrice ?? NaN) ? order.stopPrice : undefined;
+
+        // Log warning if invalid values detected
+        if (order.limitPrice !== undefined && !isFinite(order.limitPrice)) {
+          console.warn(`[${this.symbol}] Order ${order.id} has invalid limitPrice: ${order.limitPrice}`);
+        }
+        if (order.stopPrice !== undefined && !isFinite(order.stopPrice)) {
+          console.warn(`[${this.symbol}] Order ${order.id} has invalid stopPrice: ${order.stopPrice}`);
+        }
+
         await this.orderRepo.create({
           brokerOrderId: order.brokerOrderId || order.id,
           planId: order.planId,
@@ -232,8 +244,8 @@ export class StrategyInstance {
           side: order.side.toUpperCase() as any, // Map 'buy' → 'BUY', 'sell' → 'SELL'
           qty: order.qty,
           type: order.type.toUpperCase() as any, // Map 'limit' → 'LIMIT', 'market' → 'MARKET'
-          limitPrice: order.limitPrice,
-          stopPrice: order.stopPrice,
+          limitPrice,
+          stopPrice,
         });
 
         // Create audit log entry for order submission

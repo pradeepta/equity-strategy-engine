@@ -39,7 +39,8 @@ export class StrategyEngine {
     private ir: CompiledIR,
     private featureRegistry: FeatureRegistry,
     private brokerAdapter: BrokerAdapter,
-    private brokerEnv: BrokerEnvironment
+    private brokerEnv: BrokerEnvironment,
+    private strategyId: string = 'unknown'
   ) {
     this.timers = new TimerManager();
 
@@ -62,6 +63,24 @@ export class StrategyEngine {
 
     // Fix 2: Check if we should freeze on startup (e.g., if restoring state from DB)
     this.maybeFreezeOnStartup();
+  }
+
+  /**
+   * Emit visualization event (if callback provided)
+   */
+  private emitVisualization(
+    eventType: keyof NonNullable<BrokerEnvironment['visualizationCallback']>,
+    data: any
+  ): void {
+    const callback = this.brokerEnv.visualizationCallback?.[eventType];
+    if (callback && !this.replayMode) {
+      // Don't emit during replay mode to avoid flooding the client
+      try {
+        callback(data);
+      } catch (error) {
+        // Silently ignore visualization errors - don't break strategy execution
+      }
+    }
   }
 
   /**
@@ -92,6 +111,18 @@ export class StrategyEngine {
       // Compute features for this bar
       await this.computeFeatures(bar);
 
+      // Emit feature compute event
+      this.emitVisualization('onFeatureCompute', {
+        strategyId: this.strategyId,
+        symbol: this.ir.symbol,
+        features: Object.fromEntries(this.state.features),
+        indicators: Array.from(this.state.features.entries()).map(([name, value]) => ({
+          name,
+          value,
+          historicalValues: this.featureHistory.get(name)?.slice(-5) || [],
+        })),
+      });
+
       // Recompute dynamic stop/target levels (if any order plans use expressions)
       this.recomputeDynamicLevels();
 
@@ -104,6 +135,25 @@ export class StrategyEngine {
       // Tick timers
       this.timers.tick();
       this._updateStateTimers();
+
+      // Emit bar processed event
+      this.emitVisualization('onBarProcessed', {
+        strategyId: this.strategyId,
+        symbol: this.ir.symbol,
+        bar: {
+          timestamp: bar.timestamp,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        },
+        state: this.state.currentState,
+        stateBarCount: this.state.stateBarCount,
+        positionSize: this.state.positionSize,
+        openOrderCount: this.state.openOrders.length,
+        replayMode: this.replayMode,
+      });
 
       // Evaluate transitions from current state
       await this.evaluateTransitions();
@@ -429,6 +479,18 @@ export class StrategyEngine {
       const conditionLabel = this.getTransitionLabel(transition.from, transition.to);
       const result = await this.evaluateConditionWithLogging(transition.when, conditionLabel);
 
+      // Emit rule evaluation event
+      this.emitVisualization('onRuleEvaluation', {
+        strategyId: this.strategyId,
+        symbol: this.ir.symbol,
+        ruleName: conditionLabel,
+        expression: JSON.stringify(transition.when),
+        result: result,
+        features: Object.fromEntries(this.state.features),
+        fromState: transition.from,
+        toState: transition.to,
+      });
+
       if (result) {
         // Skip state transitions during replay mode (warmup only)
         if (this.replayMode) {
@@ -484,9 +546,20 @@ export class StrategyEngine {
           });
         }
 
+        const previousState = this.state.currentState;
         this.state.currentState = transition.to;
         // FIX 2: Reset state bar counter on state change
         this.state.stateBarCount = 0;
+
+        // Emit state transition event
+        this.emitVisualization('onStateTransition', {
+          strategyId: this.strategyId,
+          symbol: this.ir.symbol,
+          fromState: previousState,
+          toState: transition.to,
+          reason: conditionLabel,
+          triggeredByRule: conditionLabel,
+        });
 
         // Execute actions
         for (const action of transition.actions) {
@@ -896,6 +969,20 @@ export class StrategyEngine {
               // Log order plan details before submission
               this.log('info', `📤 Submitting order plan: ${plan.id} | Side: ${plan.side} | Qty: ${plan.qty} | Entry: [${plan.entryZone[0]}, ${plan.entryZone[1]}] | Stop: ${plan.stopPrice}`);
 
+              // Emit order plan event
+              this.emitVisualization('onOrderPlan', {
+                strategyId: this.strategyId,
+                symbol: this.ir.symbol,
+                planId: plan.id,
+                side: plan.side,
+                qty: plan.qty,
+                entryZone: plan.entryZone as [number, number],
+                targetEntryPrice: plan.targetEntryPrice,
+                stopPrice: plan.stopPrice,
+                targets: plan.brackets.map(b => ({ price: b.price, ratio: b.ratioOfPosition })),
+                status: 'pending',
+              });
+
               // Apply buying power-based position sizing if enabled
               let finalPlan = plan;
               if (this.brokerEnv.enableDynamicSizing && this.brokerEnv.buyingPower) {
@@ -1047,31 +1134,59 @@ export class StrategyEngine {
               });
 
               // Now safe to submit the new order plan
-              const orders = await this.brokerAdapter.submitOrderPlan(
-                finalPlan,
-                this.brokerEnv
-              );
+              try {
+                const orders = await this.brokerAdapter.submitOrderPlan(
+                  finalPlan,
+                  this.brokerEnv
+                );
 
-              // DIAGNOSTIC: Log broker adapter response
-              this.log('debug', `🔍 DIAGNOSTIC: Broker adapter returned`, {
-                ordersReceived: orders.length,
-                orderIds: orders.map(o => o.id),
-                orderStatuses: orders.map(o => o.status),
-              });
+                // DIAGNOSTIC: Log broker adapter response
+                this.log('debug', `🔍 DIAGNOSTIC: Broker adapter returned`, {
+                  ordersReceived: orders.length,
+                  orderIds: orders.map(o => o.id),
+                  orderStatuses: orders.map(o => o.status),
+                });
 
-              this.state.openOrders.push(...orders);
+                this.state.openOrders.push(...orders);
 
-              // DIAGNOSTIC: Log state after adding orders
-              this.log('debug', `🔍 DIAGNOSTIC: Orders added to state`, {
-                totalOpenOrders: this.state.openOrders.length,
-                newlyAddedCount: orders.length,
-              });
+                // DIAGNOSTIC: Log state after adding orders
+                this.log('debug', `🔍 DIAGNOSTIC: Orders added to state`, {
+                  totalOpenOrders: this.state.openOrders.length,
+                  newlyAddedCount: orders.length,
+                });
 
-              this.log('info', `✅ Successfully submitted ${orders.length} order(s) for ${action.planId}`);
+                this.log('info', `✅ Successfully submitted ${orders.length} order(s) for ${action.planId}`);
 
-              // Log individual order details
-              for (const order of orders) {
-                this.log('info', `  └─ Order ${order.id}: ${order.side} ${order.qty} @ ${order.type} | ${order.limitPrice ? `Limit: ${order.limitPrice}` : ''} ${order.stopPrice ? `Stop: ${order.stopPrice}` : ''}`);
+                // Emit order submission success event
+                this.emitVisualization('onOrderSubmission', {
+                  strategyId: this.strategyId,
+                  symbol: this.ir.symbol,
+                  planId: action.planId!,
+                  ordersSubmitted: orders.length,
+                  orderIds: orders.map(o => o.id),
+                  status: 'success',
+                });
+
+                // Log individual order details
+                for (const order of orders) {
+                  this.log('info', `  └─ Order ${order.id}: ${order.side} ${order.qty} @ ${order.type} | ${order.limitPrice ? `Limit: ${order.limitPrice}` : ''} ${order.stopPrice ? `Stop: ${order.stopPrice}` : ''}`);
+                }
+              } catch (error) {
+                this.log('error', `Failed to submit order plan: ${(error as Error).message}`);
+
+                // Emit order submission failure event
+                this.emitVisualization('onOrderSubmission', {
+                  strategyId: this.strategyId,
+                  symbol: this.ir.symbol,
+                  planId: action.planId!,
+                  ordersSubmitted: 0,
+                  orderIds: [],
+                  status: 'failed',
+                  error: (error as Error).message,
+                });
+
+                // Re-throw to be handled by the bar processing try-catch
+                throw error;
               }
             }
           }

@@ -280,4 +280,14 @@ export interface BrokerEnvironment {
     metadata?: Record<string, unknown>;
   }) => void;
   persistOrder?: (order: Order, strategyId: string) => Promise<void>;
+  // Visualization callback for real-time chart updates
+  visualizationCallback?: {
+    onBarProcessed?: (data: any) => void;
+    onRuleEvaluation?: (data: any) => void;
+    onStateTransition?: (data: any) => void;
+    onEntryZone?: (data: any) => void;
+    onOrderPlan?: (data: any) => void;
+    onFeatureCompute?: (data: any) => void;
+    onOrderSubmission?: (data: any) => void;
+  };
 }

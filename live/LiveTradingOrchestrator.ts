@@ -23,6 +23,7 @@ import { BarCacheServiceV2 } from "./cache/BarCacheServiceV2";
 import { isMarketOpen as checkMarketOpen } from "../utils/marketHours";
 import { RealtimeBarClient } from "./streaming/RealtimeBarClient";
 import { upsertBars } from "../broker/marketData/database";
+import { VisualizationService } from "./VisualizationService";
 
 // Logger will be initialized in constructor after LoggerFactory is set up
 let logger: Logger;
@@ -64,6 +65,7 @@ export class LiveTradingOrchestrator {
   private lockService: DistributedLockService;
   private reconciliationService: BrokerReconciliationService;
   private alertService: OrderAlertService;
+  private visualizationService: VisualizationService;
   private barCacheService?: BarCacheServiceV2;
   private realtimeBarClient: RealtimeBarClient | null = null;
   private config: OrchestratorConfig;
@@ -123,6 +125,21 @@ export class LiveTradingOrchestrator {
       // Add webhook/email channels as needed:
       // { type: 'webhook', enabled: true, config: { url: process.env.ALERT_WEBHOOK_URL } },
     ]);
+
+    // Initialize visualization service
+    const vizPort = parseInt(process.env.VISUALIZATION_PORT || '3003', 10);
+    this.visualizationService = new VisualizationService(vizPort);
+
+    // Add visualization callbacks to broker environment
+    this.config.brokerEnv.visualizationCallback = {
+      onBarProcessed: (data) => this.visualizationService.emitBarProcessed(data),
+      onRuleEvaluation: (data) => this.visualizationService.emitRuleEvaluation(data),
+      onStateTransition: (data) => this.visualizationService.emitStateTransition(data),
+      onEntryZone: (data) => this.visualizationService.emitEntryZone(data),
+      onOrderPlan: (data) => this.visualizationService.emitOrderPlan(data),
+      onFeatureCompute: (data) => this.visualizationService.emitFeatureCompute(data),
+      onOrderSubmission: (data) => this.visualizationService.emitOrderSubmission(data),
+    };
 
     // Initialize reconciliation service
     this.reconciliationService = new BrokerReconciliationService(
@@ -367,6 +384,10 @@ export class LiveTradingOrchestrator {
       logger.info("⏸️  Real-time streaming disabled (set PYTHON_TWS_ENABLED=true to enable)");
     }
 
+    // Start visualization WebSocket server
+    await this.visualizationService.start();
+    logger.info(`✅ Visualization service started on port ${process.env.VISUALIZATION_PORT || 3003}`);
+
     // Start database poller
     this.databasePoller.start();
 
@@ -394,6 +415,10 @@ export class LiveTradingOrchestrator {
 
     // Stop database poller
     this.databasePoller.stop();
+
+    // Stop visualization service
+    await this.visualizationService.stop();
+    logger.info("✓ Visualization service stopped");
 
     // Clear main loop interval
     if (this.mainLoopInterval) {
