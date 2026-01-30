@@ -15,6 +15,15 @@ const logger = LoggerFactory.getLogger("IBKR-Fetcher");
 // Python TWS Bridge configuration
 const PYTHON_TWS_ENABLED = process.env.PYTHON_TWS_ENABLED === "true";
 const PYTHON_TWS_URL = process.env.PYTHON_TWS_URL || "http://localhost:3003";
+
+function normalizePythonTwsBaseUrl(url: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  return trimmed.replace(/\/api\/v1$/i, "");
+}
+
+function buildPythonTwsUrl(baseUrl: string, path: string): string {
+  return `${normalizePythonTwsBaseUrl(baseUrl)}/api/v1${path}`;
+}
 // IBKR always returns timestamps in Eastern Time, regardless of server location
 const MARKET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
@@ -85,7 +94,15 @@ async function fetchFromPythonBridge(params: {
   durationSeconds: number;
   includeForming?: boolean;
 }): Promise<IbkrBar[]> {
-  const { symbol, period, what, session, windowEnd, durationSeconds, includeForming = false } = params;
+  const {
+    symbol,
+    period,
+    what,
+    session,
+    windowEnd,
+    durationSeconds,
+    includeForming = false,
+  } = params;
 
   const duration = durationStr(durationSeconds);
 
@@ -111,9 +128,12 @@ async function fetchFromPythonBridge(params: {
     url: PYTHON_TWS_URL,
   });
 
+  const primaryUrl = buildPythonTwsUrl(PYTHON_TWS_URL, "/bars");
+  const fallbackUrl = buildPythonTwsUrl(PYTHON_TWS_URL, "/bars");
+
   try {
     const response = await axios.post(
-      `${PYTHON_TWS_URL}/api/v1/bars`,
+      primaryUrl,
       {
         symbol,
         period,
@@ -128,11 +148,13 @@ async function fetchFromPythonBridge(params: {
         headers: {
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     if (!response.data.success) {
-      throw new Error(response.data.error || "Unknown error from Python bridge");
+      throw new Error(
+        response.data.error || "Unknown error from Python bridge",
+      );
     }
 
     // Convert Python bridge response to IbkrBar format
@@ -155,6 +177,59 @@ async function fetchFromPythonBridge(params: {
 
     return bars;
   } catch (error: any) {
+    if (error.response && error.response.status === 404) {
+      try {
+        const fallbackResponse = await axios.post(
+          fallbackUrl,
+          {
+            symbol,
+            period,
+            duration,
+            what: what.toUpperCase(),
+            session,
+            include_forming: includeForming,
+            end_datetime: endDateTime,
+          },
+          {
+            timeout: 60000,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+
+        if (!fallbackResponse.data.success) {
+          throw new Error(
+            fallbackResponse.data.error || "Unknown error from Python bridge",
+          );
+        }
+
+        const fallbackBars: IbkrBar[] = fallbackResponse.data.bars.map(
+          (bar: any) => ({
+            date: bar.date,
+            open: Number(bar.open),
+            high: Number(bar.high),
+            low: Number(bar.low),
+            close: Number(bar.close),
+            volume: Number(bar.volume),
+            wap: bar.wap != null ? Number(bar.wap) : undefined,
+            barCount: bar.count != null ? Number(bar.count) : undefined,
+          }),
+        );
+
+        logger.warn("Python TWS Bridge path fallback succeeded", {
+          symbol,
+          period,
+          primaryUrl,
+          fallbackUrl,
+          barCount: fallbackBars.length,
+        });
+
+        return fallbackBars;
+      } catch (fallbackError) {
+        // Fall through to original error handling
+      }
+    }
     if (error.response) {
       // HTTP error response from server
       logger.error("Python TWS Bridge HTTP error", error.response.data, {
@@ -163,7 +238,9 @@ async function fetchFromPythonBridge(params: {
         period,
       });
       throw new Error(
-        `Python TWS Bridge error: ${error.response.data.error || error.response.statusText}`
+        `Python TWS Bridge error: ${
+          error.response.data.error || error.response.statusText
+        }`,
       );
     } else if (error.request) {
       // No response received
@@ -173,11 +250,14 @@ async function fetchFromPythonBridge(params: {
         url: PYTHON_TWS_URL,
       });
       throw new Error(
-        `Failed to connect to Python TWS Bridge at ${PYTHON_TWS_URL}: ${error.message}`
+        `Failed to connect to Python TWS Bridge at ${PYTHON_TWS_URL}: ${error.message}`,
       );
     } else {
       // Other error
-      logger.error("Python TWS Bridge request error", error, { symbol, period });
+      logger.error("Python TWS Bridge request error", error, {
+        symbol,
+        period,
+      });
       throw error;
     }
   }
@@ -229,17 +309,20 @@ export async function fetchHistoricalFromIbkr(params: {
   // See: https://github.com/erdewit/ib_insync/issues/333
   // Alternative: Orchestrator will poll more frequently (every 10s) instead of streaming
   if (includeForming) {
-    logger.warn("includeForming parameter ignored - TWS keepUpToDate is unreliable", {
-      symbol,
-      period,
-      recommendation: "Use frequent polling instead (ORCHESTRATOR_LOOP_INTERVAL_MS=10000)",
-    });
+    logger.warn(
+      "includeForming parameter ignored - TWS keepUpToDate is unreliable",
+      {
+        symbol,
+        period,
+        recommendation:
+          "Use frequent polling instead (ORCHESTRATOR_LOOP_INTERVAL_MS=10000)",
+      },
+    );
   }
 
   return new Promise((resolve, reject) => {
     // Generate unique client ID and request ID
-    const connectionClientId =
-      ibkr.clientId + Math.floor(Math.random() * 1000);
+    const connectionClientId = ibkr.clientId + Math.floor(Math.random() * 1000);
     const reqId = Math.floor(Math.random() * 999999) + 1;
 
     const ib = new IBApi({
@@ -269,8 +352,8 @@ export async function fetchHistoricalFromIbkr(params: {
       cleanup();
       reject(
         new Error(
-          `Historical data timeout for ${symbol} (received ${bars.length} bars)`
-        )
+          `Historical data timeout for ${symbol} (received ${bars.length} bars)`,
+        ),
       );
     }, 120000); // 120s timeout
 
@@ -286,7 +369,7 @@ export async function fetchHistoricalFromIbkr(params: {
           clearTimeout(timeout);
           cleanup();
           reject(
-            new Error(`Cannot connect to TWS at ${ibkr.host}:${ibkr.port}`)
+            new Error(`Cannot connect to TWS at ${ibkr.host}:${ibkr.port}`),
           );
         }
       }
@@ -352,7 +435,7 @@ export async function fetchHistoricalFromIbkr(params: {
         whatToShow,
         useRTH,
         formatDate,
-        false // keepUpToDate always false
+        false, // keepUpToDate always false
       );
     });
 
@@ -369,7 +452,7 @@ export async function fetchHistoricalFromIbkr(params: {
         close: number,
         volume: number,
         wap: number,
-        barCount: number
+        barCount: number,
       ) => {
         // Check if this is for our request
         if (id !== reqId) {
@@ -423,7 +506,7 @@ export async function fetchHistoricalFromIbkr(params: {
           wap: wap != null ? Number(wap) : undefined,
           barCount: barCount != null ? Number(barCount) : undefined,
         });
-      }
+      },
     );
 
     // NOTE: historicalDataUpdate event handler removed

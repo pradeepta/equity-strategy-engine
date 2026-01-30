@@ -224,15 +224,28 @@ export class StrategyInstance {
 
     for (const order of newOrders) {
       try {
-        // Filter out invalid numeric values (Infinity, NaN, Number.MAX_VALUE)
-        const limitPrice = isFinite(order.limitPrice ?? NaN) ? order.limitPrice : undefined;
-        const stopPrice = isFinite(order.stopPrice ?? NaN) ? order.stopPrice : undefined;
+        // Filter out invalid numeric values (Infinity, NaN, extreme float)
+        const MAX_PRICE_ABS = 1e9;
+        const sanitizePrice = (value?: number): number | undefined => {
+          if (value === undefined || value === null) {
+            return undefined;
+          }
+          if (!Number.isFinite(value)) {
+            return undefined;
+          }
+          if (Math.abs(value) >= MAX_PRICE_ABS) {
+            return undefined;
+          }
+          return value;
+        };
+        const limitPrice = sanitizePrice(order.limitPrice);
+        const stopPrice = sanitizePrice(order.stopPrice);
 
         // Log warning if invalid values detected
-        if (order.limitPrice !== undefined && !isFinite(order.limitPrice)) {
+        if (order.limitPrice !== undefined && limitPrice === undefined) {
           console.warn(`[${this.symbol}] Order ${order.id} has invalid limitPrice: ${order.limitPrice}`);
         }
-        if (order.stopPrice !== undefined && !isFinite(order.stopPrice)) {
+        if (order.stopPrice !== undefined && stopPrice === undefined) {
           console.warn(`[${this.symbol}] Order ${order.id} has invalid stopPrice: ${order.stopPrice}`);
         }
 
