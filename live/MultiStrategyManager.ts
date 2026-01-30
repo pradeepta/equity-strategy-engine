@@ -175,7 +175,7 @@ export class MultiStrategyManager {
       if (newInstance) {
         newInstance.markBarsFetched();
         if (bars.length === 1) {
-          await newInstance.processBar(bars[0]);
+          await newInstance.processBar(bars[0], { replay: false });
           console.log(`✓ Processed 1 bar for newly swapped ${symbol} strategy`);
         } else {
           const warmupBars = bars.slice(0, -1);
@@ -186,7 +186,7 @@ export class MultiStrategyManager {
           }
 
           // Process the most recent bar live so the strategy can act immediately
-          await newInstance.processBar(liveBar);
+          await newInstance.processBar(liveBar, { replay: false });
           console.log(
             `✓ Warmed up ${warmupBars.length} bar(s) and processed latest bar for ${symbol}`
           );
@@ -211,7 +211,7 @@ export class MultiStrategyManager {
     // Process bar for all strategies on this symbol
     for (const instance of strategies) {
       try {
-        await instance.processBar(bar);
+        await instance.processBar(bar, { replay: false });
       } catch (error) {
         console.error(`Error processing bar for strategy ${instance.strategyId} (${symbol}):`, error);
       }

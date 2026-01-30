@@ -128,6 +128,8 @@ export interface OrderPlan {
   brackets: Array<{ price: number; ratioOfPosition: number; priceExpr?: ExprNode }>;
   /** For split bracket: emit N orders, each with qty=qty*ratio */
   type: 'single' | 'split_bracket';
+  /** Frozen anchor feature values (when freezeLevelsOn is active) - keeps ATR live */
+  frozenFeatureOverrides?: Map<string, number>;
 }
 
 // ============================================================================
@@ -201,9 +203,11 @@ export interface StrategyRuntimeState {
   symbol: string;
   currentState: StrategyState;
   barCount: number;
+  stateBarCount: number; // FIX 2: Bars spent in current state (for sticky PLACED)
   currentBar: Bar | null;
   features: Map<string, FeatureValue>;
   openOrders: Order[];
+  positionSize: number; // FIX 3: Track net position (positive=long, negative=short, 0=flat)
   timers: Map<string, number>; // timerName -> barCountRemaining
   log: RuntimeLog[];
 }

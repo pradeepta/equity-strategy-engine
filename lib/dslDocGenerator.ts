@@ -215,7 +215,7 @@ Examples:
 **Freezing Dynamic Levels (freezeLevelsOn):** ⭐ NEW
 - Problem: Dynamic levels can drift continuously, causing instability
 - Solution: Freeze levels when strategy arms or triggers
-- Usage: Add `freezeLevelsOn: triggered` or `freezeLevelsOn: armed` to execution block
+- Usage: Add freezeLevelsOn: triggered or freezeLevelsOn: armed to execution block
 - Semantics:
   - Before freeze event: Levels recompute every bar (dynamic discovery)
   - After freeze event: Levels locked at current values (static execution)

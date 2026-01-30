@@ -580,16 +580,21 @@ export class LiveTradingOrchestrator {
               logger.info(`[${instance.symbol}] Processing ${newBars.length} new bar(s) out of ${bars.length} total`);
 
               if (newBars.length === 1) {
-                await instance.processBar(newBars[0]);
+                logger.debug(`[${instance.symbol}] 🔍 Processing single bar with replay: false`);
+                await instance.processBar(newBars[0], { replay: false });
               } else {
                 const warmupBars = newBars.slice(0, -1);
                 const liveBar = newBars[newBars.length - 1];
+
+                logger.debug(`[${instance.symbol}] 🔍 Split ${newBars.length} bars: ${warmupBars.length} warmup + 1 live`);
+                logger.debug(`[${instance.symbol}] 🔍 Live bar timestamp: ${new Date(liveBar.timestamp).toISOString()}`);
 
                 // Check if forced evaluation should apply to warmup bars
                 const warmupReplay = !forceEvaluation; // If forced, process warmup in live mode too
 
                 if (warmupReplay) {
                   // Standard warmup: replay mode (no orders placed)
+                  logger.debug(`[${instance.symbol}] 🔍 Processing ${warmupBars.length} warmup bars with replay: true`);
                   for (const bar of warmupBars) {
                     await instance.processBar(bar, { replay: true });
                   }
@@ -601,7 +606,8 @@ export class LiveTradingOrchestrator {
                   }
                 }
 
-                await instance.processBar(liveBar);
+                logger.debug(`[${instance.symbol}] 🔍 Processing live bar with replay: false`);
+                await instance.processBar(liveBar, { replay: false });
               }
 
               // Check if strategy reached terminal state (no outgoing transitions)

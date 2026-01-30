@@ -15,6 +15,12 @@ const BUILTIN_IDENTIFIERS = new Set([
   'close',
   'volume',
   'price', // alias for close
+  // Runtime variables provided by engine via buildRuleEvalContext()
+  'stop',   // Frozen stop price (from orderPlan.stopPrice)
+  'entry',  // Frozen entry price (from orderPlan.targetEntryPrice)
+  'eL',     // Frozen entry zone low (from orderPlan.entryZone[0])
+  'eH',     // Frozen entry zone high (from orderPlan.entryZone[1])
+  't1',     // First target price (from orderPlan.brackets[0].price)
 ]);
 
 const BUILTIN_FUNCTIONS = new Set([

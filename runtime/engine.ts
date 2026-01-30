@@ -33,6 +33,7 @@ export class StrategyEngine {
   private readonly MAX_BAR_HISTORY: number; // Keep last N bars in memory
   private readonly MAX_FEATURE_HISTORY = 100; // Keep last 100 bars of history
   private levelsFrozen: boolean = false; // Track if dynamic levels are frozen
+  private frozenFeatures: Map<string, FeatureValue> = new Map(); // FIX 4: Snapshot of all features at freeze time
 
   constructor(
     private ir: CompiledIR,
@@ -50,12 +51,17 @@ export class StrategyEngine {
       symbol: ir.symbol,
       currentState: ir.initialState,
       barCount: 0,
+      stateBarCount: 0, // FIX 2: Track bars in current state
       currentBar: null,
       features: new Map(),
       openOrders: [],
+      positionSize: 0, // FIX 3: Track net position
       timers: new Map(),
       log: [],
     };
+
+    // Fix 2: Check if we should freeze on startup (e.g., if restoring state from DB)
+    this.maybeFreezeOnStartup();
   }
 
   /**
@@ -88,6 +94,12 @@ export class StrategyEngine {
 
       // Recompute dynamic stop/target levels (if any order plans use expressions)
       this.recomputeDynamicLevels();
+
+      // FIX 1: Freeze levels BEFORE transitions (ensures stable levels for invalidate/trigger logic)
+      this.checkAndFreezeLevels(this.state.currentState);
+
+      // FIX 2: Increment state bar counter (for sticky PLACED)
+      this.state.stateBarCount++;
 
       // Tick timers
       this.timers.tick();
@@ -172,11 +184,98 @@ export class StrategyEngine {
       this.levelsFrozen = true;
       this.log('info', `🔒 Dynamic levels FROZEN at ${freezeTrigger.toUpperCase()} event (entry zones, stops, targets will no longer update)`);
 
-      // Log the frozen values for audit trail
+      // FIX 4: Snapshot ALL features for frozen invalidate context (prevents drift in invalidate rules)
+      this.frozenFeatures = new Map(this.state.features);
+      this.log('debug', `Snapshotted ${this.frozenFeatures.size} features for frozen invalidate context`);
+
+      // Fix 3: Snapshot anchor features (freeze range_high_20, vwap, ema20, but keep ATR live)
       for (const plan of this.ir.orderPlans) {
+        plan.frozenFeatureOverrides = this.snapshotAnchorFeatures(plan);
         this.log('debug', `Frozen levels for ${plan.name}: entry=[${plan.entryZone[0].toFixed(2)}, ${plan.entryZone[1].toFixed(2)}], stop=${plan.stopPrice.toFixed(2)}, targets=[${plan.brackets.map(b => b.price.toFixed(2)).join(', ')}]`);
+
+        // Log which features were frozen
+        if (plan.frozenFeatureOverrides.size > 0) {
+          const frozenFeats = Array.from(plan.frozenFeatureOverrides.entries())
+            .map(([k, v]) => `${k}=${v.toFixed(2)}`)
+            .join(', ');
+          this.log('debug', `Frozen anchor features: ${frozenFeats}`);
+        }
       }
     }
+  }
+
+  /**
+   * Fix 2: Check if we should freeze on startup (e.g., if restoring state from DB)
+   * Called once in constructor after state is initialized
+   */
+  private maybeFreezeOnStartup(): void {
+    const freezeTrigger = this.ir.execution.freezeLevelsOn;
+    if (!freezeTrigger || this.levelsFrozen) {
+      return;
+    }
+
+    if (freezeTrigger === 'armed' && this.state.currentState === 'ARMED') {
+      this.checkAndFreezeLevels('ARMED');
+    }
+
+    if (freezeTrigger === 'triggered' && this.state.currentState === 'PLACED') {
+      this.checkAndFreezeLevels('PLACED');
+    }
+  }
+
+  /**
+   * Fix 3: Snapshot anchor features (structure levels) while keeping ATR live
+   * Extracts all feature identifiers from plan expressions and freezes them EXCEPT:
+   * - ATR (we want volatility to adapt)
+   * - Builtins (close, open, high, low, volume)
+   * - Functions (abs, min, max, etc.)
+   * - Special vars (entry)
+   */
+  private snapshotAnchorFeatures(plan: any): Map<string, number> {
+    const anchors = new Set<string>();
+
+    const exprs: string[] = [];
+
+    if (plan.stopPriceExpr) exprs.push(plan.stopPriceExpr.toString());
+    if (plan.entryZoneExpr?.[0]) exprs.push(plan.entryZoneExpr[0].toString());
+    if (plan.entryZoneExpr?.[1]) exprs.push(plan.entryZoneExpr[1].toString());
+    for (const b of plan.brackets ?? []) {
+      if (b.priceExpr) exprs.push(b.priceExpr.toString());
+    }
+
+    // Extract identifiers from expressions
+    for (const e of exprs) {
+      for (const id of this.extractIdentifiers(e)) {
+        anchors.add(id);
+      }
+    }
+
+    // Exclude features we want to keep LIVE or aren't features
+    const EXCLUDE = new Set([
+      'close', 'open', 'high', 'low', 'volume', 'timestamp', 'price',
+      'entry', 'stop', 'eL', 'eH', 't1', // special vars
+      'abs', 'min', 'max', 'round', 'floor', 'ceil', 'in_range', 'clamp', // functions
+      'atr', // ⭐ KEEP ATR LIVE - allows volatility adaptation
+      'true', 'false',
+    ]);
+
+    const out = new Map<string, number>();
+    for (const name of anchors) {
+      if (EXCLUDE.has(name)) continue;
+      const v = this.state.features.get(name);
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        out.set(name, v);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Extract identifier names from expression string (simple tokenizer)
+   */
+  private extractIdentifiers(expr: string): string[] {
+    const matches = expr.match(/[A-Za-z_][A-Za-z0-9_]*/g);
+    return matches ? matches : [];
   }
 
   /**
@@ -185,19 +284,28 @@ export class StrategyEngine {
    *
    * Example: stopPrice: "entry - 1.2*atr" recomputes every bar
    *
-   * If levels are frozen (freezeLevelsOn triggered), skip recomputation
+   * Fix 3: When frozen, use frozen anchor features but keep ATR live
+   * This prevents "moving goalposts" while maintaining volatility adaptation
    */
   private recomputeDynamicLevels(): void {
-    // Skip recomputation if levels are frozen
-    if (this.levelsFrozen) {
-      return;
-    }
+    // Fix 3: Do NOT early-return when frozen - we still recompute using frozen anchors (ATR remains live)
+
     for (const plan of this.ir.orderPlans) {
       // Build evaluation context with current features + special "entry" variable
       const entryPrice = plan.targetEntryPrice; // Use target as proxy until actual fill
 
+      // Fix 3: Build evaluation features - start with live base
+      const evalFeatures = new Map(this.state.features);
+
+      // If frozen, override anchor features with their snapshot values (ATR stays live)
+      if (this.levelsFrozen && plan.frozenFeatureOverrides) {
+        for (const [k, v] of plan.frozenFeatureOverrides.entries()) {
+          evalFeatures.set(k, v);
+        }
+      }
+
       const context: EvaluationContext = {
-        features: this.state.features,
+        features: evalFeatures,
         builtins: new Map(),
         functions: new Map(),
         featureHistory: this.featureHistory,
@@ -294,6 +402,27 @@ export class StrategyEngine {
     }
 
     for (const transition of possibleTransitions) {
+      // FIX 2: Make PLACED sticky for 1 bar (prevent ARMED→PLACED→DISARM in same bar)
+      const isDisarm = transition.from === 'PLACED' && transition.to !== 'MANAGING';
+      if (isDisarm && this.state.stateBarCount < 1) {
+        if (!this.replayMode) {
+          this.log('debug', `⏸️  Skipping DISARM transition (PLACED must dwell for 1 bar, current: ${this.state.stateBarCount})`);
+        }
+        continue; // Skip this transition
+      }
+
+      // FIX 3: MANAGING requires broker truth (live orders or position)
+      // Give 1 bar grace period for order submission/tracking
+      if (transition.to === 'MANAGING' && this.state.stateBarCount > 0) {
+        const hasLiveOrders = this.state.openOrders.length > 0;
+        const hasPosition = this.state.positionSize !== 0;
+
+        if (!hasLiveOrders && !hasPosition) {
+          this.log('warn', `⛔ Blocked MANAGING transition: no live orders or position after ${this.state.stateBarCount} bars in PLACED (orders: ${this.state.openOrders.length}, position: ${this.state.positionSize})`);
+          continue; // Skip this transition
+        }
+      }
+
       const conditionLabel = this.getTransitionLabel(transition.from, transition.to);
       const result = await this.evaluateConditionWithLogging(transition.when, conditionLabel);
 
@@ -349,9 +478,8 @@ export class StrategyEngine {
         }
 
         this.state.currentState = transition.to;
-
-        // Check if we should freeze dynamic levels at this event
-        this.checkAndFreezeLevels(transition.to);
+        // FIX 2: Reset state bar counter on state change
+        this.state.stateBarCount = 0;
 
         // Execute actions
         for (const action of transition.actions) {
@@ -394,11 +522,12 @@ export class StrategyEngine {
       const isDisarm = label === 'DISARM' || label.includes('DISARM');
       const isImportant = isTrigger || isInvalidate || isDisarm;
 
-      // Log feature values for important transitions, even when they fail
-      // Use sampling to reduce log spam: log every 20th failure
+      // Log feature values for important transitions
+      // ALWAYS log trigger failures (to see why not triggering), sample other failures every 20th bar
       const shouldLogSuccess = !this.replayMode && result;
-      const shouldLogFailure = !this.replayMode && !result && isImportant && (this.state.barCount % 20 === 0);
-      const shouldLog = shouldLogSuccess || shouldLogFailure;
+      const shouldLogTriggerFailure = !this.replayMode && !result && isTrigger; // Always log trigger failures
+      const shouldLogOtherFailure = !this.replayMode && !result && !isTrigger && isImportant && (this.state.barCount % 20 === 0);
+      const shouldLog = shouldLogSuccess || shouldLogTriggerFailure || shouldLogOtherFailure;
 
       if (shouldLog) {
         const relevantFeatures = this.extractRelevantFeatures(condition);
@@ -475,69 +604,97 @@ export class StrategyEngine {
   }
 
   /**
+   * Fix 4: Build evaluation context for rule expressions (arm, trigger, invalidate)
+   * Includes frozen stop/entry/target variables so invalidation can reference them
+   * FIX 4: Uses frozen features when levelsFrozen to prevent invalidate drift
+   */
+  private buildRuleEvalContext(): EvaluationContext {
+    // FIX 4: Use frozen features if levels are frozen (prevents invalidate from using drifting EMAs)
+    const base = this.levelsFrozen ? new Map(this.frozenFeatures) : new Map(this.state.features);
+
+    // Global convenience vars for rules:
+    // If you have a single plan per strategy, use that plan.
+    const plan = this.ir.orderPlans?.[0];
+    if (plan) {
+      base.set('entry', plan.targetEntryPrice);
+      base.set('stop', plan.stopPrice);
+      base.set('eL', plan.entryZone?.[0] || 0);
+      base.set('eH', plan.entryZone?.[1] || 0);
+
+      // Optional: first target
+      const t1 = plan.brackets?.[0]?.price;
+      if (typeof t1 === 'number') {
+        base.set('t1', t1);
+      }
+    }
+
+    return {
+      features: base,
+      builtins: new Map([
+        ['open', this.state.currentBar?.open || 0],
+        ['high', this.state.currentBar?.high || 0],
+        ['low', this.state.currentBar?.low || 0],
+        ['close', this.state.currentBar?.close || 0],
+        ['volume', this.state.currentBar?.volume || 0],
+        ['price', this.state.currentBar?.close || 0],
+      ]),
+      featureHistory: this.featureHistory,
+      functions: new Map<string, (args: FeatureValue[]) => FeatureValue>([
+        [
+          'in_range',
+          (args: FeatureValue[]) => {
+            if (args.length !== 3) return 0;
+            const [value, min, max] = args as number[];
+            return value >= min && value <= max ? 1 : 0;
+          },
+        ],
+        [
+          'clamp',
+          (args: FeatureValue[]) => {
+            if (args.length !== 3) return 0;
+            const [value, min, max] = args as number[];
+            return Math.max(min, Math.min(max, value));
+          },
+        ],
+        [
+          'abs',
+          (args: FeatureValue[]) => {
+            if (args.length !== 1) return 0;
+            return Math.abs(args[0] as number);
+          },
+        ],
+        [
+          'min',
+          (args: FeatureValue[]) => {
+            return Math.min(...(args as number[]));
+          },
+        ],
+        [
+          'max',
+          (args: FeatureValue[]) => {
+            return Math.max(...(args as number[]));
+          },
+        ],
+        [
+          'round',
+          (args: FeatureValue[]) => {
+            if (args.length < 1 || args.length > 2) return 0;
+            const [value, decimals = 0] = args as number[];
+            const mult = Math.pow(10, decimals);
+            return Math.round((value as number) * mult) / mult;
+          },
+        ],
+      ]),
+    };
+  }
+
+  /**
    * Evaluate a condition expression
+   * Fix 4: Use buildRuleEvalContext() to include frozen stop/entry/target variables
    */
   private async evaluateCondition(condition: any): Promise<boolean> {
     try {
-      const ctx: EvaluationContext = {
-        features: this.state.features,
-        builtins: new Map([
-          ['open', this.state.currentBar?.open || 0],
-          ['high', this.state.currentBar?.high || 0],
-          ['low', this.state.currentBar?.low || 0],
-          ['close', this.state.currentBar?.close || 0],
-          ['volume', this.state.currentBar?.volume || 0],
-          ['price', this.state.currentBar?.close || 0],
-        ]),
-        featureHistory: this.featureHistory,
-        functions: new Map<string, (args: FeatureValue[]) => FeatureValue>([
-          [
-            'in_range',
-            (args: FeatureValue[]) => {
-              if (args.length !== 3) return 0;
-              const [value, min, max] = args as number[];
-              return value >= min && value <= max ? 1 : 0;
-            },
-          ],
-          [
-            'clamp',
-            (args: FeatureValue[]) => {
-              if (args.length !== 3) return 0;
-              const [value, min, max] = args as number[];
-              return Math.max(min, Math.min(max, value));
-            },
-          ],
-          [
-            'abs',
-            (args: FeatureValue[]) => {
-              if (args.length !== 1) return 0;
-              return Math.abs(args[0] as number);
-            },
-          ],
-          [
-            'min',
-            (args: FeatureValue[]) => {
-              return Math.min(...(args as number[]));
-            },
-          ],
-          [
-            'max',
-            (args: FeatureValue[]) => {
-              return Math.max(...(args as number[]));
-            },
-          ],
-          [
-            'round',
-            (args: FeatureValue[]) => {
-              if (args.length < 1 || args.length > 2) return 0;
-              const [value, decimals = 0] = args as number[];
-              const mult = Math.pow(10, decimals);
-              return Math.round((value as number) * mult) / mult;
-            },
-          ],
-        ]),
-      };
-
+      const ctx = this.buildRuleEvalContext();
       return evaluateCondition(condition, ctx);
     } catch (e) {
       const err = e as Error;
@@ -560,6 +717,16 @@ export class StrategyEngine {
           break;
 
         case 'submit_order_plan':
+          // DIAGNOSTIC: Log entry to submit_order_plan
+          this.log('debug', `🔍 DIAGNOSTIC: Entered submit_order_plan action`, {
+            planId: action.planId,
+            replayMode: this.replayMode,
+            currentState: this.state.currentState,
+            barCount: this.state.barCount,
+            currentPrice: this.state.currentBar?.close,
+            existingOpenOrders: this.state.openOrders.length,
+          });
+
           if (this.replayMode) {
             this.log(
               'info',
@@ -583,8 +750,25 @@ export class StrategyEngine {
           if (action.planId) {
             const plan = this.ir.orderPlans.find((p) => p.id === action.planId);
             if (plan) {
+              // DIAGNOSTIC: Log order plan details and market context
+              this.log('debug', `🔍 DIAGNOSTIC: Found order plan`, {
+                planId: plan.id,
+                side: plan.side,
+                qty: plan.qty,
+                targetEntryPrice: plan.targetEntryPrice,
+                entryZone: plan.entryZone,
+                stopPrice: plan.stopPrice,
+                currentPrice: this.state.currentBar?.close,
+                priceVsZoneLow: this.state.currentBar ? (this.state.currentBar.close - plan.entryZone[0]).toFixed(4) : 'N/A',
+                priceVsZoneHigh: this.state.currentBar ? (this.state.currentBar.close - plan.entryZone[1]).toFixed(4) : 'N/A',
+              });
+              // DIAGNOSTIC: Check kill switch
+              this.log('debug', `🔍 DIAGNOSTIC: Checking kill switch`, {
+                allowLiveOrders: this.brokerEnv.allowLiveOrders,
+              });
+
               if (this.brokerEnv.allowLiveOrders === false) {
-                this.log('warn', 'Live order submission blocked by kill switch');
+                this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by kill switch');
                 this.brokerEnv.auditEvent?.({
                   component: 'StrategyEngine',
                   level: 'warn',
@@ -597,12 +781,21 @@ export class StrategyEngine {
                 return;
               }
 
+              this.log('debug', `✅ DIAGNOSTIC: Kill switch check passed (allowLiveOrders=true)`);
+
+
+              // DIAGNOSTIC: Check daily loss limit
+              this.log('debug', `🔍 DIAGNOSTIC: Checking daily loss limit`, {
+                dailyLossLimit: this.brokerEnv.dailyLossLimit,
+                currentDailyPnL: this.brokerEnv.currentDailyPnL,
+              });
+
               if (
                 this.brokerEnv.dailyLossLimit !== undefined &&
                 this.brokerEnv.currentDailyPnL !== undefined &&
                 this.brokerEnv.currentDailyPnL <= -this.brokerEnv.dailyLossLimit
               ) {
-                this.log('warn', 'Live order submission blocked by daily loss limit', {
+                this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by daily loss limit', {
                   currentDailyPnL: this.brokerEnv.currentDailyPnL,
                   dailyLossLimit: this.brokerEnv.dailyLossLimit,
                 });
@@ -620,12 +813,23 @@ export class StrategyEngine {
                 return;
               }
 
+              this.log('debug', `✅ DIAGNOSTIC: Daily loss limit check passed`);
+
+
               const expectedNewOrders = plan.brackets.length > 0 ? plan.brackets.length : 1;
+
+              // DIAGNOSTIC: Check max orders per symbol
+              this.log('debug', `🔍 DIAGNOSTIC: Checking maxOrdersPerSymbol`, {
+                currentOpenOrders: this.state.openOrders.length,
+                expectedNewOrders,
+                maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
+              });
+
               if (
                 this.brokerEnv.maxOrdersPerSymbol !== undefined &&
                 (this.state.openOrders.length + expectedNewOrders) > this.brokerEnv.maxOrdersPerSymbol
               ) {
-                this.log('warn', 'Live order submission blocked by maxOrdersPerSymbol', {
+                this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by maxOrdersPerSymbol', {
                   currentOpenOrders: this.state.openOrders.length,
                   expectedNewOrders,
                   maxOrdersPerSymbol: this.brokerEnv.maxOrdersPerSymbol,
@@ -645,11 +849,20 @@ export class StrategyEngine {
                 return;
               }
 
+              this.log('debug', `✅ DIAGNOSTIC: maxOrdersPerSymbol check passed`);
+
+
+              // DIAGNOSTIC: Check max order qty
+              this.log('debug', `🔍 DIAGNOSTIC: Checking maxOrderQty`, {
+                orderQty: plan.qty,
+                maxOrderQty: this.brokerEnv.maxOrderQty,
+              });
+
               if (
                 this.brokerEnv.maxOrderQty !== undefined &&
                 plan.qty > this.brokerEnv.maxOrderQty
               ) {
-                this.log('warn', 'Live order submission blocked by maxOrderQty', {
+                this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by maxOrderQty', {
                   orderQty: plan.qty,
                   maxOrderQty: this.brokerEnv.maxOrderQty,
                 });
@@ -667,10 +880,19 @@ export class StrategyEngine {
                 return;
               }
 
+              this.log('debug', `✅ DIAGNOSTIC: maxOrderQty check passed`);
+
+
+              // DIAGNOSTIC: Check max notional per symbol
               if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
                 const notional = plan.qty * plan.targetEntryPrice;
+                this.log('debug', `🔍 DIAGNOSTIC: Checking maxNotionalPerSymbol`, {
+                  notional: notional.toFixed(2),
+                  maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
+                });
+
                 if (notional > this.brokerEnv.maxNotionalPerSymbol) {
-                  this.log('warn', 'Live order submission blocked by maxNotionalPerSymbol', {
+                  this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by maxNotionalPerSymbol', {
                     notional,
                     maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
                   });
@@ -687,6 +909,10 @@ export class StrategyEngine {
                   });
                   return;
                 }
+
+                this.log('debug', `✅ DIAGNOSTIC: maxNotionalPerSymbol check passed`);
+              } else {
+                this.log('debug', `✅ DIAGNOSTIC: maxNotionalPerSymbol not set (skipped)`);
               }
 
               // CRITICAL: Always cancel any existing pending entry orders before placing new ones
@@ -826,8 +1052,15 @@ export class StrategyEngine {
               } else if (this.brokerEnv.buyingPower !== undefined) {
                 // Even if dynamic sizing is disabled, validate buying power
                 const requiredCapital = plan.qty * plan.targetEntryPrice;
+
+                // DIAGNOSTIC: Check buying power validation
+                this.log('debug', `🔍 DIAGNOSTIC: Checking buying power (dynamic sizing disabled)`, {
+                  requiredCapital: requiredCapital.toFixed(2),
+                  availableBuyingPower: this.brokerEnv.buyingPower.toFixed(2),
+                });
+
                 if (requiredCapital > this.brokerEnv.buyingPower) {
-                  this.log('error', `⛔ Order BLOCKED - Insufficient buying power`, {
+                  this.log('error', `🛑 DIAGNOSTIC: Order BLOCKED - Insufficient buying power`, {
                     requiredCapital: requiredCapital.toFixed(2),
                     availableBuyingPower: this.brokerEnv.buyingPower.toFixed(2),
                     shortfall: (requiredCapital - this.brokerEnv.buyingPower).toFixed(2),
@@ -848,14 +1081,45 @@ export class StrategyEngine {
                   });
                   return;
                 }
+
+                this.log('debug', `✅ DIAGNOSTIC: Buying power check passed`);
+              } else {
+                this.log('debug', `✅ DIAGNOSTIC: Buying power not set (skipped)`);
               }
+
+              // DIAGNOSTIC: Log before broker adapter call
+              this.log('debug', `🔍 DIAGNOSTIC: About to call brokerAdapter.submitOrderPlan`, {
+                planId: finalPlan.id,
+                side: finalPlan.side,
+                qty: finalPlan.qty,
+                targetEntryPrice: finalPlan.targetEntryPrice,
+                entryZone: finalPlan.entryZone,
+                stopPrice: finalPlan.stopPrice,
+                allowLiveOrders: this.brokerEnv.allowLiveOrders,
+                brokerType: this.brokerAdapter.constructor.name,
+              });
 
               // Now safe to submit the new order plan
               const orders = await this.brokerAdapter.submitOrderPlan(
                 finalPlan,
                 this.brokerEnv
               );
+
+              // DIAGNOSTIC: Log broker adapter response
+              this.log('debug', `🔍 DIAGNOSTIC: Broker adapter returned`, {
+                ordersReceived: orders.length,
+                orderIds: orders.map(o => o.id),
+                orderStatuses: orders.map(o => o.status),
+              });
+
               this.state.openOrders.push(...orders);
+
+              // DIAGNOSTIC: Log state after adding orders
+              this.log('debug', `🔍 DIAGNOSTIC: Orders added to state`, {
+                totalOpenOrders: this.state.openOrders.length,
+                newlyAddedCount: orders.length,
+              });
+
               this.log('info', `✅ Successfully submitted ${orders.length} order(s) for ${action.planId}`);
 
               // Log individual order details
@@ -1014,11 +1278,38 @@ export class StrategyEngine {
       symbol: this.ir.symbol,
       currentState: this.ir.initialState,
       barCount: 0,
+      stateBarCount: 0, // FIX 2: Reset state bar counter
       currentBar: null,
       features: new Map(),
       openOrders: [],
+      positionSize: 0, // FIX 3: Reset position
       timers: new Map(),
       log: [],
     };
+  }
+
+  /**
+   * FIX 3: Update position size when fills occur
+   * Called by external order monitoring systems when orders fill
+   *
+   * @param quantity - Number of shares filled (always positive)
+   * @param side - 'buy' (adds to position) or 'sell' (reduces position)
+   */
+  updatePosition(quantity: number, side: 'buy' | 'sell'): void {
+    const delta = side === 'buy' ? quantity : -quantity;
+    const oldPosition = this.state.positionSize;
+    this.state.positionSize += delta;
+
+    this.log('info', `Position updated: ${oldPosition} → ${this.state.positionSize} (${side} ${quantity})`);
+
+    // If position just became non-zero, log entry
+    if (oldPosition === 0 && this.state.positionSize !== 0) {
+      this.log('info', `✅ Position opened: ${side.toUpperCase()} ${quantity} shares`);
+    }
+
+    // If position just became zero, log exit
+    if (oldPosition !== 0 && this.state.positionSize === 0) {
+      this.log('info', `✅ Position closed: ${side.toUpperCase()} ${quantity} shares (flat)`);
+    }
   }
 }
