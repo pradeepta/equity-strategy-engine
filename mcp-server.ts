@@ -515,6 +515,26 @@ const TOOLS: Tool[] = [
       required: ['strategy_id'],
     },
   },
+  {
+    name: 'get_market_context',
+    description: 'Get comprehensive market context including QQQ, SPY, VIX with regime analysis. Use this BEFORE creating or swapping strategies to understand market conditions. Returns market regime (risk_on, risk_off, high_volatility, trending, choppy, divergence, neutral), correlation, trend direction, volatility level, and actionable recommendations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        timeframe: {
+          type: 'string',
+          enum: ['5m', '15m', '1h', '1d'],
+          description: 'Bar timeframe for analysis (default: 5m)',
+          default: '5m',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of bars to analyze (default: 100)',
+          default: 100,
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -1375,6 +1395,292 @@ async function handleGetActiveStrategies() {
   }
 }
 
+// ============================================================================
+// Market Context Helper Functions
+// ============================================================================
+
+/**
+ * Market regime type definitions
+ */
+interface MarketRegime {
+  state: 'risk_on' | 'risk_off' | 'extreme_volatility' | 'high_volatility' | 'trending' | 'choppy' | 'divergence' | 'neutral';
+  risk_level: 'low' | 'moderate' | 'elevated' | 'high' | 'extreme';
+  recommendation: string;
+  description: string;
+}
+
+interface MarketContext {
+  qqq: {
+    price: number;
+    change: number;
+    bars: number;
+    trend: 'bullish' | 'bearish' | 'neutral';
+  };
+  spy: {
+    price: number;
+    change: number;
+    bars: number;
+    trend: 'bullish' | 'bearish' | 'neutral';
+  };
+  vix: {
+    price: number;
+    change: number;
+    bars: number;
+    level: 'low' | 'normal' | 'elevated' | 'high';
+  };
+  regime: MarketRegime;
+  correlation: {
+    qqq_spy: number;
+    strength: 'weak' | 'moderate' | 'strong';
+  };
+  analysis: string;
+  timestamp: string;
+}
+
+/**
+ * Determine market regime based on index movements and volatility
+ */
+function determineMarketRegime(
+  qqqChange: number,
+  spyChange: number,
+  vixCurrent: number,
+  vixChange: number
+): MarketRegime {
+  // Extreme volatility (VIX > 40)
+  if (vixCurrent > 40) {
+    return {
+      state: 'extreme_volatility',
+      risk_level: 'extreme',
+      recommendation: 'Extreme volatility. Consider much smaller position sizes (50-70% reduction), wider entry zones, very tight stops.',
+      description: 'Market in extreme volatility regime (VIX > 40). Major risk event or panic conditions - exercise caution.',
+    };
+  }
+
+  // High volatility (VIX 30-40)
+  if (vixCurrent > 30) {
+    return {
+      state: 'high_volatility',
+      risk_level: 'high',
+      recommendation: 'Elevated volatility. Reduce position sizes 30-50%, widen entry zones, tighten stops.',
+      description: 'Market in high volatility regime (VIX 30-40). Heightened risk - use conservative parameters.',
+    };
+  }
+
+  // Risk-off (both indices down >1%)
+  if (qqqChange < -1 && spyChange < -1) {
+    return {
+      state: 'risk_off',
+      risk_level: 'elevated',
+      recommendation: 'Favor defensive sectors, consider reducing exposure, focus on mean reversion',
+      description: 'Market in risk-off mode (QQQ and SPY both down). Flight to safety underway.',
+    };
+  }
+
+  // Risk-on (both indices up >1%)
+  if (qqqChange > 1 && spyChange > 1) {
+    return {
+      state: 'risk_on',
+      risk_level: 'low',
+      recommendation: 'Favor momentum strategies, consider increasing exposure to growth sectors',
+      description: 'Market in risk-on mode (QQQ and SPY both up). Bullish momentum strong.',
+    };
+  }
+
+  // Divergence (QQQ and SPY moving opposite directions)
+  if ((qqqChange > 0.5 && spyChange < -0.5) || (qqqChange < -0.5 && spyChange > 0.5)) {
+    return {
+      state: 'divergence',
+      risk_level: 'moderate',
+      recommendation: 'Exercise caution, market indecision. Wait for clearer direction.',
+      description: 'QQQ and SPY diverging. Sector rotation or indecision in progress.',
+    };
+  }
+
+  // Low volatility trending (VIX < 15, indices trending)
+  if (vixCurrent < 15 && Math.abs(qqqChange) > 0.3 && Math.abs(spyChange) > 0.3) {
+    return {
+      state: 'trending',
+      risk_level: 'low',
+      recommendation: 'Favor trend-following strategies, trailing stops work well',
+      description: 'Low volatility trending market. Smooth directional moves likely.',
+    };
+  }
+
+  // Choppy/sideways (VIX elevated but no clear direction)
+  if (vixCurrent > 20 && Math.abs(qqqChange) < 0.5 && Math.abs(spyChange) < 0.5) {
+    return {
+      state: 'choppy',
+      risk_level: 'moderate',
+      recommendation: 'Favor mean reversion, avoid breakout strategies, use wider entry zones',
+      description: 'Elevated VIX but no trend. Choppy, range-bound conditions.',
+    };
+  }
+
+  // Default: neutral
+  return {
+    state: 'neutral',
+    risk_level: 'moderate',
+    recommendation: 'Standard risk management applies. Monitor for regime shift.',
+    description: 'Market in neutral state. No strong directional bias.',
+  };
+}
+
+/**
+ * Calculate Pearson correlation coefficient between two arrays
+ */
+function calculateCorrelation(arr1: number[], arr2: number[]): number {
+  if (arr1.length !== arr2.length || arr1.length === 0) return 0;
+
+  const n = arr1.length;
+  const mean1 = arr1.reduce((a, b) => a + b) / n;
+  const mean2 = arr2.reduce((a, b) => a + b) / n;
+
+  const numerator = arr1.reduce((sum, val1, i) => {
+    return sum + (val1 - mean1) * (arr2[i] - mean2);
+  }, 0);
+
+  const denominator = Math.sqrt(
+    arr1.reduce((sum, val) => sum + Math.pow(val - mean1, 2), 0) *
+      arr2.reduce((sum, val) => sum + Math.pow(val - mean2, 2), 0)
+  );
+
+  return denominator === 0 ? 0 : numerator / denominator;
+}
+
+/**
+ * Generate human-readable market analysis
+ */
+function generateMarketAnalysis(
+  regime: MarketRegime,
+  vix: number,
+  qqqChange: number,
+  spyChange: number,
+  correlation: number
+): string {
+  const parts: string[] = [];
+
+  // Regime summary
+  parts.push(`Market Regime: ${regime.state.toUpperCase()} (${regime.risk_level} risk)`);
+
+  // Index movements
+  const qqqDir = qqqChange > 0 ? 'up' : 'down';
+  const spyDir = spyChange > 0 ? 'up' : 'down';
+  parts.push(
+    `QQQ ${qqqDir} ${Math.abs(qqqChange).toFixed(2)}%, SPY ${spyDir} ${Math.abs(spyChange).toFixed(2)}%`
+  );
+
+  // Volatility
+  parts.push(`VIX at ${vix.toFixed(2)} (${vix > 30 ? 'HIGH' : vix > 20 ? 'ELEVATED' : vix > 15 ? 'NORMAL' : 'LOW'})`);
+
+  // Correlation
+  const corrStr =
+    correlation > 0.7
+      ? 'strongly correlated'
+      : correlation > 0.4
+      ? 'moderately correlated'
+      : 'weakly correlated';
+  parts.push(`Indices ${corrStr} (${correlation.toFixed(2)})`);
+
+  // Recommendation
+  parts.push(`Recommendation: ${regime.recommendation}`);
+
+  return parts.join('. ');
+}
+
+/**
+ * Get comprehensive market context including QQQ, SPY, VIX with regime analysis
+ */
+async function handleGetMarketContext(args: any) {
+  const timeframe = args.timeframe || '5m';
+  const limit = args.limit || 100;
+
+  mcpLogger.info('get_market_context - INPUT', { timeframe, limit });
+
+  try {
+    const barCache = getBarCacheService();
+
+    // Fetch QQQ, SPY, VIX in parallel
+    const [qqqBars, spyBars, vixBars] = await Promise.all([
+      barCache.getBars('QQQ', timeframe, limit, { session: 'rth', what: 'trades' }),
+      barCache.getBars('SPY', timeframe, limit, { session: 'rth', what: 'trades' }),
+      barCache.getBars('VIX', timeframe, limit, { session: 'rth', what: 'trades' }),
+    ]);
+
+    // Calculate current values and changes from first bar
+    const qqqCurrent = qqqBars[qqqBars.length - 1]?.close || 0;
+    const qqqPrevious = qqqBars[0]?.close || qqqCurrent;
+    const qqqChange = ((qqqCurrent - qqqPrevious) / qqqPrevious) * 100;
+
+    const spyCurrent = spyBars[spyBars.length - 1]?.close || 0;
+    const spyPrevious = spyBars[0]?.close || spyCurrent;
+    const spyChange = ((spyCurrent - spyPrevious) / spyPrevious) * 100;
+
+    const vixCurrent = vixBars[vixBars.length - 1]?.close || 0;
+    const vixPrevious = vixBars[0]?.close || vixCurrent;
+    const vixChange = ((vixCurrent - vixPrevious) / vixPrevious) * 100;
+
+    // Determine market regime
+    const regime = determineMarketRegime(qqqChange, spyChange, vixCurrent, vixChange);
+
+    // Calculate correlation between QQQ and SPY (last 30 bars)
+    const correlation = calculateCorrelation(
+      qqqBars.slice(-30).map((b: any) => b.close),
+      spyBars.slice(-30).map((b: any) => b.close)
+    );
+
+    const context: MarketContext = {
+      qqq: {
+        price: qqqCurrent,
+        change: qqqChange,
+        bars: qqqBars.length,
+        trend: qqqChange > 0.5 ? 'bullish' : qqqChange < -0.5 ? 'bearish' : 'neutral',
+      },
+      spy: {
+        price: spyCurrent,
+        change: spyChange,
+        bars: spyBars.length,
+        trend: spyChange > 0.5 ? 'bullish' : spyChange < -0.5 ? 'bearish' : 'neutral',
+      },
+      vix: {
+        price: vixCurrent,
+        change: vixChange,
+        bars: vixBars.length,
+        level: vixCurrent > 30 ? 'high' : vixCurrent > 20 ? 'elevated' : vixCurrent > 15 ? 'normal' : 'low',
+      },
+      regime: regime,
+      correlation: {
+        qqq_spy: correlation,
+        strength: Math.abs(correlation) > 0.7 ? 'strong' : Math.abs(correlation) > 0.4 ? 'moderate' : 'weak',
+      },
+      analysis: generateMarketAnalysis(regime, vixCurrent, qqqChange, spyChange, correlation),
+      timestamp: new Date().toISOString(),
+    };
+
+    mcpLogger.info('get_market_context - SUCCESS', {
+      regime: regime.state,
+      risk_level: regime.risk_level,
+      qqqChange: qqqChange.toFixed(2),
+      spyChange: spyChange.toFixed(2),
+      vixCurrent: vixCurrent.toFixed(2),
+      correlation: correlation.toFixed(2),
+    });
+
+    return {
+      success: true,
+      context,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    mcpLogger.error('get_market_context - ERROR', error, { timeframe, limit });
+    return {
+      success: false,
+      error: 'Failed to fetch market context',
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
 /**
  * Get live portfolio snapshot from TWS handler
  */
@@ -1864,6 +2170,9 @@ function registerHandlers(server: Server): void {
           break;
         case 'get_active_strategies':
           result = await handleGetActiveStrategies();
+          break;
+        case 'get_market_context':
+          result = await handleGetMarketContext(args);
           break;
         case 'get_live_portfolio_snapshot':
           result = await handleGetLivePortfolioSnapshot(args);

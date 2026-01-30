@@ -15,6 +15,7 @@ import {
   FeatureComputeContext,
 } from '../spec/types';
 import { evaluateCondition } from './eval';
+import { evaluateExpression } from '../compiler/expr';
 import { TimerManager } from './timers';
 import { FeatureRegistry } from '../features/registry';
 import { BrokerAdapter, BrokerEnvironment } from '../spec/types';
@@ -31,6 +32,7 @@ export class StrategyEngine {
   private replayMode: boolean = false;
   private readonly MAX_BAR_HISTORY: number; // Keep last N bars in memory
   private readonly MAX_FEATURE_HISTORY = 100; // Keep last 100 bars of history
+  private levelsFrozen: boolean = false; // Track if dynamic levels are frozen
 
   constructor(
     private ir: CompiledIR,
@@ -83,6 +85,9 @@ export class StrategyEngine {
 
       // Compute features for this bar
       await this.computeFeatures(bar);
+
+      // Recompute dynamic stop/target levels (if any order plans use expressions)
+      this.recomputeDynamicLevels();
 
       // Tick timers
       this.timers.tick();
@@ -146,6 +151,132 @@ export class StrategyEngine {
     }
 
     this.state.features = newFeatures;
+  }
+
+  /**
+   * Check if dynamic levels should be frozen at this state transition
+   * Freezes levels when strategy reaches the configured freeze event
+   */
+  private checkAndFreezeLevels(newState: StrategyState): void {
+    const freezeTrigger = this.ir.execution.freezeLevelsOn;
+
+    if (!freezeTrigger || this.levelsFrozen) {
+      return; // No freeze configured or already frozen
+    }
+
+    const shouldFreeze =
+      (freezeTrigger === 'armed' && newState === 'ARMED') ||
+      (freezeTrigger === 'triggered' && newState === 'PLACED');
+
+    if (shouldFreeze) {
+      this.levelsFrozen = true;
+      this.log('info', `🔒 Dynamic levels FROZEN at ${freezeTrigger.toUpperCase()} event (entry zones, stops, targets will no longer update)`);
+
+      // Log the frozen values for audit trail
+      for (const plan of this.ir.orderPlans) {
+        this.log('debug', `Frozen levels for ${plan.name}: entry=[${plan.entryZone[0].toFixed(2)}, ${plan.entryZone[1].toFixed(2)}], stop=${plan.stopPrice.toFixed(2)}, targets=[${plan.brackets.map(b => b.price.toFixed(2)).join(', ')}]`);
+      }
+    }
+  }
+
+  /**
+   * Recompute dynamic stop/target levels from expressions
+   * This allows levels to adapt every bar based on current feature values
+   *
+   * Example: stopPrice: "entry - 1.2*atr" recomputes every bar
+   *
+   * If levels are frozen (freezeLevelsOn triggered), skip recomputation
+   */
+  private recomputeDynamicLevels(): void {
+    // Skip recomputation if levels are frozen
+    if (this.levelsFrozen) {
+      return;
+    }
+    for (const plan of this.ir.orderPlans) {
+      // Build evaluation context with current features + special "entry" variable
+      const entryPrice = plan.targetEntryPrice; // Use target as proxy until actual fill
+
+      const context: EvaluationContext = {
+        features: this.state.features,
+        builtins: new Map(),
+        functions: new Map(),
+        featureHistory: this.featureHistory,
+      };
+
+      // Add "entry" variable (actual entry price)
+      context.features.set('entry', entryPrice);
+
+      // Recompute stop price if expression exists
+      if (plan.stopPriceExpr) {
+        try {
+          const oldStop = plan.stopPrice;
+          const newStop = evaluateExpression(plan.stopPriceExpr, context) as number;
+
+          if (Math.abs(newStop - oldStop) > 0.01) { // Changed by more than 1 cent
+            plan.stopPrice = newStop;
+            this.log('debug', `Dynamic stop updated: ${oldStop.toFixed(2)} → ${newStop.toFixed(2)} (${plan.name})`);
+          }
+        } catch (err: any) {
+          this.log('warn', `Failed to evaluate stop expression for ${plan.name}: ${err.message}`);
+        }
+      }
+
+      // Recompute target prices if expressions exist
+      for (let i = 0; i < plan.brackets.length; i++) {
+        const bracket = plan.brackets[i];
+        if (bracket.priceExpr) {
+          try {
+            const oldPrice = bracket.price;
+            const newPrice = evaluateExpression(bracket.priceExpr, context) as number;
+
+            if (Math.abs(newPrice - oldPrice) > 0.01) { // Changed by more than 1 cent
+              bracket.price = newPrice;
+              this.log('debug', `Dynamic target ${i + 1} updated: ${oldPrice.toFixed(2)} → ${newPrice.toFixed(2)} (${plan.name})`);
+            }
+          } catch (err: any) {
+            this.log('warn', `Failed to evaluate target ${i + 1} expression for ${plan.name}: ${err.message}`);
+          }
+        }
+      }
+
+      // Recompute entry zone if expressions exist
+      if (plan.entryZoneExpr) {
+        let needsUpdate = false;
+        const oldZone = [...plan.entryZone];
+
+        // Evaluate low bound expression if present
+        if (plan.entryZoneExpr[0]) {
+          try {
+            const newLow = evaluateExpression(plan.entryZoneExpr[0], context) as number;
+            if (Math.abs(newLow - plan.entryZone[0]) > 0.01) { // Changed by more than 1 cent
+              plan.entryZone[0] = newLow;
+              needsUpdate = true;
+            }
+          } catch (err: any) {
+            this.log('warn', `Failed to evaluate entry zone low expression for ${plan.name}: ${err.message}`);
+          }
+        }
+
+        // Evaluate high bound expression if present
+        if (plan.entryZoneExpr[1]) {
+          try {
+            const newHigh = evaluateExpression(plan.entryZoneExpr[1], context) as number;
+            if (Math.abs(newHigh - plan.entryZone[1]) > 0.01) { // Changed by more than 1 cent
+              plan.entryZone[1] = newHigh;
+              needsUpdate = true;
+            }
+          } catch (err: any) {
+            this.log('warn', `Failed to evaluate entry zone high expression for ${plan.name}: ${err.message}`);
+          }
+        }
+
+        // Update target entry price (midpoint) if zone changed
+        if (needsUpdate) {
+          plan.targetEntryPrice = (plan.entryZone[0] + plan.entryZone[1]) / 2;
+          this.log('debug', `Dynamic entry zone updated: [${oldZone[0].toFixed(2)}, ${oldZone[1].toFixed(2)}] → [${plan.entryZone[0].toFixed(2)}, ${plan.entryZone[1].toFixed(2)}] (${plan.name})`);
+        }
+      }
+    }
   }
 
   /**
@@ -218,6 +349,9 @@ export class StrategyEngine {
         }
 
         this.state.currentState = transition.to;
+
+        // Check if we should freeze dynamic levels at this event
+        this.checkAndFreezeLevels(transition.to);
 
         // Execute actions
         for (const action of transition.actions) {

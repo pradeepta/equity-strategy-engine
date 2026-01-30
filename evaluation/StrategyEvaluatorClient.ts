@@ -58,6 +58,21 @@ const SHARED_INVARIANTS = [
   "- Separate FACT (tool/bar-backed + computed) from INFERENCE (interpretation).",
   "- 90–99% confidence only if key claims are FACT and required math (risk + R:R) was computed when mentioned.",
   "- If you did not compute it, do not claim it.",
+  "",
+  "F) Dynamic Levels (expressions that recompute every bar) ⭐ NEW",
+  "Entry zones, stops, and targets can be EXPRESSIONS (e.g., 'vwap - 0.2*atr') instead of static numbers.",
+  "- At compilation: Expression parsed to AST, placeholders used for numeric fields.",
+  "- At runtime: Expression evaluated every bar using current feature values → numeric result.",
+  "- Risk calculations (C, D above) use the CURRENT COMPUTED VALUES at time of evaluation.",
+  "- Example: stopPrice: 'entry - 1.5*atr' means stop adapts as ATR changes.",
+  "- Example: entryZone: ['vwap - 0.2*atr', 'vwap'] means zone follows VWAP.",
+  "",
+  "Important notes about dynamic levels:",
+  "- The zone/stop/target VALUES can change bar-to-bar (adaptive).",
+  "- Risk gates (maxRiskPerTrade, R:R ratios) still apply at EACH bar using current values.",
+  "- When analyzing a strategy with dynamic levels, check CURRENT bar values for risk compliance.",
+  "- Features used in expressions MUST be declared (e.g., declare 'atr' if using 'entry - 1.5*atr').",
+  "- Prefer dynamic levels for adaptive strategies (reduces need for swaps due to stale zones).",
 ];
 
 export class StrategyEvaluatorClient {
@@ -81,7 +96,8 @@ export class StrategyEvaluatorClient {
     reject: (err: Error) => void;
     buffer: string;
   } | null = null;
-  private lastEvaluationError: { timestamp: number; message: string } | null = null;
+  private lastEvaluationError: { timestamp: number; message: string } | null =
+    null;
   private consecutiveErrors = 0;
   private maxRetries = 2;
 
@@ -112,7 +128,7 @@ export class StrategyEvaluatorClient {
    */
   async evaluate(
     request: EvaluationRequest,
-    options: { timeout?: number } = {}
+    options: { timeout?: number } = {},
   ): Promise<EvaluationResponse> {
     if (!this.enabled) {
       // Evaluation disabled, return 'keep' recommendation
@@ -135,7 +151,9 @@ export class StrategyEvaluatorClient {
           const result = await this.evaluateStub(request);
           // Success - clear error state
           if (this.consecutiveErrors > 0) {
-            console.log(`✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`);
+            console.log(
+              `✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`,
+            );
           }
           this.consecutiveErrors = 0;
           this.lastEvaluationError = null;
@@ -144,7 +162,9 @@ export class StrategyEvaluatorClient {
           const result = await this.evaluateWebSocket(request, timeout);
           // Success - clear error state
           if (this.consecutiveErrors > 0) {
-            console.log(`✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`);
+            console.log(
+              `✓ Evaluation recovered after ${this.consecutiveErrors} consecutive errors`,
+            );
           }
           this.consecutiveErrors = 0;
           this.lastEvaluationError = null;
@@ -155,7 +175,7 @@ export class StrategyEvaluatorClient {
 
         if (attempt < this.maxRetries) {
           console.warn(
-            `⚠️ Evaluation attempt ${attempt + 1}/${this.maxRetries + 1} failed: ${error.message}. Retrying...`
+            `⚠️ Evaluation attempt ${attempt + 1}/${this.maxRetries + 1} failed: ${error.message}. Retrying...`,
           );
 
           // Reconnect on WebSocket error
@@ -167,7 +187,9 @@ export class StrategyEvaluatorClient {
           }
 
           // Wait before retry (exponential backoff)
-          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * (attempt + 1)),
+          );
         }
       }
     }
@@ -181,7 +203,7 @@ export class StrategyEvaluatorClient {
     };
 
     console.error(
-      `❌ Evaluation failed after ${this.maxRetries + 1} attempts: ${errorMessage}. Continuing with current strategy. (${this.consecutiveErrors} consecutive errors)`
+      `❌ Evaluation failed after ${this.maxRetries + 1} attempts: ${errorMessage}. Continuing with current strategy. (${this.consecutiveErrors} consecutive errors)`,
     );
 
     // Return 'keep' recommendation on failure (non-fatal)
@@ -198,7 +220,7 @@ export class StrategyEvaluatorClient {
    * Stub evaluation for testing (no external service needed)
    */
   private async evaluateStub(
-    request: EvaluationRequest
+    request: EvaluationRequest,
   ): Promise<EvaluationResponse> {
     await this.ensureConnection();
 
@@ -234,7 +256,7 @@ export class StrategyEvaluatorClient {
    */
   private async evaluateWebSocket(
     request: EvaluationRequest,
-    timeout: number
+    timeout: number,
   ): Promise<EvaluationResponse> {
     // TODO: Implement WebSocket connection to evaluation endpoint
     // For now, throw error to indicate not implemented
@@ -244,7 +266,7 @@ export class StrategyEvaluatorClient {
   public async ensureConnection(): Promise<void> {
     if (!this.wsImpl) {
       throw new Error(
-        "WebSocket is not available in this Node runtime. Install a ws polyfill."
+        "WebSocket is not available in this Node runtime. Install a ws polyfill.",
       );
     }
     if (this.ws && this.ws.readyState === this.wsImpl.OPEN && this.sessionId) {
@@ -391,7 +413,7 @@ export class StrategyEvaluatorClient {
       msg.id === this.pendingSessionNew.id
     ) {
       this.pendingSessionNew.reject(
-        new Error(msg.error.message || "session/new failed")
+        new Error(msg.error.message || "session/new failed"),
       );
       this.pendingSessionNew = null;
       return true;
@@ -453,20 +475,30 @@ export class StrategyEvaluatorClient {
     // Calculate market hours context
     const marketInfo = getMarketHoursInfo();
 
-    console.log(`🔍 [DEBUG] Evaluator building prompt for ${request.currentStrategy.symbol}:`);
-    console.log(`   barsActive from request: ${request.performance.barsActive}`);
-    console.log(`   timeframe from request: ${request.currentStrategy.timeframe}`);
+    console.log(
+      `🔍 [DEBUG] Evaluator building prompt for ${request.currentStrategy.symbol}:`,
+    );
+    console.log(
+      `   barsActive from request: ${request.performance.barsActive}`,
+    );
+    console.log(
+      `   timeframe from request: ${request.currentStrategy.timeframe}`,
+    );
 
     const tradingTime = calculateTradingTime(
       request.performance.barsActive,
-      request.currentStrategy.timeframe
+      request.currentStrategy.timeframe,
     );
 
     console.log(`🔍 [DEBUG] calculateTradingTime() result:`);
     console.log(`   totalBars: ${tradingTime.totalBars}`);
     console.log(`   barsPerDay: ${tradingTime.barsPerDay}`);
-    console.log(`   estimatedTradingDays: ${tradingTime.estimatedTradingDays.toFixed(2)}`);
-    console.log(`   estimatedTradingHours: ${tradingTime.estimatedTradingHours.toFixed(2)}`);
+    console.log(
+      `   estimatedTradingDays: ${tradingTime.estimatedTradingDays.toFixed(2)}`,
+    );
+    console.log(
+      `   estimatedTradingHours: ${tradingTime.estimatedTradingHours.toFixed(2)}`,
+    );
 
     return [
       "You are a trading strategy evaluator.",
@@ -484,6 +516,42 @@ export class StrategyEvaluatorClient {
       "",
       ...SHARED_INVARIANTS,
       "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "MARKET CONTEXT INTEGRATION (REQUIRED)",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "**You MUST call get_market_context() as part of your validation workflow.**",
+      "",
+      "Updated workflow:",
+      "1. validate_strategy() - YAML syntax (if swapping)",
+      "2. compile_strategy() - Compilation test (if swapping)",
+      "3. **get_market_context()** - Market regime analysis ⭐ REQUIRED",
+      "4. get_market_data(symbol) - Symbol-specific data",
+      "5. get_live_portfolio_snapshot() - Portfolio constraints",
+      "",
+      "Market Regime Guidance (ADVISORY ONLY):",
+      "",
+      "| Current Regime | Strategy Type | Recommendation |",
+      "|----------------|---------------|----------------|",
+      "| Extreme Volatility (VIX >40) | ANY | Concern - Consider close IF also poor performance or zero fills |",
+      "| High Volatility (VIX 30-40) | Momentum | Monitor closely - Hold if profitable, consider close if losing + zero fills |",
+      "| High Volatility (VIX 30-40) | Mean reversion | Hold - Can work in volatile conditions |",
+      "| Risk-Off (indices down >1%) | Momentum breakout | Consider swap IF also zero fills or poor execution |",
+      "| Risk-Off | Mean reversion | Hold - Appropriate for regime |",
+      "| Risk-On (indices up >1%) | Stale mean reversion | Consider swap IF zero fills for extended period |",
+      "| Risk-On | Momentum | Hold - Appropriate for regime |",
+      "| Choppy (VIX >20, no clear trend) | Tight entry zones | Consider swap to wider zones IF zero fills |",
+      "| Divergence (QQQ/SPY opposite) | ANY | Monitor - Hold unless combined with performance issues |",
+      "",
+      "CRITICAL - Market Regime is ADVISORY ONLY:",
+      "- Market regime is ONE FACTOR among many - NEVER automatically close or swap based solely on regime",
+      "- VIX >40 = extreme conditions, but only recommend close if ALSO poor performance or zero fills",
+      "- VIX 30-40 = elevated volatility, monitor closely but don't auto-close",
+      "- Regime misalignment (e.g., momentum in risk-off) only matters if ALSO zero fills or losses",
+      "- Include regime in analysis, but strategy performance and execution are higher priority",
+      "- User explicitly does not want automatic closes based on market conditions alone",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "CRITICAL: MARKET HOURS CONTEXT & STALENESS EVALUATION",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       `Current Time: ${marketInfo.currentTimeET} ET (${marketInfo.currentDayOfWeek})`,
@@ -501,12 +569,12 @@ export class StrategyEvaluatorClient {
       "",
       "⚠️ CRITICAL: USE THE CORRECT METRIC FOR YOUR EVALUATION:",
       "",
-      "For STALENESS checks (\"strategy has been waiting too long\"):",
+      'For STALENESS checks ("strategy has been waiting too long"):',
       `→ Use barsActiveSinceActivation = ${request.performance.barsActiveSinceActivation} bars`,
       `→ This represents actual real-time waiting since activation`,
       "→ DO NOT use total bars for staleness - that includes historical data!",
       "",
-      "For RETROACTIVE VALIDATION (\"should strategy have triggered on recent data?\"):",
+      'For RETROACTIVE VALIDATION ("should strategy have triggered on recent data?"):',
       `→ Use the last ${tradingTime.totalBars} bars of market history`,
       "→ Check if arm/trigger rules would have been satisfied in this historical data",
       "→ If zero orders placed AND conditions were NOT met in ${tradingTime.estimatedTradingDays.toFixed(1)} days of data:",
@@ -614,7 +682,7 @@ export class StrategyEvaluatorClient {
       "3. Get definitive validation results instead of guessing",
       "",
       "BEFORE recommending CLOSE due to syntax errors:",
-      "→ Call validate_strategy({ yaml_content: \"...\" })",
+      '→ Call validate_strategy({ yaml_content: "..." })',
       "→ Only cite syntax errors if validation actually fails",
       "→ Include the actual validation error message in your reason",
       "",
@@ -627,6 +695,47 @@ export class StrategyEvaluatorClient {
       "• ✅ History: 100 bars stored, index 0=current to 99=oldest",
       "",
       "If you see these patterns, they are VALID - but use validate_strategy to confirm!",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "⭐ DYNAMIC LEVELS (ADAPTIVE STRATEGIES)",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "The DSL supports EXPRESSION-BASED entry zones, stops, and targets that recompute every bar:",
+      "",
+      "**Dynamic Entry Zones:**",
+      "  entryZone: [\"vwap - 0.2 * atr\", \"vwap\"]  # Zone adapts to VWAP and volatility",
+      "  entryZone: [\"bb_lower\", \"bb_middle\"]     # Zone between Bollinger Bands",
+      "",
+      "**Dynamic Stops:**",
+      "  stopPrice: \"entry - 1.5 * atr\"  # Stop scales with ATR (volatility-adjusted)",
+      "  stopPrice: \"bb_lower\"            # Stop at lower Bollinger Band",
+      "",
+      "**Dynamic Targets:**",
+      "  targets:",
+      "    - price: \"entry + 2.5 * atr\"  # Target scales with ATR",
+      "      ratioOfPosition: 0.5",
+      "    - price: \"bb_upper\"            # Target at upper Bollinger Band",
+      "      ratioOfPosition: 0.5",
+      "",
+      "**Benefits of Dynamic Levels:**",
+      "✅ Adapts to volatility (ATR-based stops widen in volatile markets)",
+      "✅ No stale levels (zones follow VWAP/BB/EMA in real-time)",
+      "✅ Consistent R:R (3*ATR maintains 3:1 ratio as ATR changes)",
+      "✅ Reduces swap rate (levels adapt without needing strategy replacement)",
+      "",
+      "**When to Recommend Dynamic Levels:**",
+      "- Strategy has STATIC entry zones that became unreachable (price moved away)",
+      "- Strategy has STATIC stops that don't scale with volatility changes",
+      "- Market volatility increased significantly (ATR doubled)",
+      "- Entry zone is too tight (<1% width) and needs to scale with ATR",
+      "",
+      "**Example Swap Suggestion:**",
+      "❌ Old: entryZone: [240.00, 242.00], stopPrice: 237.50 (static, stale)",
+      "✅ New: entryZone: [\"vwap - 0.2*atr\", \"vwap\"], stopPrice: \"entry - 1.5*atr\" (adaptive)",
+      "",
+      "**Important:**",
+      "- Features used in expressions MUST be declared (e.g., declare 'atr' if using 'atr')",
+      "- Use validate_strategy() and compile_strategy() to verify expressions work",
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "CRITICAL: SWAP VALIDATION WORKFLOW",
@@ -642,7 +751,15 @@ export class StrategyEvaluatorClient {
       "2️⃣ compile_strategy({ yaml_content: suggestedYaml })",
       "   If compilation FAILS: Recommend 'close' with the specific compilation error",
       "",
-      "3️⃣ get_market_data({ symbol, timeframe, limit: 100, session, what })",
+      "3️⃣ get_market_context({ timeframe: '5m', limit: 100 }) ⭐ REQUIRED",
+      "   Check market regime (QQQ/SPY/VIX):",
+      "   - If VIX >30 (high volatility): CLOSE immediately regardless of strategy performance",
+      "   - If risk-off (indices down >1%) + momentum strategy: SWAP to mean reversion or CLOSE",
+      "   - If divergence (QQQ/SPY opposite directions): CLOSE and wait for clarity",
+      "   - Include regime analysis (risk_on/risk_off/choppy/etc.) in your reason field",
+      "   This step OVERRIDES strategy performance - market regime is highest priority",
+      "",
+      "4️⃣ get_market_data({ symbol, timeframe, limit: 100, session, what })",
       "   CRITICAL: Parse suggested strategy's execution.rthOnly setting:",
       "   - If rthOnly: true or undefined → session: 'rth' (default)",
       "   - If rthOnly: false → session: 'all' (includes extended hours)",
@@ -653,7 +770,7 @@ export class StrategyEvaluatorClient {
       "   - RTH alignment: If rthOnly=true, verify entry zone is reachable during RTH (9:30 AM - 4:00 PM ET)",
       "     → If entry zone only reachable in extended hours: Recommend 'close' with reason",
       "",
-      "4️⃣ get_live_portfolio_snapshot({ force_refresh: true })",
+      "5️⃣ get_live_portfolio_snapshot({ force_refresh: true })",
       "   Verify:",
       "   - sufficient buying power",
       "   - no unacceptable conflicts",
@@ -703,7 +820,7 @@ export class StrategyEvaluatorClient {
             const numValue = parseFloat(num);
             const adjusted = numValue * triggerAdjustmentFactor;
             return `${prefix}${space}${adjusted.toFixed(2)}`;
-          }
+          },
         );
         strategy.rules.trigger = modifiedTrigger;
       }
@@ -727,7 +844,7 @@ export class StrategyEvaluatorClient {
           // Adjust stopPrice using the SAME scale factor
           if (typeof plan.stopPrice === "number") {
             plan.stopPrice = parseFloat(
-              (plan.stopPrice * scaleFactor).toFixed(2)
+              (plan.stopPrice * scaleFactor).toFixed(2),
             );
           }
 
@@ -736,7 +853,7 @@ export class StrategyEvaluatorClient {
             for (const target of plan.targets) {
               if (typeof target.price === "number") {
                 target.price = parseFloat(
-                  (target.price * scaleFactor).toFixed(2)
+                  (target.price * scaleFactor).toFixed(2),
                 );
               }
             }
@@ -757,7 +874,7 @@ export class StrategyEvaluatorClient {
     } catch (error) {
       console.warn(
         "Failed to modify strategy, returning original YAML:",
-        error
+        error,
       );
       return yamlContent;
     }

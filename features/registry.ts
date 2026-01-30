@@ -43,6 +43,10 @@ import {
   computeOBV,
   computeCCI,
   computeWilliamsR,
+  computeRangeHigh20,
+  computeRangeLow20,
+  computeRangeMid20,
+  computeTrend20Pct,
 } from './indicators';
 import { computeAbsorption, computeDelta } from './microstructure';
 
@@ -516,6 +520,40 @@ export function createStandardRegistry(): FeatureRegistry {
     type: 'indicator',
     dependencies: ['high', 'low', 'close'],
     compute: (ctx: FeatureComputeContext) => computeWilliamsR(ctx, 14),
+  });
+
+  // ========== ROLLING RANGE FEATURES (20-bar adaptive levels) ==========
+
+  // Range High 20 (highest high in last 20 bars)
+  registry.registerFeature('range_high_20', {
+    name: 'range_high_20',
+    type: 'indicator',
+    dependencies: ['high'],
+    compute: computeRangeHigh20,
+  });
+
+  // Range Low 20 (lowest low in last 20 bars)
+  registry.registerFeature('range_low_20', {
+    name: 'range_low_20',
+    type: 'indicator',
+    dependencies: ['low'],
+    compute: computeRangeLow20,
+  });
+
+  // Range Mid 20 (midpoint of 20-bar range)
+  registry.registerFeature('range_mid_20', {
+    name: 'range_mid_20',
+    type: 'indicator',
+    dependencies: ['high', 'low'],
+    compute: computeRangeMid20,
+  });
+
+  // Trend 20 Pct (% change from 20 bars ago)
+  registry.registerFeature('trend_20_pct', {
+    name: 'trend_20_pct',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: computeTrend20Pct,
   });
 
   return registry;

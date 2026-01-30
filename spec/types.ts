@@ -116,12 +116,16 @@ export interface OrderPlan {
   targetEntryPrice: number;
   /** Entry zone: [min, max] */
   entryZone: [number, number];
+  /** Entry zone expressions (if dynamic) - [minExpr, maxExpr] */
+  entryZoneExpr?: [ExprNode | null, ExprNode | null];
   /** Qty for full position */
   qty: number;
-  /** Stop loss price (hardstop) */
+  /** Stop loss price (hardstop) - number for static, ExprNode for dynamic */
   stopPrice: number;
+  /** Stop price expression (if dynamic) */
+  stopPriceExpr?: ExprNode;
   /** Bracket targets: each {price, qty} represents a partial exit (% of position) */
-  brackets: Array<{ price: number; ratioOfPosition: number }>;
+  brackets: Array<{ price: number; ratioOfPosition: number; priceExpr?: ExprNode }>;
   /** For split bracket: emit N orders, each with qty=qty*ratio */
   type: 'single' | 'split_bracket';
 }
@@ -178,6 +182,7 @@ export interface CompiledIR {
   execution: {
     entryTimeoutBars: number;
     rthOnly: boolean;
+    freezeLevelsOn?: 'armed' | 'triggered'; // Freeze dynamic levels at specified event
   };
 
   // Risk config

@@ -930,6 +930,7 @@ You MUST follow these rules:
 - Default to CONTINUE unless a SWAP is explicitly allowed by the SWAP RULES below.
 - Do NOT invent narratives (earnings/news) unless you have evidence from the provided bars.
 - Close vs touch: any rule using 'close' is evaluated on bar close only (not intrabar high/low).
+- Dynamic levels: Entry zones, stops, and targets can be EXPRESSIONS (e.g., "vwap - 0.2*atr") that recompute every bar. All calculations below use the CURRENT COMPUTED VALUES at time of evaluation.
 
 SWAP RULES (only recommend SWAP if ONE of these is true):
 
@@ -962,8 +963,17 @@ SWAP RULES (only recommend SWAP if ONE of these is true):
 
 VOLATILITY GUARD: Before recommending SWAP for rules 3 or 4, compute last 20 bars range% = (maxHigh - minLow) / currentClose. If range% > 3%, CONTINUE instead (high volatility makes zones appear unreachable temporarily).
 
+DYNAMIC LEVELS (expressions that adapt):
+- Strategies may use EXPRESSIONS for entry zones, stops, and targets (e.g., "vwap - 0.2*atr", "entry - 1.5*atr").
+- These expressions recompute every bar using current feature values → automatic adaptation.
+- If a strategy uses dynamic levels (check YAML for string expressions), it is LESS likely to need swaps due to stale zones.
+- Example: entryZone: ["vwap - 0.2*atr", "vwap"] means zone follows VWAP automatically.
+- Example: stopPrice: "entry - 1.5*atr" means stop scales with volatility automatically.
+- All risk calculations (R:R, distance checks) use the CURRENT COMPUTED VALUES at evaluation time.
+
 DO NOT SWAP if:
 - Strategy is "waiting" (price hasn't reached entry zone yet) - this is NORMAL operation
+- Strategy uses dynamic levels and zones are adapting normally (check for expression syntax in YAML)
 - Only a few hours/bars have passed since activation (strategies need time to work)
 - Minor price fluctuations within expected volatility
 - You're uncertain about market conditions

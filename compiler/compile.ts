@@ -4,7 +4,7 @@
  */
 import YAML from 'yaml';
 import { StrategyDSL, validateStrategyDSL } from '../spec/schema';
-import { CompiledIR, StateTransition, StrategyState, OrderPlan } from '../spec/types';
+import { CompiledIR, StateTransition, StrategyState, OrderPlan, ExprNode } from '../spec/types';
 import { parseExpression } from './expr';
 import { typeCheckExpression } from './typecheck';
 import { lowerInvalidate } from './lower';
@@ -71,6 +71,7 @@ export class StrategyCompiler {
       execution: {
         entryTimeoutBars: dsl.execution?.entryTimeoutBars || 10,
         rthOnly: dsl.execution?.rthOnly || false,
+        freezeLevelsOn: dsl.execution?.freezeLevelsOn, // Pass through freeze trigger
       },
       risk: {
         maxRiskPerTrade: dsl.risk.maxRiskPerTrade,
@@ -261,22 +262,93 @@ export class StrategyCompiler {
 
   /**
    * Build order plans from DSL
+   * Supports expression-based entry zones, stops, and targets
+   * Examples:
+   *   entryZone: ["vwap - 0.2*atr", "vwap"]
+   *   stopPrice: "entry - 1.5*atr"
+   *   targets: [{ price: "entry + 2.5*atr" }]
    */
   private buildOrderPlans(dsl: StrategyDSL): OrderPlan[] {
-    return dsl.orderPlans.map((planDSL, idx) => ({
-      id: planDSL.name || `plan_${idx}`,
-      name: planDSL.name,
-      symbol: dsl.meta.symbol,
-      side: planDSL.side,
-      targetEntryPrice: (planDSL.entryZone[0] + planDSL.entryZone[1]) / 2,
-      entryZone: planDSL.entryZone,
-      qty: planDSL.qty,
-      stopPrice: planDSL.stopPrice,
-      brackets: planDSL.targets.map((t) => ({
-        price: t.price,
-        ratioOfPosition: t.ratioOfPosition,
-      })),
-      type: 'split_bracket',
-    }));
+    return dsl.orderPlans.map((planDSL, idx) => {
+      // Parse entry zone (numeric or expression)
+      let entryZoneLow: number;
+      let entryZoneHigh: number;
+      let entryZoneExpr: [ExprNode | null, ExprNode | null] | undefined;
+
+      if (typeof planDSL.entryZone[0] === 'string' || typeof planDSL.entryZone[1] === 'string') {
+        // At least one entry zone bound is an expression
+        entryZoneExpr = [null, null];
+
+        if (typeof planDSL.entryZone[0] === 'string') {
+          entryZoneExpr[0] = parseExpression(planDSL.entryZone[0]);
+          entryZoneLow = 0; // Placeholder, will be computed at runtime
+        } else {
+          entryZoneLow = planDSL.entryZone[0];
+        }
+
+        if (typeof planDSL.entryZone[1] === 'string') {
+          entryZoneExpr[1] = parseExpression(planDSL.entryZone[1]);
+          entryZoneHigh = 0; // Placeholder, will be computed at runtime
+        } else {
+          entryZoneHigh = planDSL.entryZone[1];
+        }
+      } else {
+        // Both are numeric
+        entryZoneLow = planDSL.entryZone[0];
+        entryZoneHigh = planDSL.entryZone[1];
+      }
+
+      const targetEntryPrice = (entryZoneLow + entryZoneHigh) / 2;
+
+      // Parse stop price (numeric or expression)
+      let stopPrice: number;
+      let stopPriceExpr: ExprNode | undefined;
+
+      if (typeof planDSL.stopPrice === 'string') {
+        // Parse expression
+        stopPriceExpr = parseExpression(planDSL.stopPrice);
+        // Use target entry as default for static stop price
+        // Runtime will recompute using actual entry and current feature values
+        stopPrice = targetEntryPrice;
+      } else {
+        stopPrice = planDSL.stopPrice;
+      }
+
+      // Parse target prices (numeric or expression)
+      const brackets = planDSL.targets.map((t) => {
+        let price: number;
+        let priceExpr: ExprNode | undefined;
+
+        if (typeof t.price === 'string') {
+          // Parse expression
+          priceExpr = parseExpression(t.price);
+          // Use target entry as default
+          price = targetEntryPrice;
+        } else {
+          price = t.price;
+        }
+
+        return {
+          price,
+          priceExpr,
+          ratioOfPosition: t.ratioOfPosition,
+        };
+      });
+
+      return {
+        id: planDSL.name || `plan_${idx}`,
+        name: planDSL.name,
+        symbol: dsl.meta.symbol,
+        side: planDSL.side,
+        targetEntryPrice,
+        entryZone: [entryZoneLow, entryZoneHigh],
+        entryZoneExpr,
+        qty: planDSL.qty,
+        stopPrice,
+        stopPriceExpr,
+        brackets,
+        type: 'split_bracket',
+      };
+    });
   }
 }

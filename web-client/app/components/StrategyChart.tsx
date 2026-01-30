@@ -96,6 +96,103 @@ function calculateRSI(bars: any[], period: number = 14): number[] {
 }
 
 /**
+ * Normalize overlay bars to match strategy price scale
+ * Uses fuzzy timestamp matching to handle slight timing differences
+ */
+function normalizeToStrategyScale(
+  overlayBars: any[],
+  strategyBars: any[]
+): Array<{time: number, value: number}> {
+  if (overlayBars.length === 0 || strategyBars.length === 0) {
+    console.log('[Chart] Normalization skipped - empty bars', {
+      overlayBars: overlayBars.length,
+      strategyBars: strategyBars.length
+    });
+    return [];
+  }
+
+  // Round timestamps to 5-minute boundaries for fuzzy matching
+  // This handles cases where bars are slightly offset (e.g., 9:30:00 vs 9:30:05)
+  const roundTo5Min = (timestamp: number) => {
+    return Math.floor(timestamp / 300) * 300; // 300 seconds = 5 minutes
+  };
+
+  // Create a Set of strategy bar timestamps (rounded to 5-min boundaries)
+  const strategyTimestamps = new Set(
+    strategyBars.map((bar) => {
+      const timeSeconds = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+      return roundTo5Min(timeSeconds);
+    })
+  );
+
+  console.log('[Chart] Strategy timestamps sample:', {
+    first: Array.from(strategyTimestamps)[0],
+    count: strategyTimestamps.size,
+    sample: Array.from(strategyTimestamps).slice(0, 3)
+  });
+
+  // Only include overlay bars that match strategy timestamps (with 5-min rounding)
+  const matchingOverlayBars = overlayBars.filter((bar) => {
+    const barTime = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+    const roundedTime = roundTo5Min(barTime);
+    return strategyTimestamps.has(roundedTime);
+  });
+
+  if (matchingOverlayBars.length === 0) {
+    console.log('[Chart] No overlay bars with matching timestamps', {
+      overlayBarsSample: overlayBars.slice(0, 3).map(b => ({
+        timestamp: b.timestamp,
+        rounded: roundTo5Min(Math.floor(new Date(b.timestamp).getTime() / 1000))
+      })),
+      strategyTimestampsSample: Array.from(strategyTimestamps).slice(0, 3)
+    });
+    return [];
+  }
+
+  // Get base prices from first matching bar
+  const overlayBase = matchingOverlayBars[0].close;
+  const strategyBase = strategyBars[0].close;
+
+  console.log('[Chart] Normalizing overlay', {
+    overlayBase,
+    strategyBase,
+    matchingBars: matchingOverlayBars.length,
+    originalOverlayBars: overlayBars.length,
+    strategyBars: strategyBars.length,
+    filteredOut: overlayBars.length - matchingOverlayBars.length
+  });
+
+  // Use the STRATEGY bar timestamps (not overlay) to ensure perfect alignment
+  const strategyTimeMap = new Map(
+    strategyBars.map((bar) => {
+      const timeSeconds = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+      const roundedTime = roundTo5Min(timeSeconds);
+      return [roundedTime, timeSeconds]; // Map rounded time to exact strategy time
+    })
+  );
+
+  const normalized = matchingOverlayBars.map((bar) => {
+    const barTime = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+    const roundedTime = roundTo5Min(barTime);
+    // Use the strategy's exact timestamp for this bar (not the overlay's timestamp)
+    const strategyTime = strategyTimeMap.get(roundedTime) || barTime;
+
+    return {
+      time: strategyTime,
+      value: strategyBase * (bar.close / overlayBase),
+    };
+  });
+
+  console.log('[Chart] Normalized sample', {
+    first: normalized[0],
+    last: normalized[normalized.length - 1],
+    count: normalized.length
+  });
+
+  return normalized;
+}
+
+/**
  * Calculate default bar count based on timeframe
  * Goal: Show reasonable time period for each timeframe
  */
@@ -126,7 +223,8 @@ function parseTimeframeFromYAML(yamlContent: string): string {
   for (const line of lines) {
     const match = line.match(/^\s*timeframe:\s*(.+)/i);
     if (match) {
-      return match[1].trim();
+      // Remove quotes if present
+      return match[1].trim().replace(/^["']|["']$/g, '');
     }
   }
   return '5m'; // Default fallback
@@ -149,6 +247,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   const stopLossSeriesRef = useRef<any>(null);
   const targetSeriesRefs = useRef<any[]>([]);
   const invalidationSeriesRef = useRef<any>(null);
+  const overlaySeriesRefs = useRef<Record<string, any>>({});
   const fetchingMoreRef = useRef(false);
   const initialLoadCompleteRef = useRef(false); // Prevent auto-loading on mount
   const firstChartRenderRef = useRef(false);
@@ -202,10 +301,17 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     rsi: number | null;
     vwap: number | null;
     volume: number | null;
+    qqq: number | null;
+    spy: number | null;
+    vix: number | null;
   } | null>(null);
+
+  // Market index overlay data
+  const [overlayBars, setOverlayBars] = useState<Record<string, any[]>>({});
 
   const MAX_BARS = 2000;
   const REFRESH_INTERVAL = 10000; // 10 seconds
+  const OVERLAY_REFRESH_INTERVAL = 30000; // 30 seconds for indices
 
   // Fetch bars function (extracted for reuse)
   const fetchBars = async () => {
@@ -258,6 +364,51 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategy.id, barLimit]);
+
+  // Fetch market indices (QQQ, SPY, VIX)
+  useEffect(() => {
+    const fetchOverlayBars = async () => {
+      try {
+        const symbols = ['QQQ', 'SPY', 'VIX'];
+        console.log('[Chart] Fetching market indices:', symbols, 'limit:', barLimit);
+
+        const results = await Promise.all(
+          symbols.map(async (symbol) => {
+            try {
+              const response = await fetch(
+                `${API_BASE}/api/bars/${symbol}?period=${timeframe}&limit=${barLimit}`
+              );
+              if (!response.ok) {
+                console.error(`[Chart] Failed to fetch ${symbol}:`, response.statusText);
+                return { symbol, bars: [] };
+              }
+              const data = await response.json();
+              return { symbol, bars: data.bars || [] };
+            } catch (err) {
+              console.error(`[Chart] Error fetching ${symbol}:`, err);
+              return { symbol, bars: [] };
+            }
+          })
+        );
+
+        const newOverlayBars: Record<string, any[]> = {};
+        results.forEach((result) => {
+          newOverlayBars[result.symbol] = result.bars;
+        });
+
+        console.log('[Chart] Market indices fetched:', Object.keys(newOverlayBars), 'bars per symbol:', newOverlayBars['QQQ']?.length);
+        setOverlayBars(newOverlayBars);
+      } catch (error: any) {
+        console.error('[Chart] Failed to fetch market indices:', error);
+      }
+    };
+
+    fetchOverlayBars();
+
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(fetchOverlayBars, OVERLAY_REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [timeframe, barLimit]);
 
   // Create chart once when container is ready
   useEffect(() => {
@@ -421,12 +572,26 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         const rsiData = param.seriesData.get(rsiSeries) as any;
         const volumeData = param.seriesData.get(volumeSeries) as any;
 
+        // Get market index data
+        const qqqData = overlaySeriesRefs.current['QQQ']
+          ? param.seriesData.get(overlaySeriesRefs.current['QQQ']) as any
+          : null;
+        const spyData = overlaySeriesRefs.current['SPY']
+          ? param.seriesData.get(overlaySeriesRefs.current['SPY']) as any
+          : null;
+        const vixData = overlaySeriesRefs.current['VIX']
+          ? param.seriesData.get(overlaySeriesRefs.current['VIX']) as any
+          : null;
+
         setLegendData({
           time: timeStr,
           close: candleData?.close ?? null,
           rsi: rsiData?.value ?? null,
           vwap: vwapData?.value ?? null,
           volume: volumeData?.value ?? null,
+          qqq: qqqData?.value ?? null,
+          spy: spyData?.value ?? null,
+          vix: vixData?.value ?? null,
         });
       });
 
@@ -777,6 +942,84 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     }
   }, [bars, tradeParams]); // Update data when bars change
 
+  // Add market index overlay series
+  useEffect(() => {
+    console.log('[Chart] Overlay effect triggered', {
+      hasChart: !!chartRef.current,
+      overlayBarsKeys: Object.keys(overlayBars),
+      barsLength: bars.length
+    });
+
+    if (!chartRef.current || Object.keys(overlayBars).length === 0 || bars.length === 0) {
+      console.log('[Chart] Skipping overlay - missing data');
+      return;
+    }
+
+    const chart = chartRef.current;
+
+    // Remove existing overlay series
+    Object.values(overlaySeriesRefs.current).forEach((series) => {
+      try {
+        chart.removeSeries(series);
+      } catch (e) {
+        // Ignore
+      }
+    });
+    overlaySeriesRefs.current = {};
+
+    console.log('[Chart] Creating market index overlay series', {
+      availableSymbols: Object.keys(overlayBars)
+    });
+
+    // Color mapping (like VWAP, RSI indicators)
+    const colors: Record<string, string> = {
+      QQQ: '#3b82f6',  // Blue
+      SPY: '#10b981',  // Green
+      VIX: '#ef4444',  // Red
+    };
+
+    ['QQQ', 'SPY', 'VIX'].forEach((symbol) => {
+      const indexBars = overlayBars[symbol];
+      if (!indexBars || indexBars.length === 0) {
+        console.log(`[Chart] No bars for ${symbol}, skipping`);
+        return;
+      }
+
+      try {
+        // Create line series (styled like VWAP)
+        const lineSeries = chart.addSeries(LineSeries, {
+          color: colors[symbol],
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: symbol,
+        });
+
+        // Normalize to strategy price scale
+        const normalized = normalizeToStrategyScale(indexBars, bars);
+        lineSeries.setData(normalized);
+
+        overlaySeriesRefs.current[symbol] = lineSeries;
+        console.log(`[Chart] Created ${symbol} overlay`);
+      } catch (err: any) {
+        console.error(`[Chart] Error creating ${symbol} overlay:`, err);
+      }
+    });
+
+    // Cleanup
+    return () => {
+      Object.values(overlaySeriesRefs.current).forEach((series) => {
+        try {
+          chart.removeSeries(series);
+        } catch (e) {
+          // Ignore
+        }
+      });
+      overlaySeriesRefs.current = {};
+    };
+  }, [overlayBars, bars]);
+
   if (loading) {
     return (
       <div style={{ padding: "40px", textAlign: "center", color: "#737373" }}>
@@ -838,6 +1081,21 @@ export function StrategyChart({ strategy }: { strategy: any }) {
             {legendData.volume !== null && (
               <div style={{ color: "#60a5fa" }}>
                 Volume: {legendData.volume.toLocaleString()}
+              </div>
+            )}
+            {legendData.qqq !== null && (
+              <div style={{ color: "#3b82f6" }}>
+                QQQ: ${legendData.qqq.toFixed(2)}
+              </div>
+            )}
+            {legendData.spy !== null && (
+              <div style={{ color: "#10b981" }}>
+                SPY: ${legendData.spy.toFixed(2)}
+              </div>
+            )}
+            {legendData.vix !== null && (
+              <div style={{ color: "#ef4444" }}>
+                VIX: ${legendData.vix.toFixed(2)}
               </div>
             )}
           </div>

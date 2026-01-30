@@ -977,3 +977,63 @@ export function computeHOD(ctx: FeatureComputeContext): FeatureValue {
   if (bars.length === 0) return ctx.bar.high;
   return Math.max(...bars.map((b) => b.high));
 }
+
+// ============================================================================
+// Rolling Range Features (20-bar lookback)
+// Enable adaptive breakout/breakdown strategies without static levels
+// ============================================================================
+
+/**
+ * 20-bar rolling high
+ * Highest high in the last 20 bars (dynamic resistance level)
+ * Use case: Breakout triggers - `close > range_high_20`
+ */
+export function computeRangeHigh20(ctx: FeatureComputeContext): number {
+  const bars = [...ctx.history, ctx.bar];
+  const lookback = Math.min(20, bars.length);
+  const recentBars = bars.slice(-lookback);
+  return Math.max(...recentBars.map(b => b.high));
+}
+
+/**
+ * 20-bar rolling low
+ * Lowest low in the last 20 bars (dynamic support level)
+ * Use case: Breakdown triggers - `close < range_low_20`
+ */
+export function computeRangeLow20(ctx: FeatureComputeContext): number {
+  const bars = [...ctx.history, ctx.bar];
+  const lookback = Math.min(20, bars.length);
+  const recentBars = bars.slice(-lookback);
+  return Math.min(...recentBars.map(b => b.low));
+}
+
+/**
+ * 20-bar range midpoint
+ * Midpoint of 20-bar high/low range (dynamic pivot level)
+ * Use case: Reclaim triggers - `close > range_mid_20`
+ */
+export function computeRangeMid20(ctx: FeatureComputeContext): number {
+  const high = computeRangeHigh20(ctx);
+  const low = computeRangeLow20(ctx);
+  return (high + low) / 2;
+}
+
+/**
+ * 20-bar trend strength
+ * Percentage change from 20 bars ago to current bar (trend momentum)
+ * Use case: Trend filter - `arm: "trend_20_pct > 5"` for bullish bias
+ */
+export function computeTrend20Pct(ctx: FeatureComputeContext): number {
+  const bars = [...ctx.history, ctx.bar];
+
+  if (bars.length < 20) {
+    // Not enough bars - calculate from what we have
+    const oldestBar = bars[0];
+    const currentBar = bars[bars.length - 1];
+    return ((currentBar.close - oldestBar.close) / oldestBar.close) * 100;
+  }
+
+  const bar20ago = bars[bars.length - 20];
+  const currentBar = bars[bars.length - 1];
+  return ((currentBar.close - bar20ago.close) / bar20ago.close) * 100;
+}

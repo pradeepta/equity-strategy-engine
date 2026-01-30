@@ -22,22 +22,26 @@ export const RuleDSLSchema = z.object({
 });
 
 export const TargetDSLSchema = z.object({
-  price: z.number(),
+  price: z.union([z.number(), z.string()]), // Allow number or expression string
   ratioOfPosition: z.number().min(0).max(1),
 });
 
 export const OrderPlanDSLSchema = z.object({
   name: z.string(),
   side: z.enum(['buy', 'sell']),
-  entryZone: z.tuple([z.number(), z.number()]),
+  entryZone: z.tuple([
+    z.union([z.number(), z.string()]), // Allow number or expression
+    z.union([z.number(), z.string()]), // Allow number or expression
+  ]),
   qty: z.number().positive(),
-  stopPrice: z.number(),
+  stopPrice: z.union([z.number(), z.string()]), // Allow number or expression string
   targets: z.array(TargetDSLSchema),
 });
 
 export const ExecutionDSLSchema = z.object({
   entryTimeoutBars: z.number().int().positive().optional().default(10),
   rthOnly: z.boolean().optional().default(false),
+  freezeLevelsOn: z.enum(['armed', 'triggered']).optional(), // Freeze dynamic levels at specified event
 });
 
 export const RiskDSLSchema = z.object({
