@@ -430,6 +430,10 @@ export class StrategyEngine {
       const result = await this.evaluateConditionWithLogging(transition.when, conditionLabel);
 
       if (result) {
+        // Skip state transitions during replay mode (warmup only)
+        if (this.replayMode) {
+          continue; // Don't change state during historical bar replay
+        }
         // Detect special events
         const isInvalidation = transition.from === 'MANAGING' && transition.to === 'EXITED';
         const isTrigger = transition.from === 'ARMED' && transition.to === 'PLACED';
@@ -854,69 +858,9 @@ export class StrategyEngine {
 
               this.log('debug', `✅ DIAGNOSTIC: maxOrdersPerSymbol check passed`);
 
-
-              // DIAGNOSTIC: Check max order qty
-              this.log('debug', `🔍 DIAGNOSTIC: Checking maxOrderQty`, {
-                orderQty: plan.qty,
-                maxOrderQty: this.brokerEnv.maxOrderQty,
-              });
-
-              if (
-                this.brokerEnv.maxOrderQty !== undefined &&
-                plan.qty > this.brokerEnv.maxOrderQty
-              ) {
-                this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by maxOrderQty', {
-                  orderQty: plan.qty,
-                  maxOrderQty: this.brokerEnv.maxOrderQty,
-                });
-                this.brokerEnv.auditEvent?.({
-                  component: 'StrategyEngine',
-                  level: 'warn',
-                  message: 'Live order submission blocked by maxOrderQty',
-                  metadata: {
-                    symbol: this.ir.symbol,
-                    planId: action.planId,
-                    orderQty: plan.qty,
-                    maxOrderQty: this.brokerEnv.maxOrderQty,
-                  },
-                });
-                return;
-              }
-
-              this.log('debug', `✅ DIAGNOSTIC: maxOrderQty check passed`);
-
-
-              // DIAGNOSTIC: Check max notional per symbol
-              if (this.brokerEnv.maxNotionalPerSymbol !== undefined) {
-                const notional = plan.qty * plan.targetEntryPrice;
-                this.log('debug', `🔍 DIAGNOSTIC: Checking maxNotionalPerSymbol`, {
-                  notional: notional.toFixed(2),
-                  maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
-                });
-
-                if (notional > this.brokerEnv.maxNotionalPerSymbol) {
-                  this.log('warn', '🛑 DIAGNOSTIC: Live order submission BLOCKED by maxNotionalPerSymbol', {
-                    notional,
-                    maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
-                  });
-                  this.brokerEnv.auditEvent?.({
-                    component: 'StrategyEngine',
-                    level: 'warn',
-                    message: 'Live order submission blocked by maxNotionalPerSymbol',
-                    metadata: {
-                      symbol: this.ir.symbol,
-                      planId: action.planId,
-                      notional,
-                      maxNotionalPerSymbol: this.brokerEnv.maxNotionalPerSymbol,
-                    },
-                  });
-                  return;
-                }
-
-                this.log('debug', `✅ DIAGNOSTIC: maxNotionalPerSymbol check passed`);
-              } else {
-                this.log('debug', `✅ DIAGNOSTIC: maxNotionalPerSymbol not set (skipped)`);
-              }
+              // NOTE: maxOrderQty and maxNotionalPerSymbol checks removed
+              // The broker adapter handles all quantity/notional scaling when dynamic sizing is enabled
+              // Blocking here prevents the broker adapter's intelligent scaling logic from running
 
               // CRITICAL: Always cancel any existing pending entry orders before placing new ones
               // This prevents duplicate orders when strategy retriggers
