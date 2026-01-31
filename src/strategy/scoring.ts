@@ -1,5 +1,5 @@
-import type { Candidate } from './finalizers';
-import type { Metrics } from './metrics';
+import type { Candidate } from "./finalizers";
+import type { Metrics } from "./metrics";
 
 export function scoreCandidate(metrics: Metrics, candidate: Candidate): number {
   let score = 0;
@@ -12,35 +12,50 @@ export function scoreCandidate(metrics: Metrics, candidate: Candidate): number {
   // Reward R:R closer to target but not excessively high
   // rrWorst >= rrTarget already enforced; reward modestly for higher R:R
   // Cap at 25 points for R:R >= 6.0
-  const rrScore = Math.min(25, (candidate.rrWorst - 2) * 5);
+  //
+  // Mapping:
+  // rrWorst = 2.0 -> 0 points
+  // rrWorst = 6.0 -> 25 points (cap)
+  const rrScore = Math.min(25, ((candidate.rrWorst - 2) / 4) * 25);
   score += Math.max(0, rrScore);
 
   // Regime alignment (simple thresholds)
-  if (candidate.side === 'buy') {
-    if (candidate.family.includes('breakout') && metrics.trend20 > 1) {
+  if (candidate.side === "buy") {
+    if (candidate.family.includes("breakout") && metrics.trend20 > 1) {
       score += 25; // Breakout prefers bullish trend
-    } else if (candidate.family.includes('bounce') && Math.abs(metrics.trend20) <= 1) {
+    } else if (
+      candidate.family.includes("bounce") &&
+      Math.abs(metrics.trend20) <= 1
+    ) {
       score += 25; // Range bounce prefers sideways
-    } else if (candidate.family.includes('reclaim') && metrics.trend20 > 1) {
+    } else if (candidate.family.includes("reclaim") && metrics.trend20 > 1) {
       score += 20; // Reclaim prefers bullish trend
     }
-  } else if (candidate.side === 'sell') {
-    if (candidate.family.includes('breakout') && metrics.trend20 < -1) {
+  } else if (candidate.side === "sell") {
+    if (candidate.family.includes("breakout") && metrics.trend20 < -1) {
       score += 25; // Bearish breakout prefers bearish trend
-    } else if (candidate.family.includes('bounce') && Math.abs(metrics.trend20) <= 1) {
+    } else if (
+      candidate.family.includes("bounce") &&
+      Math.abs(metrics.trend20) <= 1
+    ) {
       score += 25; // Range bounce prefers sideways
+    } else if (candidate.family.includes("reclaim") && metrics.trend20 < -1) {
+      score += 20; // Reclaim prefers bearish trend (symmetry with longs)
     }
   }
 
   return score;
 }
 
-export function pickBest(metrics: Metrics, candidates: Candidate[]): Candidate | null {
+export function pickBest(
+  metrics: Metrics,
+  candidates: Candidate[],
+): Candidate | null {
   if (candidates.length === 0) {
     return null;
   }
 
-  const scored = candidates.map(c => ({
+  const scored = candidates.map((c) => ({
     candidate: c,
     score: scoreCandidate(metrics, c),
   }));
@@ -50,13 +65,17 @@ export function pickBest(metrics: Metrics, candidates: Candidate[]): Candidate |
   return scored[0].candidate;
 }
 
-export function pickTopN(metrics: Metrics, candidates: Candidate[], n: number): Candidate[] {
-  const scored = candidates.map(c => ({
+export function pickTopN(
+  metrics: Metrics,
+  candidates: Candidate[],
+  n: number,
+): Candidate[] {
+  const scored = candidates.map((c) => ({
     candidate: c,
     score: scoreCandidate(metrics, c),
   }));
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, n).map(s => s.candidate);
+  return scored.slice(0, n).map((s) => s.candidate);
 }
