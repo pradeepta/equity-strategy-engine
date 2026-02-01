@@ -228,8 +228,11 @@ export async function getBars(
     let closeMonth = marketMonthIndex;
     let closeDay = marketDay;
 
-    if (isBeforeOpen && !isAfterClose) {
-      // Subtract one day for overnight hours
+    // If we're after market close (e.g., 7 PM) OR in overnight hours (e.g., 2 AM),
+    // AND we haven't opened yet today, use PREVIOUS trading day's close
+    // This prevents marking cache as stale when market hasn't traded today yet
+    if (isAfterClose || (isBeforeOpen && !isAfterClose)) {
+      // Use previous trading day's close
       const marketDate = new Date(Date.UTC(marketYear, marketMonthIndex, marketDay));
       marketDate.setUTCDate(marketDate.getUTCDate() - 1);
       closeYear = marketDate.getUTCFullYear();
@@ -247,7 +250,7 @@ export async function getBars(
       0
     );
     logger.info(
-      `✅ ANCHORED to market close: Current=${String(marketHour).padStart(2, "0")}:${String(marketMinute).padStart(2, "0")} EST, using ${isBeforeOpen && !isAfterClose ? 'yesterday' : 'today'}'s close at windowEnd=${windowEnd.toISOString()}`
+      `✅ ANCHORED to market close: Current=${String(marketHour).padStart(2, "0")}:${String(marketMinute).padStart(2, "0")} EST, using ${isAfterClose || (isBeforeOpen && !isAfterClose) ? 'previous trading day' : 'today'}'s close at windowEnd=${windowEnd.toISOString()}`
     );
   }
 
