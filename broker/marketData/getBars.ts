@@ -147,6 +147,22 @@ function marketTzTimeToUtcDate(
   return new Date(utcGuess.getTime() - offsetMs);
 }
 
+function getPreviousTradingDay(
+  year: number,
+  monthIndex: number,
+  day: number,
+): { year: number; monthIndex: number; day: number } {
+  const date = new Date(Date.UTC(year, monthIndex, day));
+  do {
+    date.setUTCDate(date.getUTCDate() - 1);
+  } while ([0, 6].includes(date.getUTCDay()));
+  return {
+    year: date.getUTCFullYear(),
+    monthIndex: date.getUTCMonth(),
+    day: date.getUTCDate(),
+  };
+}
+
 function parseIbkrDate(dateStr: string): Date | null {
   // Handle both formats:
   // 1. ISO 8601 from Python bridge: "2026-01-26T14:55:00+00:00" (already UTC)
@@ -254,6 +270,10 @@ export async function getBars(
   const marketDay = marketParts.day;
   const marketHour = marketParts.hour;
   const marketMinute = marketParts.minute;
+  const marketDayOfWeek = new Date(
+    Date.UTC(marketYear, marketMonthIndex, marketDay),
+  ).getUTCDay();
+  const isWeekend = marketDayOfWeek === 0 || marketDayOfWeek === 6;
 
   // Market close: 4:00 PM local exchange time (handle DST via timezone conversion)
   const marketCloseHour = 16;
@@ -290,18 +310,18 @@ export async function getBars(
     let closeMonth = marketMonthIndex;
     let closeDay = marketDay;
 
-    // If we're after market close (e.g., 7 PM) OR in overnight hours (e.g., 2 AM),
-    // AND we haven't opened yet today, use PREVIOUS trading day's close
-    // This prevents marking cache as stale when market hasn't traded today yet
-    if (isAfterClose || (isBeforeOpen && !isAfterClose)) {
-      // Use previous trading day's close
-      const marketDate = new Date(
-        Date.UTC(marketYear, marketMonthIndex, marketDay),
+    // Use the most recent trading day's close:
+    // - Weekends always roll back to Friday
+    // - Weekdays before open roll back to previous trading day
+    if (isWeekend || isBeforeOpen) {
+      const prev = getPreviousTradingDay(
+        marketYear,
+        marketMonthIndex,
+        marketDay,
       );
-      marketDate.setUTCDate(marketDate.getUTCDate() - 1);
-      closeYear = marketDate.getUTCFullYear();
-      closeMonth = marketDate.getUTCMonth();
-      closeDay = marketDate.getUTCDate();
+      closeYear = prev.year;
+      closeMonth = prev.monthIndex;
+      closeDay = prev.day;
     }
 
     // Create market close time: 4:00 PM market time (DST-aware)
@@ -318,7 +338,7 @@ export async function getBars(
         2,
         "0",
       )}:${String(marketMinute).padStart(2, "0")} EST, using ${
-        isAfterClose || (isBeforeOpen && !isAfterClose)
+        isWeekend || isBeforeOpen
           ? "previous trading day"
           : "today"
       }'s close at windowEnd=${windowEnd.toISOString()}`,
