@@ -241,15 +241,28 @@ export class LiveTradingOrchestrator {
     // Fetch and display portfolio value
     try {
       const portfolio = await this.portfolioFetcher.getPortfolioSnapshot();
+      const resolvedBuyingPower = this.resolveBuyingPower(
+        portfolio.buyingPower,
+      );
+
+      if (resolvedBuyingPower.overridden) {
+        logger.warn("⚠️  Buying power override enabled", {
+          overrideValue: resolvedBuyingPower.overrideValue,
+          actualBuyingPower: portfolio.buyingPower,
+        });
+      }
+
       logger.info("Portfolio snapshot retrieved", {
         accountId: portfolio.accountId,
         totalValue: portfolio.totalValue,
         cash: portfolio.cash,
-        buyingPower: portfolio.buyingPower,
+        buyingPower: resolvedBuyingPower.buyingPower,
         unrealizedPnL: portfolio.unrealizedPnL,
         realizedPnL: portfolio.realizedPnL,
         openPositions: portfolio.positions.length
       });
+
+      this.config.brokerEnv.buyingPower = resolvedBuyingPower.buyingPower;
 
       if (portfolio.positions.length > 0) {
         portfolio.positions.forEach((pos) => {
@@ -477,15 +490,26 @@ export class LiveTradingOrchestrator {
           this.config.brokerEnv.currentDailyPnL =
             portfolio.realizedPnL + portfolio.unrealizedPnL;
 
+          const resolvedBuyingPower = this.resolveBuyingPower(
+            portfolio.buyingPower,
+          );
+
+          if (resolvedBuyingPower.overridden) {
+            logger.warn("⚠️  Buying power override enabled", {
+              overrideValue: resolvedBuyingPower.overrideValue,
+              actualBuyingPower: portfolio.buyingPower,
+            });
+          }
+
           // Update portfolio values for dynamic position sizing
           this.config.brokerEnv.accountValue = portfolio.totalValue;
-          this.config.brokerEnv.buyingPower = portfolio.buyingPower;
+          this.config.brokerEnv.buyingPower = resolvedBuyingPower.buyingPower;
 
           // Log portfolio snapshot for transparency
           logger.debug("📊 Portfolio Snapshot Updated", {
             totalValue: portfolio.totalValue.toFixed(2),
             cash: portfolio.cash.toFixed(2),
-            buyingPower: portfolio.buyingPower.toFixed(2),
+            buyingPower: resolvedBuyingPower.buyingPower.toFixed(2),
             unrealizedPnL: portfolio.unrealizedPnL.toFixed(2),
             realizedPnL: portfolio.realizedPnL.toFixed(2),
             positionCount: portfolio.positions.length,
@@ -888,6 +912,32 @@ export class LiveTradingOrchestrator {
     } else {
       return `${seconds}s`;
     }
+  }
+
+  private resolveBuyingPower(portfolioBuyingPower: number): {
+    buyingPower: number;
+    overridden: boolean;
+    overrideValue?: number;
+  } {
+    const overrideEnabled =
+      process.env.ENABLE_BUYING_POWER_OVERRIDE === "true";
+    if (!overrideEnabled) {
+      return { buyingPower: portfolioBuyingPower, overridden: false };
+    }
+
+    const parsedOverride = process.env.BUYING_POWER_OVERRIDE
+      ? parseFloat(process.env.BUYING_POWER_OVERRIDE)
+      : NaN;
+    const overrideValue =
+      Number.isFinite(parsedOverride) && parsedOverride > 0
+        ? parsedOverride
+        : 1000;
+
+    return {
+      buyingPower: overrideValue,
+      overridden: true,
+      overrideValue,
+    };
   }
 
   /**
