@@ -37,6 +37,19 @@ const PORT = process.env.PORTFOLIO_API_PORT || 3002;
 
 let barCacheService: BarCacheServiceV2 | null = null;
 
+// Singleton TWS portfolio fetcher (reuse connection)
+let twsPortfolioFetcher: any = null;
+async function getTwsPortfolioFetcher() {
+  if (!twsPortfolioFetcher) {
+    const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
+    const twsHost = process.env.TWS_HOST || '127.0.0.1';
+    const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+    const clientId = 5; // Client ID 5 for dashboard portfolio queries
+    twsPortfolioFetcher = new PortfolioDataFetcher(twsHost, twsPort, clientId);
+  }
+  return twsPortfolioFetcher;
+}
+
 // Auto-swap service state
 let autoSwapEnabled = false;
 let autoSwapParallel = true; // Default to parallel mode
@@ -1219,15 +1232,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const forceRefresh = url.searchParams.get('force_refresh') === 'true';
 
       try {
-        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
-        const twsHost = process.env.TWS_HOST || '127.0.0.1';
-        const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
-        const clientId = 5; // Client ID 5 for dashboard portfolio queries
-
-        const fetcher = new PortfolioDataFetcher(twsHost, twsPort, clientId);
-        await fetcher.connect();
+        // Use singleton fetcher to avoid connect/disconnect churn
+        const fetcher = await getTwsPortfolioFetcher();
         const snapshot = await fetcher.getPortfolioSnapshot(forceRefresh);
-        await fetcher.disconnect();
+        // Note: We don't disconnect - keep connection alive for subsequent requests
 
         sendJSON(res, {
           success: true,
@@ -1238,7 +1246,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             buyingPower: snapshot.buyingPower,
             unrealizedPnL: snapshot.unrealizedPnL,
             realizedPnL: snapshot.realizedPnL,
-            positions: snapshot.positions.map(pos => ({
+            positions: snapshot.positions.map((pos: any) => ({
               symbol: pos.symbol,
               quantity: pos.quantity,
               avgCost: pos.avgCost,
@@ -1604,17 +1612,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
         const currentBar = bars[bars.length - 1];
 
-        // 6. Fetch portfolio snapshot for position sizing
-        const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
-        portfolioFetcher = new PortfolioDataFetcher(
-          process.env.TWS_HOST || '127.0.0.1',
-          parseInt(process.env.TWS_PORT || '7497'),
-          3 // Portfolio client ID
-        );
+        // 6. Fetch portfolio snapshot for position sizing (use singleton)
+        portfolioFetcher = await getTwsPortfolioFetcher();
 
         let portfolioSnapshot;
         try {
-          await portfolioFetcher.connect();
           portfolioSnapshot = await portfolioFetcher.getPortfolioSnapshot(true); // Force refresh
           console.log('[portfolio-api] Portfolio snapshot fetched', {
             totalValue: portfolioSnapshot.totalValue,

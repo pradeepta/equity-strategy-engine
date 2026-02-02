@@ -254,6 +254,8 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   const currentYamlRef = useRef<string>("");
   const chartCreatedRef = useRef(false);
   const barsLengthRef = useRef(0); // Track current bars length for scroll handler
+  const serverMaxReachedRef = useRef(false); // True when server has no more historical data
+  const lastFetchedLimitRef = useRef(0); // Track the limit we last fetched with
 
   // Parse timeframe and calculate smart default bar count
   const timeframe = parseTimeframeFromYAML(strategy.yamlContent);
@@ -320,7 +322,9 @@ export function StrategyChart({ strategy }: { strategy: any }) {
     try {
       fetchingMoreRef.current = true;
       const isInitialLoad = bars.length === 0;
-      console.log(`[Chart] Fetching bars: limit=${barLimit}, isInitialLoad=${isInitialLoad}`);
+      const previousBarCount = barsLengthRef.current;
+      const previousLimit = lastFetchedLimitRef.current;
+      console.log(`[Chart] Fetching bars: limit=${barLimit}, isInitialLoad=${isInitialLoad}, previousBars=${previousBarCount}`);
       setLoading(isInitialLoad);
       setLoadingMore(!isInitialLoad);
       const response = await fetch(
@@ -328,16 +332,28 @@ export function StrategyChart({ strategy }: { strategy: any }) {
       );
       if (!response.ok) throw new Error("Failed to fetch chart data");
       const data = await response.json();
+      const newBarCount = (data.bars || []).length;
       setLastResponseCount(
-        typeof data.count === "number" ? data.count : (data.bars || []).length,
+        typeof data.count === "number" ? data.count : newBarCount,
       );
       setBars(data.bars || []);
+      barsLengthRef.current = newBarCount;
+      lastFetchedLimitRef.current = barLimit;
       setError(null);
       setLastFetchTime(new Date());
+
+      // Detect if server has no more historical data
+      // If we increased the limit but got the same or fewer bars, we've hit the server's max
+      if (!isInitialLoad && barLimit > previousLimit && newBarCount <= previousBarCount) {
+        console.log(`[Chart] Server max reached: requested ${barLimit}, got ${newBarCount} bars (same as before)`);
+        serverMaxReachedRef.current = true;
+      }
 
       // Mark initial load complete
       if (isInitialLoad) {
         initialLoadCompleteRef.current = true;
+        // Reset server max flag on initial load (new strategy)
+        serverMaxReachedRef.current = false;
       }
     } catch (err: any) {
       setError(err.message || "Failed to load chart");
@@ -366,6 +382,7 @@ export function StrategyChart({ strategy }: { strategy: any }) {
   }, [strategy.id, barLimit]);
 
   // Fetch market indices (QQQ, SPY, VIX)
+  // Note: Backend getBars.ts handles market hours check - returns cached data when market closed
   useEffect(() => {
     const fetchOverlayBars = async () => {
       try {
@@ -610,14 +627,17 @@ export function StrategyChart({ strategy }: { strategy: any }) {
         }
 
         const isAtLeftEdge = range.from < 5;
-        const isAtLimit = barsLengthRef.current >= barLimitRef.current;
+        // Load more if: user is at left edge AND we haven't hit max bars limit AND server has more data
+        const canLoadMore = barLimitRef.current < MAX_BARS && !serverMaxReachedRef.current;
 
-        if (isAtLeftEdge && isAtLimit && barLimitRef.current < MAX_BARS) {
+        if (isAtLeftEdge && canLoadMore) {
           const nextLimit = Math.min(MAX_BARS, barLimitRef.current * 2);
           if (nextLimit > barLimitRef.current) {
             console.log(`[Chart] Loading more bars: ${barLimitRef.current} → ${nextLimit} (current: ${barsLengthRef.current})`);
             setBarLimit(nextLimit);
           }
+        } else if (isAtLeftEdge && serverMaxReachedRef.current) {
+          console.log(`[Chart] At left edge but server has no more data (${barsLengthRef.current} bars is the max)`);
         }
       };
 

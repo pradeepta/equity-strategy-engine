@@ -52,18 +52,20 @@ export class PortfolioDataFetcher {
       this.client.on('error', (err: Error, code: number, reqId: number) => {
         // Filter out informational messages (codes 2100, 2104, 2106, 2107, 2108, 2158)
         const infoMessages = [2100, 2104, 2106, 2107, 2108, 2158];
-        const isInfoMessage = infoMessages.includes(code);
+        const codeNum = typeof code === 'number' ? code : (code as any)?.code;
+        const isInfoMessage = infoMessages.includes(codeNum);
         const infoText = err?.message?.toLowerCase?.() || '';
         const isInfoText =
           infoText.includes('market data farm connection is ok') ||
           infoText.includes('hmds data farm connection is ok') ||
-          infoText.includes('sec-def data farm connection is ok');
+          infoText.includes('sec-def data farm connection is ok') ||
+          infoText.includes('unsubscribed from account'); // Expected when we call reqAccountUpdates(false)
 
-        if (!this.connected && code === 502) {
+        if (!this.connected && codeNum === 502) {
           reject(new Error(`TWS portfolio connection failed: ${err.message}`));
         } else if (!isInfoMessage && !isInfoText) {
           // Only log real errors, not info messages
-          console.error(`TWS Portfolio Error [${code}]: ${err.message} (reqId: ${reqId})`);
+          console.error(`TWS Portfolio Error [${codeNum}]: ${err.message} (reqId: ${reqId})`);
         }
       });
 
