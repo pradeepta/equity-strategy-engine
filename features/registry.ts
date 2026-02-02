@@ -172,6 +172,24 @@ export function createStandardRegistry(): FeatureRegistry {
     compute: computeVWAP,
   });
 
+  // EMA9 (9-bar Exponential Moving Average)
+  registry.registerFeature('ema9', {
+    name: 'ema9',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: (ctx: FeatureComputeContext) =>
+      computeEMA([...ctx.history, ctx.bar], 'close', 9),
+  });
+
+  // EMA9 alias with underscore (ema_9)
+  registry.registerFeature('ema_9', {
+    name: 'ema_9',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: (ctx: FeatureComputeContext) =>
+      computeEMA([...ctx.history, ctx.bar], 'close', 9),
+  });
+
   // EMA20 (20-bar Exponential Moving Average)
   registry.registerFeature('ema20', {
     name: 'ema20',
@@ -181,9 +199,27 @@ export function createStandardRegistry(): FeatureRegistry {
       computeEMA([...ctx.history, ctx.bar], 'close', 20),
   });
 
+  // EMA20 alias with underscore (ema_20)
+  registry.registerFeature('ema_20', {
+    name: 'ema_20',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: (ctx: FeatureComputeContext) =>
+      computeEMA([...ctx.history, ctx.bar], 'close', 20),
+  });
+
   // EMA50 (50-bar Exponential Moving Average)
   registry.registerFeature('ema50', {
     name: 'ema50',
+    type: 'indicator',
+    dependencies: ['close'],
+    compute: (ctx: FeatureComputeContext) =>
+      computeEMA([...ctx.history, ctx.bar], 'close', 50),
+  });
+
+  // EMA50 alias with underscore (ema_50)
+  registry.registerFeature('ema_50', {
+    name: 'ema_50',
     type: 'indicator',
     dependencies: ['close'],
     compute: (ctx: FeatureComputeContext) =>

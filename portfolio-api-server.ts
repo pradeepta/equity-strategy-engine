@@ -3,21 +3,24 @@
  * Simple HTTP server that exposes portfolio metrics for the web dashboard
  */
 
-import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
-import 'dotenv/config';
-import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { Pool } from 'pg';
-import PQueue from 'p-queue';
-import WebSocket from 'ws';
-import { BacktestEngine } from './backtest/BacktestEngine';
-import { StrategyCompiler } from './compiler/compile';
-import { getChatRepo, getRepositoryFactory } from './database/RepositoryFactory';
-import { StrategyEvaluatorClient } from './evaluation/StrategyEvaluatorClient';
-import { createStandardRegistry } from './features/registry';
-import { generateDSLDocumentation } from './lib/dslDocGenerator';
-import { generateImageKey, getStorageProvider } from './lib/storage';
-import { BarCacheServiceV2 } from './live/cache/BarCacheServiceV2';
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import "dotenv/config";
+import { createServer, IncomingMessage, ServerResponse } from "http";
+import PQueue from "p-queue";
+import { Pool } from "pg";
+import WebSocket from "ws";
+import { BacktestEngine } from "./backtest/BacktestEngine";
+import { StrategyCompiler } from "./compiler/compile";
+import {
+  getChatRepo,
+  getRepositoryFactory,
+} from "./database/RepositoryFactory";
+import { StrategyEvaluatorClient } from "./evaluation/StrategyEvaluatorClient";
+import { createStandardRegistry } from "./features/registry";
+import { generateDSLDocumentation } from "./lib/dslDocGenerator";
+import { generateImageKey, getStorageProvider } from "./lib/storage";
+import { BarCacheServiceV2 } from "./live/cache/BarCacheServiceV2";
 
 // Create PostgreSQL connection pool
 const pool = new Pool({
@@ -30,7 +33,7 @@ const adapter = new PrismaPg(pool);
 // Initialize Prisma with adapter (matching your project's pattern)
 const prisma = new PrismaClient({
   adapter,
-  log: ['error', 'warn'],
+  log: ["error", "warn"],
 });
 
 const PORT = process.env.PORTFOLIO_API_PORT || 3002;
@@ -41,9 +44,9 @@ let barCacheService: BarCacheServiceV2 | null = null;
 let twsPortfolioFetcher: any = null;
 async function getTwsPortfolioFetcher() {
   if (!twsPortfolioFetcher) {
-    const { PortfolioDataFetcher } = await import('./broker/twsPortfolio');
-    const twsHost = process.env.TWS_HOST || '127.0.0.1';
-    const twsPort = parseInt(process.env.TWS_PORT || '7497', 10);
+    const { PortfolioDataFetcher } = await import("./broker/twsPortfolio");
+    const twsHost = process.env.TWS_HOST || "127.0.0.1";
+    const twsPort = parseInt(process.env.TWS_PORT || "7497", 10);
     const clientId = 5; // Client ID 5 for dashboard portfolio queries
     twsPortfolioFetcher = new PortfolioDataFetcher(twsHost, twsPort, clientId);
   }
@@ -73,23 +76,34 @@ function getEvaluationQueue(): PQueue {
     });
 
     // Monitor queue events
-    evaluationQueue.on('active', () => {
-      console.log(`[auto-swap-queue] Working on task. Queue size: ${evaluationQueue!.size}, pending: ${evaluationQueue!.pending}`);
+    evaluationQueue.on("active", () => {
+      console.log(
+        `[auto-swap-queue] Working on task. Queue size: ${
+          evaluationQueue!.size
+        }, pending: ${evaluationQueue!.pending}`,
+      );
     });
 
-    evaluationQueue.on('idle', () => {
-      console.log('[auto-swap-queue] Queue is idle (all tasks completed)');
+    evaluationQueue.on("idle", () => {
+      console.log("[auto-swap-queue] Queue is idle (all tasks completed)");
     });
 
-    evaluationQueue.on('error', (error) => {
-      console.error('[auto-swap-queue] Queue error:', error);
+    evaluationQueue.on("error", (error) => {
+      console.error("[auto-swap-queue] Queue error:", error);
     });
   }
 
   // Update concurrency if mode changed
-  if (evaluationQueue.concurrency !== (autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1)) {
-    evaluationQueue.concurrency = autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1;
-    console.log(`[auto-swap-queue] Concurrency updated to ${evaluationQueue.concurrency}`);
+  if (
+    evaluationQueue.concurrency !==
+    (autoSwapParallel ? MAX_CONCURRENT_EVALUATIONS : 1)
+  ) {
+    evaluationQueue.concurrency = autoSwapParallel
+      ? MAX_CONCURRENT_EVALUATIONS
+      : 1;
+    console.log(
+      `[auto-swap-queue] Concurrency updated to ${evaluationQueue.concurrency}`,
+    );
   }
 
   return evaluationQueue;
@@ -99,16 +113,23 @@ function getBarCacheService(): BarCacheServiceV2 {
   if (!barCacheService) {
     const twsHost = process.env.TWS_HOST || "127.0.0.1";
     const twsPort = parseInt(process.env.TWS_PORT || "7497", 10);
-    const twsClientId = parseInt(process.env.TWS_CLIENT_ID || "2000", 10) + Math.floor(Math.random() * 1000);
+    const twsClientId =
+      parseInt(process.env.TWS_CLIENT_ID || "2000", 10) +
+      Math.floor(Math.random() * 1000);
 
     barCacheService = new BarCacheServiceV2(
       pool,
       { host: twsHost, port: twsPort, clientId: twsClientId },
       {
         enabled: true,
-        session: (process.env.BAR_CACHE_SESSION as 'rth' | 'all') || 'rth',
-        what: (process.env.BAR_CACHE_WHAT as 'trades' | 'midpoint' | 'bid' | 'ask') || 'trades',
-      }
+        session: (process.env.BAR_CACHE_SESSION as "rth" | "all") || "rth",
+        what:
+          (process.env.BAR_CACHE_WHAT as
+            | "trades"
+            | "midpoint"
+            | "bid"
+            | "ask") || "trades",
+      },
     );
   }
   return barCacheService;
@@ -116,32 +137,35 @@ function getBarCacheService(): BarCacheServiceV2 {
 
 // Enable CORS for web client
 const setCORSHeaders = (res: ServerResponse) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, OPTIONS",
+  );
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 };
 
 // Helper to send JSON response
 const sendJSON = (res: ServerResponse, data: any, status: number = 200) => {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 };
 
 // Helper to parse request body
 const parseBody = (req: IncomingMessage): Promise<any> => {
   return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => {
+    let body = "";
+    req.on("data", (chunk) => {
       body += chunk.toString();
     });
-    req.on('end', () => {
+    req.on("end", () => {
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch (error) {
-        reject(new Error('Invalid JSON'));
+        reject(new Error("Invalid JSON"));
       }
     });
-    req.on('error', reject);
+    req.on("error", reject);
   });
 };
 
@@ -149,21 +173,24 @@ const parseBody = (req: IncomingMessage): Promise<any> => {
 const calculatePnL = async () => {
   const allOrders = await prisma.order.findMany({
     where: {
-      status: { in: ['FILLED', 'PARTIALLY_FILLED'] },
+      status: { in: ["FILLED", "PARTIALLY_FILLED"] },
     },
     include: {
       fills: true,
     },
-    orderBy: { filledAt: 'asc' },
+    orderBy: { filledAt: "asc" },
   });
 
   let realizedPnL = 0;
-  const positionsBySymbol: Record<string, { qty: number; avgPrice: number; symbol: string }> = {};
+  const positionsBySymbol: Record<
+    string,
+    { qty: number; avgPrice: number; symbol: string }
+  > = {};
 
   // Calculate realized P&L and current positions
   for (const order of allOrders) {
     const symbol = order.symbol;
-    const isBuy = order.side === 'BUY';
+    const isBuy = order.side === "BUY";
 
     if (!positionsBySymbol[symbol]) {
       positionsBySymbol[symbol] = { qty: 0, avgPrice: 0, symbol };
@@ -176,7 +203,8 @@ const calculatePnL = async () => {
     if (isBuy) {
       // Add to position
       const newQty = position.qty + fillQty;
-      position.avgPrice = ((position.avgPrice * position.qty) + (fillPrice * fillQty)) / newQty;
+      position.avgPrice =
+        (position.avgPrice * position.qty + fillPrice * fillQty) / newQty;
       position.qty = newQty;
     } else {
       // Reduce position and calculate realized P&L
@@ -193,7 +221,9 @@ const calculatePnL = async () => {
   }
 
   // Filter out zero positions
-  const currentPositions = Object.values(positionsBySymbol).filter(p => p.qty > 0);
+  const currentPositions = Object.values(positionsBySymbol).filter(
+    (p) => p.qty > 0,
+  );
 
   return {
     realizedPnL: parseFloat(realizedPnL.toFixed(2)),
@@ -206,125 +236,127 @@ const calculatePnL = async () => {
 const getStrategyMetrics = async () => {
   const strategies = await prisma.strategy.findMany({
     where: {
-      status: { in: ['ACTIVE', 'CLOSED'] },
+      status: { in: ["ACTIVE", "CLOSED"] },
     },
     include: {
       orders: {
         where: {
-          status: { in: ['FILLED', 'PARTIALLY_FILLED'] },
+          status: { in: ["FILLED", "PARTIALLY_FILLED"] },
         },
         include: {
           fills: true,
         },
       },
       evaluations: {
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         take: 1,
       },
     },
   });
 
-  return await Promise.all(strategies.map(async strategy => {
-    const filledOrders = strategy.orders;
-    const totalTrades = filledOrders.length;
+  return await Promise.all(
+    strategies.map(async (strategy) => {
+      const filledOrders = strategy.orders;
+      const totalTrades = filledOrders.length;
 
-    // Calculate wins/losses (simplified)
-    let wins = 0;
-    let losses = 0;
-    let totalPnL = 0;
+      // Calculate wins/losses (simplified)
+      let wins = 0;
+      let losses = 0;
+      let totalPnL = 0;
 
-    for (const order of filledOrders) {
-      if (order.side === 'SELL') {
-        // Simplified: assume sell orders close positions for profit/loss
-        const pnl = (order.avgFillPrice || 0) * order.filledQty;
-        totalPnL += pnl;
-        if (pnl > 0) wins++;
-        else losses++;
+      for (const order of filledOrders) {
+        if (order.side === "SELL") {
+          // Simplified: assume sell orders close positions for profit/loss
+          const pnl = (order.avgFillPrice || 0) * order.filledQty;
+          totalPnL += pnl;
+          if (pnl > 0) wins++;
+          else losses++;
+        }
       }
-    }
 
-    const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
-    const latestEvaluation = strategy.evaluations[0];
+      const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+      const latestEvaluation = strategy.evaluations[0];
 
-    const statusUpdatedAt = (() => {
-      switch (strategy.status) {
-        case 'ACTIVE':
-          return strategy.activatedAt || strategy.updatedAt;
-        case 'CLOSED':
-          return strategy.closedAt || strategy.updatedAt;
-        case 'ARCHIVED':
-          return strategy.archivedAt || strategy.updatedAt;
-        default:
-          return strategy.updatedAt;
-      }
-    })();
+      const statusUpdatedAt = (() => {
+        switch (strategy.status) {
+          case "ACTIVE":
+            return strategy.activatedAt || strategy.updatedAt;
+          case "CLOSED":
+            return strategy.closedAt || strategy.updatedAt;
+          case "ARCHIVED":
+            return strategy.archivedAt || strategy.updatedAt;
+          default:
+            return strategy.updatedAt;
+        }
+      })();
 
-    // Get runtime state from database (persisted by orchestrator on state transitions)
-    const currentState = strategy.runtimeState || 'UNKNOWN';
+      // Get runtime state from database (persisted by orchestrator on state transitions)
+      const currentState = strategy.runtimeState || "UNKNOWN";
 
-    // Count open orders from database
-    const openOrderCount = await prisma.order.count({
-      where: {
-        strategyId: strategy.id,
-        status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
-      },
-    });
+      // Count open orders from database
+      const openOrderCount = await prisma.order.count({
+        where: {
+          strategyId: strategy.id,
+          status: { in: ["SUBMITTED", "PENDING", "PARTIALLY_FILLED"] },
+        },
+      });
 
-    // Fetch open order details for display in UI
-    const openOrders = await prisma.order.findMany({
-      where: {
-        strategyId: strategy.id,
-        status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
-      },
-      orderBy: { submittedAt: 'desc' },
-      select: {
-        id: true,
-        brokerOrderId: true,
-        planId: true,
-        symbol: true,
-        side: true,
-        qty: true,
-        type: true,
-        limitPrice: true,
-        stopPrice: true,
-        status: true,
-        submittedAt: true,
-        errorMessage: true,
-      },
-    });
+      // Fetch open order details for display in UI
+      const openOrders = await prisma.order.findMany({
+        where: {
+          strategyId: strategy.id,
+          status: { in: ["SUBMITTED", "PENDING", "PARTIALLY_FILLED"] },
+        },
+        orderBy: { submittedAt: "desc" },
+        select: {
+          id: true,
+          brokerOrderId: true,
+          planId: true,
+          symbol: true,
+          side: true,
+          qty: true,
+          type: true,
+          limitPrice: true,
+          stopPrice: true,
+          status: true,
+          submittedAt: true,
+          errorMessage: true,
+        },
+      });
 
-    return {
-      id: strategy.id,
-      name: strategy.name,
-      symbol: strategy.symbol,
-      status: strategy.status,
-      currentState, // Runtime FSM state (IDLE, ARMED, PLACED, MANAGING, EXITED)
-      timeframe: strategy.timeframe,
-      totalTrades,
-      wins,
-      losses,
-      winRate: parseFloat(winRate.toFixed(2)),
-      totalPnL: parseFloat(totalPnL.toFixed(2)),
-      openOrderCount, // Current open orders from runtime
-      openOrders, // Open order details for UI display
-      latestRecommendation: latestEvaluation?.recommendation || null,
-      activatedAt: strategy.activatedAt,
-      closedAt: strategy.closedAt,
-      archivedAt: strategy.archivedAt,
-      createdAt: strategy.createdAt,
-      updatedAt: statusUpdatedAt,
-      yamlContent: strategy.yamlContent,
-    };
-  }));
+      return {
+        id: strategy.id,
+        name: strategy.name,
+        symbol: strategy.symbol,
+        status: strategy.status,
+        currentState, // Runtime FSM state (IDLE, ARMED, PLACED, MANAGING, EXITED)
+        timeframe: strategy.timeframe,
+        totalTrades,
+        wins,
+        losses,
+        winRate: parseFloat(winRate.toFixed(2)),
+        totalPnL: parseFloat(totalPnL.toFixed(2)),
+        openOrderCount, // Current open orders from runtime
+        openOrders, // Open order details for UI display
+        latestRecommendation: latestEvaluation?.recommendation || null,
+        activatedAt: strategy.activatedAt,
+        closedAt: strategy.closedAt,
+        archivedAt: strategy.archivedAt,
+        createdAt: strategy.createdAt,
+        updatedAt: statusUpdatedAt,
+        yamlContent: strategy.yamlContent,
+      };
+    }),
+  );
 };
 
 // Get recent trades
 const getRecentTrades = async (limit: number = 20) => {
   const orders = await prisma.order.findMany({
     where: {
-      status: { in: ['FILLED', 'PARTIALLY_FILLED'] },
+      status: { in: ["FILLED", "PARTIALLY_FILLED"] },
     },
-    orderBy: { filledAt: 'desc' },
+    orderBy: { filledAt: "desc" },
     take: limit,
     include: {
       strategy: {
@@ -337,7 +369,7 @@ const getRecentTrades = async (limit: number = 20) => {
     },
   });
 
-  return orders.map(order => ({
+  return orders.map((order) => ({
     id: order.id,
     strategyName: order.strategy.name,
     symbol: order.symbol,
@@ -354,7 +386,7 @@ const getRecentTrades = async (limit: number = 20) => {
 // Get order statistics
 const getOrderStats = async () => {
   const stats = await prisma.order.groupBy({
-    by: ['status'],
+    by: ["status"],
     _count: true,
   });
 
@@ -393,32 +425,35 @@ const getAuditTrail = async (limit: number = 50) => {
       return auditLogs;
     }
   } catch (error) {
-    console.warn('[portfolio-api] Raw audit log query failed, falling back.', error);
+    console.warn(
+      "[portfolio-api] Raw audit log query failed, falling back.",
+      error,
+    );
   }
 
   const auditLogs = await prisma.orderAuditLog.findMany({
-    orderBy: { createdAt: 'desc' },
+    orderBy: { createdAt: "desc" },
     take: limit,
   });
 
   // Fetch strategy details for all logs
-  const strategyIds = [...new Set(auditLogs.map(log => log.strategyId))];
+  const strategyIds = [...new Set(auditLogs.map((log) => log.strategyId))];
   const strategies = await prisma.strategy.findMany({
     where: { id: { in: strategyIds } },
     select: { id: true, name: true, symbol: true },
   });
 
-  const strategyMap = new Map(strategies.map(s => [s.id, s]));
+  const strategyMap = new Map(strategies.map((s) => [s.id, s]));
 
-  return auditLogs.map(log => {
+  return auditLogs.map((log) => {
     const strategy = strategyMap.get(log.strategyId);
     return {
       id: log.id,
       orderId: log.orderId,
       brokerOrderId: log.brokerOrderId,
       strategyId: log.strategyId,
-      strategyName: strategy?.name || 'Unknown',
-      symbol: strategy?.symbol || 'N/A',
+      strategyName: strategy?.name || "Unknown",
+      symbol: strategy?.symbol || "N/A",
       eventType: log.eventType,
       oldStatus: log.oldStatus,
       newStatus: log.newStatus,
@@ -449,7 +484,7 @@ const getSystemLogs = async (params: {
 
   const logs = await prisma.systemLog.findMany({
     where,
-    orderBy: { createdAt: 'desc' },
+    orderBy: { createdAt: "desc" },
     take: limit,
   });
 
@@ -460,22 +495,22 @@ const getSystemLogs = async (params: {
 const getLogStats = async () => {
   const [byLevel, byComponent, recentErrors] = await Promise.all([
     prisma.systemLog.groupBy({
-      by: ['level'],
+      by: ["level"],
       _count: true,
     }),
     prisma.systemLog.groupBy({
-      by: ['component'],
+      by: ["component"],
       _count: true,
       orderBy: {
         _count: {
-          component: 'desc',
+          component: "desc",
         },
       },
       take: 10,
     }),
     prisma.systemLog.findMany({
-      where: { level: 'ERROR' },
-      orderBy: { createdAt: 'desc' },
+      where: { level: "ERROR" },
+      orderBy: { createdAt: "desc" },
       take: 10,
       select: {
         id: true,
@@ -503,10 +538,9 @@ const getLogStats = async () => {
 const convertTradeCheckToYAML = async (
   analysis: any,
   marketRegime: any,
-  maxRisk: number = 350
+  maxRisk: number = 350,
 ): Promise<{ yaml: string; warnings: string[] }> => {
-
-  const gatewayUrl = process.env.ACP_GATEWAY_URL || 'ws://localhost:8787/acp';
+  const gatewayUrl = process.env.ACP_GATEWAY_URL || "ws://localhost:8787/acp";
   const cwd = process.env.ACP_CWD || process.cwd();
 
   console.log(`[portfolio-api] Connecting to AI Gateway at ${gatewayUrl}`);
@@ -515,55 +549,72 @@ const convertTradeCheckToYAML = async (
     const ws = new WebSocket(gatewayUrl);
     let requestId = 1;
     let sessionId: string | null = null;
-    let buffer = '';
-    let responseText = '';
+    let buffer = "";
+    let responseText = "";
     const warnings: string[] = [];
     let hasReceivedAnyMessage = false;
 
     const timeout = setTimeout(() => {
-      console.error('[portfolio-api] Timeout - hasReceivedAnyMessage:', hasReceivedAnyMessage);
-      console.error('[portfolio-api] Timeout - responseText length:', responseText.length);
+      console.error(
+        "[portfolio-api] Timeout - hasReceivedAnyMessage:",
+        hasReceivedAnyMessage,
+      );
+      console.error(
+        "[portfolio-api] Timeout - responseText length:",
+        responseText.length,
+      );
       ws.close();
-      reject(new Error('AI Gateway timeout after 60 seconds'));
-    }, 60000);
+      reject(new Error("AI Gateway timeout after 60 seconds"));
+    }, 120000);
 
-    ws.on('open', () => {
-      console.log('[portfolio-api] AI Gateway WebSocket connected');
+    ws.on("open", () => {
+      console.log("[portfolio-api] AI Gateway WebSocket connected");
 
       // Send session/new request with persona
       const sessionNewMsg = {
-        jsonrpc: '2.0',
+        jsonrpc: "2.0",
         id: requestId++,
-        method: 'session/new',
+        method: "session/new",
         params: {
           cwd,
-          persona: 'blackrock_advisor',  // Use the trading strategy persona
-          mcpServers: [{
-            name: 'stocks-mcp',
-            type: 'stdio',
-            command: 'node',
-            args: [process.env.MCP_SERVER_PATH || './dist/mcp-server.js'],
-            env: []
-          }]
-        }
+          persona: "blackrock_advisor", // Use the trading strategy persona
+          mcpServers: [
+            {
+              name: "stocks-mcp",
+              type: "stdio",
+              command: "node",
+              args: [process.env.MCP_SERVER_PATH || "./dist/mcp-server.js"],
+              env: [],
+            },
+          ],
+        },
       };
 
-      console.log('[portfolio-api] Sending session/new with payload:', JSON.stringify(sessionNewMsg, null, 2));
+      console.log(
+        "[portfolio-api] Sending session/new with payload:",
+        JSON.stringify(sessionNewMsg, null, 2),
+      );
       ws.send(JSON.stringify(sessionNewMsg));
     });
 
-    ws.on('message', (data) => {
+    ws.on("message", (data) => {
       hasReceivedAnyMessage = true;
       const dataStr = data.toString();
-      console.log('[portfolio-api] Received message:', dataStr.substring(0, 500));
+      console.log(
+        "[portfolio-api] Received message:",
+        dataStr.substring(0, 500),
+      );
 
       buffer += dataStr;
 
       // Try to parse as complete JSON first (non-newline-delimited)
       try {
         const msg = JSON.parse(buffer);
-        console.log('[portfolio-api] Parsed complete message:', JSON.stringify(msg, null, 2).substring(0, 500));
-        buffer = ''; // Clear buffer on successful parse
+        console.log(
+          "[portfolio-api] Parsed complete message:",
+          JSON.stringify(msg, null, 2).substring(0, 500),
+        );
+        buffer = ""; // Clear buffer on successful parse
         handleMessage(msg);
         return;
       } catch (e) {
@@ -571,15 +622,18 @@ const convertTradeCheckToYAML = async (
       }
 
       // Try to parse newline-delimited JSON messages
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
       for (const line of lines) {
         if (!line.trim()) continue;
 
         try {
           const msg = JSON.parse(line);
-          console.log('[portfolio-api] Parsed line message:', JSON.stringify(msg, null, 2).substring(0, 500));
+          console.log(
+            "[portfolio-api] Parsed line message:",
+            JSON.stringify(msg, null, 2).substring(0, 500),
+          );
           handleMessage(msg);
         } catch (parseError) {
           // Ignore JSON parse errors for individual lines
@@ -591,7 +645,7 @@ const convertTradeCheckToYAML = async (
       // Session created
       if (msg.result?.sessionId && !sessionId) {
         sessionId = msg.result.sessionId;
-        console.log('[portfolio-api] Session created:', sessionId);
+        console.log("[portfolio-api] Session created:", sessionId);
 
         // Send the prompt
         const userPrompt = `Convert this TradeCheck analysis to a valid trading strategy YAML.
@@ -621,34 +675,40 @@ OUTPUT FORMAT:
 - Just the compiled YAML text`;
 
         const promptMsg = {
-          jsonrpc: '2.0',
+          jsonrpc: "2.0",
           id: requestId++,
-          method: 'session/prompt',
+          method: "session/prompt",
           params: {
             sessionId,
             stream: true,
-            prompt: [{ type: 'text', text: userPrompt }]
-          }
+            prompt: [{ type: "text", text: userPrompt }],
+          },
         };
 
-        console.log('[portfolio-api] Sending prompt');
+        console.log("[portfolio-api] Sending prompt");
         ws.send(JSON.stringify(promptMsg));
       }
 
       // Streaming update
-      if (msg.method === 'session/update') {
+      if (msg.method === "session/update") {
         const update = msg.params?.update;
         const text = extractText(update?.textContent || update?.content);
         if (text) {
           responseText += text;
-          console.log('[portfolio-api] Accumulated response length:', responseText.length);
+          console.log(
+            "[portfolio-api] Accumulated response length:",
+            responseText.length,
+          );
         }
       }
 
       // Stop reason (done)
       if (msg.result?.stopReason) {
-        console.log('[portfolio-api] Response complete, stopReason:', msg.result.stopReason);
-        console.log('[portfolio-api] Full response text:\n', responseText);
+        console.log(
+          "[portfolio-api] Response complete, stopReason:",
+          msg.result.stopReason,
+        );
+        console.log("[portfolio-api] Full response text:\n", responseText);
         clearTimeout(timeout);
         ws.close();
 
@@ -659,17 +719,22 @@ OUTPUT FORMAT:
         const yamlMatch = yaml.match(/(meta:[\s\S]+)/);
         if (yamlMatch) {
           yaml = yamlMatch[1].trim();
-          console.log('[portfolio-api] Extracted YAML starting with meta:');
+          console.log("[portfolio-api] Extracted YAML starting with meta:");
         } else {
           // Fallback: try code fences if Claude ignored instructions
           const yamlFenceMatch = yaml.match(/```ya?ml\n?([\s\S]+?)```/);
           if (yamlFenceMatch) {
             yaml = yamlFenceMatch[1].trim();
-            console.log('[portfolio-api] Extracted YAML from code fence (fallback)');
+            console.log(
+              "[portfolio-api] Extracted YAML from code fence (fallback)",
+            );
           } else {
             // Last resort: clean up any markdown
-            yaml = yaml.replace(/```ya?ml\n?/g, '').replace(/```\n?/g, '').trim();
-            console.log('[portfolio-api] Using cleaned response text');
+            yaml = yaml
+              .replace(/```ya?ml\n?/g, "")
+              .replace(/```\n?/g, "")
+              .trim();
+            console.log("[portfolio-api] Using cleaned response text");
           }
         }
 
@@ -678,9 +743,12 @@ OUTPUT FORMAT:
           const registry = createStandardRegistry();
           const compiler = new StrategyCompiler(registry);
           compiler.compileFromYAML(yaml);
-          console.log('[portfolio-api] YAML compilation successful');
+          console.log("[portfolio-api] YAML compilation successful");
         } catch (compileError: any) {
-          console.error('[portfolio-api] YAML compilation failed:', compileError.message);
+          console.error(
+            "[portfolio-api] YAML compilation failed:",
+            compileError.message,
+          );
           reject(new Error(`YAML compilation failed: ${compileError.message}`));
           return;
         }
@@ -690,34 +758,34 @@ OUTPUT FORMAT:
 
       // Error
       if (msg.error?.message) {
-        console.error('[portfolio-api] AI Gateway error:', msg.error.message);
+        console.error("[portfolio-api] AI Gateway error:", msg.error.message);
         clearTimeout(timeout);
         ws.close();
         reject(new Error(`AI Gateway error: ${msg.error.message}`));
       }
     }
 
-    ws.on('error', (error) => {
-      console.error('[portfolio-api] WebSocket error:', error);
+    ws.on("error", (error) => {
+      console.error("[portfolio-api] WebSocket error:", error);
       clearTimeout(timeout);
       reject(new Error(`WebSocket error: ${error.message}`));
     });
 
-    ws.on('close', () => {
-      console.log('[portfolio-api] WebSocket closed');
+    ws.on("close", () => {
+      console.log("[portfolio-api] WebSocket closed");
       clearTimeout(timeout);
     });
 
     // Helper to extract text from content
     function extractText(content: any): string | undefined {
       if (!content) return undefined;
-      if (typeof content === 'string') return content;
+      if (typeof content === "string") return content;
       if (Array.isArray(content)) {
         return content
-          .map((item) => (typeof item?.text === 'string' ? item.text : ''))
-          .join('');
+          .map((item) => (typeof item?.text === "string" ? item.text : ""))
+          .join("");
       }
-      if (typeof content?.text === 'string') return content.text;
+      if (typeof content?.text === "string") return content.text;
       return undefined;
     }
   });
@@ -726,10 +794,11 @@ OUTPUT FORMAT:
 // Fetch analysis from TradeCheck backend
 const fetchTradeCheckAnalysis = async (
   symbol: string,
-  timeframe: string = '5m',
-  limit: number = 100
+  timeframe: string = "5m",
+  limit: number = 100,
 ): Promise<{ market_regime: any; analyses: any[] }> => {
-  const tradeCheckUrl = process.env.TRADECHECK_API_URL || 'http://localhost:8000';
+  const tradeCheckUrl =
+    process.env.TRADECHECK_API_URL || "http://localhost:8000";
   const url = `${tradeCheckUrl}/api/analyze`;
 
   // Calculate date range based on limit
@@ -738,27 +807,34 @@ const fetchTradeCheckAnalysis = async (
   const endDate = new Date();
   const startDate = new Date();
 
-  if (timeframe === '1d') {
+  if (timeframe === "1d") {
     startDate.setDate(endDate.getDate() - limit);
   } else {
     // For intraday: approximate days needed (assuming 6.5 hour trading day = 390 minutes)
-    const minutesPerBar = timeframe === '5m' ? 5 : timeframe === '15m' ? 15 : timeframe === '1h' ? 60 : 5;
+    const minutesPerBar =
+      timeframe === "5m"
+        ? 5
+        : timeframe === "15m"
+        ? 15
+        : timeframe === "1h"
+        ? 60
+        : 5;
     const daysNeeded = Math.ceil((limit * minutesPerBar) / 390) + 5; // Add buffer days
     startDate.setDate(endDate.getDate() - daysNeeded);
   }
 
   const requestBody = {
     tickers: [symbol],
-    start_date: startDate.toISOString().split('T')[0],
-    end_date: endDate.toISOString().split('T')[0],
+    start_date: startDate.toISOString().split("T")[0],
+    end_date: endDate.toISOString().split("T")[0],
     timeframe,
-    limit
+    limit,
   };
 
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -774,29 +850,35 @@ const fetchTradeCheckAnalysis = async (
 // Auto-swap execution function using PQueue
 async function executeAutoSwap() {
   if (isAutoSwapping) {
-    console.log('[auto-swap] Skipping - previous cycle still in progress');
+    console.log("[auto-swap] Skipping - previous cycle still in progress");
     return;
   }
 
   isAutoSwapping = true;
-  console.log(`[auto-swap] Starting evaluation cycle (mode: ${autoSwapParallel ? 'parallel' : 'serial'})`);
+  console.log(
+    `[auto-swap] Starting evaluation cycle (mode: ${
+      autoSwapParallel ? "parallel" : "serial"
+    })`,
+  );
 
   try {
     // Get all active strategies (across all users)
     const activeStrategies = await prisma.strategy.findMany({
       where: {
-        status: 'ACTIVE',
+        status: "ACTIVE",
         deletedAt: null,
       },
-      orderBy: { activatedAt: 'asc' },
+      orderBy: { activatedAt: "asc" },
     });
 
     if (activeStrategies.length === 0) {
-      console.log('[auto-swap] No active strategies to evaluate');
+      console.log("[auto-swap] No active strategies to evaluate");
       return;
     }
 
-    console.log(`[auto-swap] Evaluating ${activeStrategies.length} active strategies...`);
+    console.log(
+      `[auto-swap] Evaluating ${activeStrategies.length} active strategies...`,
+    );
 
     // Get evaluation queue
     const queue = getEvaluationQueue();
@@ -810,32 +892,50 @@ async function executeAutoSwap() {
         async () => {
           try {
             await evaluateAndSwapStrategy(strategy);
-            return { success: true, strategyId: strategy.id, name: strategy.name };
+            return {
+              success: true,
+              strategyId: strategy.id,
+              name: strategy.name,
+            };
           } catch (error: any) {
-            console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
-            return { success: false, strategyId: strategy.id, name: strategy.name, error: error.message };
+            console.error(
+              `[auto-swap] Error evaluating ${strategy.name}:`,
+              error.message,
+            );
+            return {
+              success: false,
+              strategyId: strategy.id,
+              name: strategy.name,
+              error: error.message,
+            };
           }
         },
         {
           // Higher priority for strategies activated longer ago
-          priority: strategy.activatedAt ? -new Date(strategy.activatedAt).getTime() : 0,
-        }
-      )
+          priority: strategy.activatedAt
+            ? -new Date(strategy.activatedAt).getTime()
+            : 0,
+        },
+      ),
     );
 
     // Wait for all tasks to complete
     const results = await Promise.allSettled(tasks);
 
     const succeeded = results.filter(
-      (r) => r.status === 'fulfilled' && r.value && r.value.success
+      (r) => r.status === "fulfilled" && r.value && r.value.success,
     ).length;
     const failed = results.filter(
-      (r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value && !r.value.success)
+      (r) =>
+        r.status === "rejected" ||
+        (r.status === "fulfilled" && r.value && !r.value.success),
     ).length;
 
-    console.log(`[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`);
+    console.log(
+      `[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`,
+    );
   } catch (error: any) {
-    console.error('[auto-swap] Execution error:', error);
+    console.error("[auto-swap] Execution error:", error);
   } finally {
     isAutoSwapping = false;
   }
@@ -844,17 +944,21 @@ async function executeAutoSwap() {
 // Selective auto-swap execution function (for one-time manual trigger with selected strategies)
 async function executeAutoSwapSelective(strategyIds?: string[]) {
   if (isAutoSwapping) {
-    console.log('[auto-swap] Skipping - previous cycle still in progress');
+    console.log("[auto-swap] Skipping - previous cycle still in progress");
     return;
   }
 
   isAutoSwapping = true;
-  console.log(`[auto-swap] Starting selective evaluation cycle (mode: ${autoSwapParallel ? 'parallel' : 'serial'})`);
+  console.log(
+    `[auto-swap] Starting selective evaluation cycle (mode: ${
+      autoSwapParallel ? "parallel" : "serial"
+    })`,
+  );
 
   try {
     // Get active strategies (optionally filtered by IDs)
     const whereClause: any = {
-      status: 'ACTIVE',
+      status: "ACTIVE",
       deletedAt: null,
     };
 
@@ -864,15 +968,17 @@ async function executeAutoSwapSelective(strategyIds?: string[]) {
 
     const activeStrategies = await prisma.strategy.findMany({
       where: whereClause,
-      orderBy: { activatedAt: 'asc' },
+      orderBy: { activatedAt: "asc" },
     });
 
     if (activeStrategies.length === 0) {
-      console.log('[auto-swap] No active strategies to evaluate');
+      console.log("[auto-swap] No active strategies to evaluate");
       return;
     }
 
-    console.log(`[auto-swap] Evaluating ${activeStrategies.length} selected strategies...`);
+    console.log(
+      `[auto-swap] Evaluating ${activeStrategies.length} selected strategies...`,
+    );
 
     // Get evaluation queue
     const queue = getEvaluationQueue();
@@ -886,32 +992,50 @@ async function executeAutoSwapSelective(strategyIds?: string[]) {
         async () => {
           try {
             await evaluateAndSwapStrategy(strategy);
-            return { success: true, strategyId: strategy.id, name: strategy.name };
+            return {
+              success: true,
+              strategyId: strategy.id,
+              name: strategy.name,
+            };
           } catch (error: any) {
-            console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
-            return { success: false, strategyId: strategy.id, name: strategy.name, error: error.message };
+            console.error(
+              `[auto-swap] Error evaluating ${strategy.name}:`,
+              error.message,
+            );
+            return {
+              success: false,
+              strategyId: strategy.id,
+              name: strategy.name,
+              error: error.message,
+            };
           }
         },
         {
           // Higher priority for strategies activated longer ago
-          priority: strategy.activatedAt ? -new Date(strategy.activatedAt).getTime() : 0,
-        }
-      )
+          priority: strategy.activatedAt
+            ? -new Date(strategy.activatedAt).getTime()
+            : 0,
+        },
+      ),
     );
 
     // Wait for all tasks to complete
     const results = await Promise.allSettled(tasks);
 
     const succeeded = results.filter(
-      (r) => r.status === 'fulfilled' && r.value && r.value.success
+      (r) => r.status === "fulfilled" && r.value && r.value.success,
     ).length;
     const failed = results.filter(
-      (r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value && !r.value.success)
+      (r) =>
+        r.status === "rejected" ||
+        (r.status === "fulfilled" && r.value && !r.value.success),
     ).length;
 
-    console.log(`[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`);
+    console.log(
+      `[auto-swap] Completed: ${succeeded} succeeded, ${failed} failed`,
+    );
   } catch (error: any) {
-    console.error('[auto-swap] Execution error:', error);
+    console.error("[auto-swap] Execution error:", error);
   } finally {
     isAutoSwapping = false;
   }
@@ -927,11 +1051,17 @@ async function evaluateAndSwapStrategy(strategy: any) {
   try {
     // Get market data
     const barCache = getBarCacheService();
-    const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 100);
+    const bars = await barCache.getBars(
+      strategy.symbol,
+      strategy.timeframe,
+      100,
+    );
     const latestBar = bars[bars.length - 1];
 
     // Calculate time since activation
-    const activatedAt = strategy.activatedAt ? new Date(strategy.activatedAt) : null;
+    const activatedAt = strategy.activatedAt
+      ? new Date(strategy.activatedAt)
+      : null;
     const hoursSinceActivation = activatedAt
       ? Math.floor((Date.now() - activatedAt.getTime()) / (1000 * 60 * 60))
       : null;
@@ -1040,8 +1170,10 @@ STRATEGY CONTEXT:
 - Symbol: ${strategy.symbol}
 - Timeframe: ${strategy.timeframe}
 - Status: ${strategy.status}
-- ActivatedAt: ${strategy.activatedAt || 'Unknown'}
-- HoursSinceActivation: ${hoursSinceActivation !== null ? hoursSinceActivation : 'Unknown'}
+- ActivatedAt: ${strategy.activatedAt || "Unknown"}
+- HoursSinceActivation: ${
+      hoursSinceActivation !== null ? hoursSinceActivation : "Unknown"
+    }
 
 STRATEGY YAML:
 \`\`\`yaml
@@ -1049,10 +1181,15 @@ ${strategy.yamlContent}
 \`\`\`
 
 CURRENT MARKET (Last 10 bars):
-${bars.slice(-10).map((bar: any, i: number) => {
-  const idx = bars.length - 10 + i;
-  return `Bar ${idx + 1}: O=${bar.open.toFixed(2)} H=${bar.high.toFixed(2)} L=${bar.low.toFixed(2)} C=${bar.close.toFixed(2)} V=${bar.volume}`;
-}).join('\n')}
+${bars
+  .slice(-10)
+  .map((bar: any, i: number) => {
+    const idx = bars.length - 10 + i;
+    return `Bar ${idx + 1}: O=${bar.open.toFixed(2)} H=${bar.high.toFixed(
+      2,
+    )} L=${bar.low.toFixed(2)} C=${bar.close.toFixed(2)} V=${bar.volume}`;
+  })
+  .join("\n")}
 
 Current Price: $${latestBar.close.toFixed(2)}
 
@@ -1095,30 +1232,37 @@ RESPONSE FORMAT (required):
 \`\`\``;
 
     // Use StrategyEvaluatorClient
-    const evalEndpoint = process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8787/acp';
+    const evalEndpoint =
+      process.env.STRATEGY_EVAL_WS_ENDPOINT || "ws://localhost:8787/acp";
     const evaluatorClient = new StrategyEvaluatorClient(evalEndpoint, true);
 
     await evaluatorClient.ensureConnection();
     const analysisText = await evaluatorClient.sendPrompt(prompt, 120000);
 
     // Parse recommendation
-    const recommendationMatch = analysisText.match(/\*\*Recommendation:\s*(CONTINUE|SWAP)\*\*/i);
+    const recommendationMatch = analysisText.match(
+      /\*\*Recommendation:\s*(CONTINUE|SWAP)\*\*/i,
+    );
 
     if (!recommendationMatch) {
-      console.warn(`[auto-swap] Could not parse recommendation for ${strategy.name}`);
+      console.warn(
+        `[auto-swap] Could not parse recommendation for ${strategy.name}`,
+      );
       return;
     }
 
     const recommendation = recommendationMatch[1].toUpperCase();
 
     // Hysteresis: Require 2 consecutive SWAP recommendations before executing
-    if (recommendation === 'SWAP') {
+    if (recommendation === "SWAP") {
       const currentCount = swapCandidateCount.get(strategy.id) || 0;
       const newCount = currentCount + 1;
       swapCandidateCount.set(strategy.id, newCount);
 
       if (newCount < 2) {
-        console.log(`[auto-swap] ${strategy.name}: SWAP signal (${newCount}/2) - waiting for confirmation`);
+        console.log(
+          `[auto-swap] ${strategy.name}: SWAP signal (${newCount}/2) - waiting for confirmation`,
+        );
         return; // Don't execute swap yet, wait for next evaluation
       }
 
@@ -1135,7 +1279,9 @@ RESPONSE FORMAT (required):
 
       const newYaml = yamlMatch[1];
 
-      console.log(`[auto-swap] ${strategy.name}: SWAP signal confirmed (2/2) - executing swap...`);
+      console.log(
+        `[auto-swap] ${strategy.name}: SWAP signal confirmed (2/2) - executing swap...`,
+      );
 
       // Validate and compile new strategy
       const compiler = new StrategyCompiler(createStandardRegistry());
@@ -1149,31 +1295,41 @@ RESPONSE FORMAT (required):
         name: `${strategy.name} (Auto-swapped)`,
         timeframe: compiled.timeframe,
         yamlContent: newYaml,
-        changeReason: 'Auto-swap (background evaluation)',
+        changeReason: "Auto-swap (background evaluation)",
       });
 
       // Mark new strategy as PENDING
       await factory.getPrisma().strategy.update({
         where: { id: newStrategy.id },
-        data: { status: 'PENDING' },
+        data: { status: "PENDING" },
       });
 
       // Close old strategy
-      await strategyRepo.close(strategy.id, 'Auto-swapped by background evaluator');
+      await strategyRepo.close(
+        strategy.id,
+        "Auto-swapped by background evaluator",
+      );
 
-      console.log(`[auto-swap] Successfully swapped ${strategy.name} → ${newStrategy.id}`);
+      console.log(
+        `[auto-swap] Successfully swapped ${strategy.name} → ${newStrategy.id}`,
+      );
     } else {
       // CONTINUE recommendation - reset counter
       const previousCount = swapCandidateCount.get(strategy.id) || 0;
       if (previousCount > 0) {
-        console.log(`[auto-swap] ${strategy.name}: CONTINUE (reset swap counter from ${previousCount} to 0)`);
+        console.log(
+          `[auto-swap] ${strategy.name}: CONTINUE (reset swap counter from ${previousCount} to 0)`,
+        );
         swapCandidateCount.delete(strategy.id);
       } else {
         console.log(`[auto-swap] ${strategy.name}: CONTINUE (no swap needed)`);
       }
     }
   } catch (error: any) {
-    console.error(`[auto-swap] Error evaluating ${strategy.name}:`, error.message);
+    console.error(
+      `[auto-swap] Error evaluating ${strategy.name}:`,
+      error.message,
+    );
     throw error;
   }
 }
@@ -1182,26 +1338,27 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   setCORSHeaders(res);
 
   // Handle preflight
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
     return;
   }
 
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
   const pathname = url.pathname;
 
   console.log(`[portfolio-api] ${req.method} ${pathname}`);
 
   try {
-    if (pathname === '/api/portfolio/overview') {
-      const [pnlData, strategies, recentTrades, orderStats, auditTrail] = await Promise.all([
-        calculatePnL(),
-        getStrategyMetrics(),
-        getRecentTrades(20),
-        getOrderStats(),
-        getAuditTrail(50),
-      ]);
+    if (pathname === "/api/portfolio/overview") {
+      const [pnlData, strategies, recentTrades, orderStats, auditTrail] =
+        await Promise.all([
+          calculatePnL(),
+          getStrategyMetrics(),
+          getRecentTrades(20),
+          getOrderStats(),
+          getAuditTrail(50),
+        ]);
 
       sendJSON(res, {
         pnl: pnlData,
@@ -1211,25 +1368,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         auditTrail,
         timestamp: new Date().toISOString(),
       });
-    } else if (pathname === '/api/portfolio/positions') {
+    } else if (pathname === "/api/portfolio/positions") {
       const pnlData = await calculatePnL();
       sendJSON(res, {
         positions: pnlData.currentPositions,
         totalPositions: pnlData.totalPositions,
       });
-    } else if (pathname === '/api/portfolio/strategies') {
+    } else if (pathname === "/api/portfolio/strategies") {
       const strategies = await getStrategyMetrics();
       sendJSON(res, { strategies });
-    } else if (pathname === '/api/portfolio/trades') {
-      const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+    } else if (pathname === "/api/portfolio/trades") {
+      const limit = parseInt(url.searchParams.get("limit") || "20", 10);
       const trades = await getRecentTrades(limit);
       sendJSON(res, { trades });
-    } else if (pathname === '/api/portfolio/stats') {
+    } else if (pathname === "/api/portfolio/stats") {
       const orderStats = await getOrderStats();
       sendJSON(res, { orderStats });
-    } else if (pathname === '/api/portfolio/tws-snapshot') {
+    } else if (pathname === "/api/portfolio/tws-snapshot") {
       // GET /api/portfolio/tws-snapshot?force_refresh=true - Get live TWS portfolio snapshot
-      const forceRefresh = url.searchParams.get('force_refresh') === 'true';
+      const forceRefresh = url.searchParams.get("force_refresh") === "true";
 
       try {
         // Use singleton fetcher to avoid connect/disconnect churn
@@ -1258,65 +1415,73 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           timestamp: new Date().toISOString(),
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Failed to fetch TWS snapshot:', error);
-        sendJSON(res, {
-          success: false,
-          error: 'Failed to fetch TWS portfolio snapshot',
-          message: error.message,
-          note: 'Make sure TWS/IB Gateway is running and connected',
-        }, 500);
+        console.error("[portfolio-api] Failed to fetch TWS snapshot:", error);
+        sendJSON(
+          res,
+          {
+            success: false,
+            error: "Failed to fetch TWS portfolio snapshot",
+            message: error.message,
+            note: "Make sure TWS/IB Gateway is running and connected",
+          },
+          500,
+        );
       }
-    } else if (pathname === '/api/logs') {
+    } else if (pathname === "/api/logs") {
       // Get system logs with filters
       const params = {
-        limit: parseInt(url.searchParams.get('limit') || '100', 10),
-        level: url.searchParams.get('level') || undefined,
-        component: url.searchParams.get('component') || undefined,
-        strategyId: url.searchParams.get('strategyId') || undefined,
-        since: url.searchParams.get('since') || undefined,
+        limit: parseInt(url.searchParams.get("limit") || "100", 10),
+        level: url.searchParams.get("level") || undefined,
+        component: url.searchParams.get("component") || undefined,
+        strategyId: url.searchParams.get("strategyId") || undefined,
+        since: url.searchParams.get("since") || undefined,
       };
       const logs = await getSystemLogs(params);
       sendJSON(res, { logs, count: logs.length });
-    } else if (pathname === '/api/logs/stats') {
+    } else if (pathname === "/api/logs/stats") {
       // Get log statistics
       const stats = await getLogStats();
       sendJSON(res, { stats });
-    } else if (pathname === '/api/portfolio/rejections') {
+    } else if (pathname === "/api/portfolio/rejections") {
       // GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Get recent rejected orders
-      const sinceParam = url.searchParams.get('since');
-      const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 5 * 60 * 1000); // Default: last 5 minutes
+      const sinceParam = url.searchParams.get("since");
+      const since = sinceParam
+        ? new Date(sinceParam)
+        : new Date(Date.now() - 5 * 60 * 1000); // Default: last 5 minutes
 
       try {
         // Query order_audit_log for REJECTED events
         const rejectedOrders = await prisma.orderAuditLog.findMany({
           where: {
-            eventType: 'REJECTED',
+            eventType: "REJECTED",
             createdAt: { gte: since },
           },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { createdAt: "desc" },
           take: 50,
         });
 
         // Fetch strategy details for each rejection
-        const strategyIds = [...new Set(rejectedOrders.map(log => log.strategyId))];
+        const strategyIds = [
+          ...new Set(rejectedOrders.map((log) => log.strategyId)),
+        ];
         const strategies = await prisma.strategy.findMany({
           where: { id: { in: strategyIds } },
           select: { id: true, name: true, symbol: true },
         });
 
-        const strategyMap = new Map(strategies.map(s => [s.id, s]));
+        const strategyMap = new Map(strategies.map((s) => [s.id, s]));
 
         // Enrich rejections with strategy info
-        const enrichedRejections = rejectedOrders.map(log => {
+        const enrichedRejections = rejectedOrders.map((log) => {
           const strategy = strategyMap.get(log.strategyId);
           return {
             id: log.id,
             orderId: log.orderId,
             brokerOrderId: log.brokerOrderId,
             strategyId: log.strategyId,
-            strategyName: strategy?.name || 'Unknown',
-            symbol: strategy?.symbol || 'N/A',
-            errorMessage: log.errorMessage || 'Unknown reason',
+            strategyName: strategy?.name || "Unknown",
+            symbol: strategy?.symbol || "N/A",
+            errorMessage: log.errorMessage || "Unknown reason",
             createdAt: log.createdAt,
             metadata: log.metadata,
           };
@@ -1328,18 +1493,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           since: since.toISOString(),
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching rejected orders:', error);
-        sendJSON(res, { error: error.message || 'Failed to fetch rejected orders' }, 500);
+        console.error("[portfolio-api] Error fetching rejected orders:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to fetch rejected orders" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/bars')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/bars")
+    ) {
       // GET /api/portfolio/strategies/:id/bars - Get historical bars for chart from cache
-      if (req.method !== 'GET') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "GET") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/bars
-      const limit = parseInt(url.searchParams.get('limit') || '200', 10);
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/bars
+      const limit = parseInt(url.searchParams.get("limit") || "200", 10);
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1348,7 +1520,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findById(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
@@ -1360,11 +1532,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           strategy.symbol,
           strategy.timeframe,
           limit,
-          { forceRefresh: true } // Always get fresh data for chart
+          { forceRefresh: true }, // Always get fresh data for chart
         );
 
         // Convert to API format (Bar already has correct structure, just format timestamp)
-        const bars = cachedBars.map(bar => ({
+        const bars = cachedBars.map((bar) => ({
           timestamp: new Date(bar.timestamp).toISOString(),
           open: bar.open,
           high: bar.high,
@@ -1381,17 +1553,30 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           cached: true, // Indicate data is from cache
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching bars:', error);
-        sendJSON(res, { error: error.message || 'Failed to fetch chart data' }, 500);
+        console.error("[portfolio-api] Error fetching bars:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to fetch chart data" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && !pathname.endsWith('/close') && !pathname.endsWith('/reopen') && !pathname.endsWith('/force-deploy') && !pathname.endsWith('/backtest') && !pathname.endsWith('/bars') && !pathname.endsWith('/review') && !pathname.endsWith('/swap')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      !pathname.endsWith("/close") &&
+      !pathname.endsWith("/reopen") &&
+      !pathname.endsWith("/force-deploy") &&
+      !pathname.endsWith("/backtest") &&
+      !pathname.endsWith("/bars") &&
+      !pathname.endsWith("/review") &&
+      !pathname.endsWith("/swap")
+    ) {
       // GET /api/portfolio/strategies/:id - Get single strategy details
-      if (req.method !== 'GET') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "GET") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1400,25 +1585,35 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findByIdWithRelations(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
         sendJSON(res, { strategy });
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching strategy details:', error);
-        sendJSON(res, { error: error.message || 'Failed to fetch strategy details' }, 500);
+        console.error(
+          "[portfolio-api] Error fetching strategy details:",
+          error,
+        );
+        sendJSON(
+          res,
+          { error: error.message || "Failed to fetch strategy details" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/close')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/close")
+    ) {
       // POST /api/portfolio/strategies/:id/close
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/close
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/close
       const body = await parseBody(req);
-      const reason = body.reason || 'Closed via UI';
+      const reason = body.reason || "Closed via UI";
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1429,12 +1624,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findById(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
-        if (strategy.status === 'CLOSED') {
-          sendJSON(res, { error: 'Strategy is already closed' }, 400);
+        if (strategy.status === "CLOSED") {
+          sendJSON(res, { error: "Strategy is already closed" }, 400);
           return;
         }
 
@@ -1444,11 +1639,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Log deactivation
         await execHistoryRepo.logDeactivation(strategyId, reason);
 
-        console.log(`[portfolio-api] Closed strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`);
+        console.log(
+          `[portfolio-api] Closed strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`,
+        );
 
         sendJSON(res, {
           success: true,
-          message: 'Strategy closed successfully',
+          message: "Strategy closed successfully",
           strategy: {
             id: strategyId,
             symbol: strategy.symbol,
@@ -1458,19 +1655,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           },
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error closing strategy:', error);
-        sendJSON(res, { error: error.message || 'Failed to close strategy' }, 500);
+        console.error("[portfolio-api] Error closing strategy:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to close strategy" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/reopen')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/reopen")
+    ) {
       // POST /api/portfolio/strategies/:id/reopen
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/reopen
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/reopen
       const body = await parseBody(req);
-      const reason = body.reason || 'Reopened via UI';
+      const reason = body.reason || "Reopened via UI";
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1482,17 +1686,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findById(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
-        if (strategy.status !== 'CLOSED') {
-          sendJSON(res, { error: 'Only CLOSED strategies can be reopened' }, 400);
+        if (strategy.status !== "CLOSED") {
+          sendJSON(
+            res,
+            { error: "Only CLOSED strategies can be reopened" },
+            400,
+          );
           return;
         }
 
         // Reopen strategy (sets to PENDING, orchestrator will pick it up)
-        await strategyRepo.reopen(strategyId, reason, 'user');
+        await strategyRepo.reopen(strategyId, reason, "user");
 
         // Invalidate completed CLOSE operations to allow evaluator to close again if needed
         await operationQueue.invalidateCloseOperations(strategyId);
@@ -1500,37 +1708,47 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Log activation
         await execHistoryRepo.logActivation(strategyId);
 
-        console.log(`[portfolio-api] Reopened strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`);
+        console.log(
+          `[portfolio-api] Reopened strategy ${strategyId}: ${strategy.name} (${strategy.symbol})`,
+        );
 
         sendJSON(res, {
           success: true,
-          message: 'Strategy reopened successfully and set to PENDING. Orchestrator will activate it.',
+          message:
+            "Strategy reopened successfully and set to PENDING. Orchestrator will activate it.",
           strategy: {
             id: strategyId,
             symbol: strategy.symbol,
             name: strategy.name,
-            status: 'PENDING',
+            status: "PENDING",
             reopenedAt: new Date().toISOString(),
           },
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error reopening strategy:', error);
-        sendJSON(res, { error: error.message || 'Failed to reopen strategy' }, 500);
+        console.error("[portfolio-api] Error reopening strategy:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to reopen strategy" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/force-deploy')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/force-deploy")
+    ) {
       // POST /api/portfolio/strategies/:id/force-deploy
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/force-deploy
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/force-deploy
       const body = await parseBody(req);
-      const reason = body.reason || '';
+      const reason = body.reason || "";
 
       // Validate reason is provided
       if (!reason.trim()) {
-        sendJSON(res, { error: 'Reason is required' }, 400);
+        sendJSON(res, { error: "Reason is required" }, 400);
         return;
       }
 
@@ -1547,12 +1765,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
-        if (strategy.status !== 'ACTIVE') {
-          sendJSON(res, { error: 'Only ACTIVE strategies can be force deployed' }, 400);
+        if (strategy.status !== "ACTIVE") {
+          sendJSON(
+            res,
+            { error: "Only ACTIVE strategies can be force deployed" },
+            400,
+          );
           return;
         }
 
@@ -1560,53 +1782,71 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const openOrderCount = await prisma.order.count({
           where: {
             strategyId,
-            status: { in: ['SUBMITTED', 'PENDING', 'PARTIALLY_FILLED'] },
+            status: { in: ["SUBMITTED", "PENDING", "PARTIALLY_FILLED"] },
           },
         });
 
         if (openOrderCount > 0) {
-          sendJSON(res, {
-            error: `Cannot force deploy - strategy already has ${openOrderCount} open order(s)`
-          }, 400);
+          sendJSON(
+            res,
+            {
+              error: `Cannot force deploy - strategy already has ${openOrderCount} open order(s)`,
+            },
+            400,
+          );
           return;
         }
 
         // 3. Compile strategy YAML to get IR and extract order plan
-        const { StrategyCompiler } = await import('./compiler/compile');
-        const { createStandardRegistry } = await import('./features/registry');
+        const { StrategyCompiler } = await import("./compiler/compile");
+        const { createStandardRegistry } = await import("./features/registry");
         const registry = createStandardRegistry();
         const compiler = new StrategyCompiler(registry);
         const ir = compiler.compileFromYAML(strategy.yamlContent);
         const armedTransition = ir.transitions.find(
-          t => t.from === 'ARMED' && t.to === 'PLACED'
+          (t) => t.from === "ARMED" && t.to === "PLACED",
         );
 
         if (!armedTransition) {
-          sendJSON(res, { error: 'No entry transition found in strategy' }, 400);
+          sendJSON(
+            res,
+            { error: "No entry transition found in strategy" },
+            400,
+          );
           return;
         }
 
         const submitAction = armedTransition.actions.find(
-          a => a.type === 'submit_order_plan'
+          (a) => a.type === "submit_order_plan",
         );
 
         if (!submitAction || !submitAction.planId) {
-          sendJSON(res, { error: 'No order plan found in entry transition' }, 400);
+          sendJSON(
+            res,
+            { error: "No order plan found in entry transition" },
+            400,
+          );
           return;
         }
 
-        const orderPlan = ir.orderPlans.find(p => p.id === submitAction.planId);
+        const orderPlan = ir.orderPlans.find(
+          (p) => p.id === submitAction.planId,
+        );
         if (!orderPlan) {
-          sendJSON(res, { error: 'Order plan not found in compiled IR' }, 400);
+          sendJSON(res, { error: "Order plan not found in compiled IR" }, 400);
           return;
         }
 
         // 5. Fetch current bar data
         const barCache = getBarCacheService();
-        const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 1);
+        const bars = await barCache.getBars(
+          strategy.symbol,
+          strategy.timeframe,
+          1,
+        );
 
         if (bars.length === 0) {
-          sendJSON(res, { error: 'No market data available' }, 500);
+          sendJSON(res, { error: "No market data available" }, 500);
           return;
         }
 
@@ -1618,26 +1858,29 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         let portfolioSnapshot;
         try {
           portfolioSnapshot = await portfolioFetcher.getPortfolioSnapshot(true); // Force refresh
-          console.log('[portfolio-api] Portfolio snapshot fetched', {
+          console.log("[portfolio-api] Portfolio snapshot fetched", {
             totalValue: portfolioSnapshot.totalValue,
             buyingPower: portfolioSnapshot.buyingPower,
           });
         } catch (error) {
-          console.warn('[portfolio-api] Failed to fetch portfolio snapshot, continuing without position sizing', error);
+          console.warn(
+            "[portfolio-api] Failed to fetch portfolio snapshot, continuing without position sizing",
+            error,
+          );
         }
 
         // 7. Create broker adapter and environment (same config as orchestrator)
-        const { TwsAdapter } = await import('./broker/twsAdapter');
-        const twsHost = process.env.TWS_HOST || '127.0.0.1';
-        const twsPort = parseInt(process.env.TWS_PORT || '7497');
+        const { TwsAdapter } = await import("./broker/twsAdapter");
+        const twsHost = process.env.TWS_HOST || "127.0.0.1";
+        const twsPort = parseInt(process.env.TWS_PORT || "7497");
         const twsClientId = 1; // Use different client ID from orchestrator (0)
         const brokerAdapter = new TwsAdapter(twsHost, twsPort, twsClientId);
 
         const brokerEnv = {
-          accountId: process.env.TWS_ACCOUNT_ID || 'paper',
-          dryRun: !(process.env.LIVE === 'true' || process.env.LIVE === '1'),
-          allowLiveOrders: process.env.ALLOW_LIVE_ORDERS !== 'false',
-          allowCancelEntries: process.env.ALLOW_CANCEL_ENTRIES === 'true',
+          accountId: process.env.TWS_ACCOUNT_ID || "paper",
+          dryRun: !(process.env.LIVE === "true" || process.env.LIVE === "1"),
+          allowLiveOrders: process.env.ALLOW_LIVE_ORDERS !== "false",
+          allowCancelEntries: process.env.ALLOW_CANCEL_ENTRIES === "true",
           maxOrdersPerSymbol: process.env.MAX_ORDERS_PER_SYMBOL
             ? parseInt(process.env.MAX_ORDERS_PER_SYMBOL)
             : undefined,
@@ -1651,7 +1894,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             ? parseFloat(process.env.DAILY_LOSS_LIMIT)
             : undefined,
           // Dynamic position sizing configuration
-          enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === 'true',
+          enableDynamicSizing: process.env.ENABLE_DYNAMIC_SIZING === "true",
           buyingPowerFactor: process.env.BUYING_POWER_FACTOR
             ? parseFloat(process.env.BUYING_POWER_FACTOR)
             : 0.75,
@@ -1663,7 +1906,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // 7. Submit order plan via broker adapter
         const orders = await brokerAdapter.submitOrderPlan(
           orderPlan,
-          brokerEnv
+          brokerEnv,
         );
 
         // 8. Persist orders to database (CRITICAL: prevents reconciliation from canceling them as orphans)
@@ -1671,14 +1914,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         for (const order of orders) {
           try {
             // Map broker order type (lowercase) to Prisma OrderType (uppercase)
-            const orderType = order.type.toUpperCase() as 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT';
+            const orderType = order.type.toUpperCase() as
+              | "MARKET"
+              | "LIMIT"
+              | "STOP"
+              | "STOP_LIMIT";
 
             const dbOrder = await orderRepo.create({
               strategyId,
               brokerOrderId: order.id,
               planId: orderPlan.id,
               symbol: order.symbol,
-              side: order.side === 'buy' ? 'BUY' : 'SELL',
+              side: order.side === "buy" ? "BUY" : "SELL",
               qty: order.qty,
               type: orderType,
               limitPrice: order.limitPrice,
@@ -1689,25 +1936,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               orderId: dbOrder.id,
               brokerOrderId: order.id,
               strategyId,
-              eventType: 'SUBMITTED',
-              newStatus: 'SUBMITTED',
+              eventType: "SUBMITTED",
+              newStatus: "SUBMITTED",
               quantity: order.qty,
               metadata: {
-                source: 'force_deploy',
+                source: "force_deploy",
                 orderPlanId: orderPlan.id,
               },
             });
           } catch (error) {
-            console.error(`Failed to persist order ${order.id} to database:`, error);
+            console.error(
+              `Failed to persist order ${order.id} to database:`,
+              error,
+            );
             // Continue with other orders - don't fail the entire operation
           }
         }
 
         // 9. Create audit logs
-        const currentState = strategy.runtimeState || 'UNKNOWN';
+        const currentState = strategy.runtimeState || "UNKNOWN";
         await strategyRepo.createForceDeployAudit({
           strategyId,
-          changedBy: 'user', // TODO: Get actual user ID from auth
+          changedBy: "user", // TODO: Get actual user ID from auth
           reason,
           metadata: {
             currentState,
@@ -1725,11 +1975,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           currentVolume: BigInt(currentBar.volume),
           barTimestamp: new Date(currentBar.timestamp),
           orderCount: orders.length,
-          initiatedBy: 'user',
+          initiatedBy: "user",
           reason,
         });
 
-        console.log(`[portfolio-api] Force deployed strategy ${strategyId}: ${strategy.name} (${strategy.symbol}) - ${orders.length} orders submitted`);
+        console.log(
+          `[portfolio-api] Force deployed strategy ${strategyId}: ${strategy.name} (${strategy.symbol}) - ${orders.length} orders submitted`,
+        );
 
         // Cleanup portfolio fetcher
         if (portfolioFetcher) {
@@ -1743,22 +1995,29 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           message: `Force deployed ${orders.length} order(s) for ${strategy.name}`,
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error force deploying strategy:', error);
+        console.error("[portfolio-api] Error force deploying strategy:", error);
 
         // Cleanup portfolio fetcher on error
         if (portfolioFetcher) {
           try {
             await portfolioFetcher.disconnect();
           } catch (cleanupError) {
-            console.error('[portfolio-api] Error cleaning up portfolio fetcher:', cleanupError);
+            console.error(
+              "[portfolio-api] Error cleaning up portfolio fetcher:",
+              cleanupError,
+            );
           }
         }
 
-        sendJSON(res, { error: error.message || 'Failed to force deploy strategy' }, 500);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to force deploy strategy" },
+          500,
+        );
       }
-    } else if (pathname === '/api/portfolio/strategy-audit') {
+    } else if (pathname === "/api/portfolio/strategy-audit") {
       // GET /api/portfolio/strategy-audit?limit=100
-      const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+      const limit = parseInt(url.searchParams.get("limit") || "100", 10);
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1768,9 +2027,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const auditLogs = await strategyRepo.getAllAuditLogs(limit);
 
         // Fetch strategy details for each unique strategyId
-        const uniqueStrategyIds = [...new Set(auditLogs.map((log: any) => log.strategyId))];
+        const uniqueStrategyIds = [
+          ...new Set(auditLogs.map((log: any) => log.strategyId)),
+        ];
         const strategies = await Promise.all(
-          uniqueStrategyIds.map((id: string) => strategyRepo.findById(id))
+          uniqueStrategyIds.map((id: string) => strategyRepo.findById(id)),
         );
 
         // Create a map of strategyId -> strategy
@@ -1796,17 +2057,27 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           count: enrichedLogs.length,
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching strategy audit logs:', error);
-        sendJSON(res, { error: error.message || 'Failed to fetch strategy audit logs' }, 500);
+        console.error(
+          "[portfolio-api] Error fetching strategy audit logs:",
+          error,
+        );
+        sendJSON(
+          res,
+          { error: error.message || "Failed to fetch strategy audit logs" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/backtest')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/backtest")
+    ) {
       // POST /api/portfolio/strategies/:id/backtest
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/backtest
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/backtest
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1816,52 +2087,74 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findById(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
         // Parse timeframe to determine bar count (default 180 bars)
-        const timeframe = strategy.timeframe || '5m';
+        const timeframe = strategy.timeframe || "5m";
         const barCount = 180;
 
         // Fetch historical bars via cache (DB → TWS fallback)
         const barCache = getBarCacheService();
-        console.log(`[backtest] Fetching ${barCount} bars for ${strategy.symbol} @ ${timeframe}`);
+        console.log(
+          `[backtest] Fetching ${barCount} bars for ${strategy.symbol} @ ${timeframe}`,
+        );
 
-        const bars = await barCache.getBars(strategy.symbol, timeframe, barCount);
+        const bars = await barCache.getBars(
+          strategy.symbol,
+          timeframe,
+          barCount,
+        );
 
         if (bars.length === 0) {
-          sendJSON(res, { error: 'No historical data available' }, 500);
+          sendJSON(res, { error: "No historical data available" }, 500);
           return;
         }
 
         // Take last 180 bars
         const barsToTest = bars.slice(-barCount);
 
-        console.log(`[backtest] Running backtest with ${barsToTest.length} bars`);
+        console.log(
+          `[backtest] Running backtest with ${barsToTest.length} bars`,
+        );
 
         // Run backtest
         const backtestEngine = new BacktestEngine();
-        const result = await backtestEngine.runBacktestFromYAML(strategy.yamlContent, barsToTest);
+        const result = await backtestEngine.runBacktestFromYAML(
+          strategy.yamlContent,
+          barsToTest,
+        );
 
-        console.log(`[backtest] Backtest complete: ${result.totalTrades} trades, P&L: ${result.realizedPnL.toFixed(2)}`);
+        console.log(
+          `[backtest] Backtest complete: ${
+            result.totalTrades
+          } trades, P&L: ${result.realizedPnL.toFixed(2)}`,
+        );
 
         sendJSON(res, {
           success: true,
           backtest: result,
         });
       } catch (error: any) {
-        console.error('[backtest] Error running backtest:', error);
-        sendJSON(res, { error: error.message || 'Failed to run backtest' }, 500);
+        console.error("[backtest] Error running backtest:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to run backtest" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/review')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/review")
+    ) {
       // POST /api/portfolio/strategies/:id/review - AI-powered strategy review
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/review
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/review
 
       const factory = getRepositoryFactory();
       const strategyRepo = factory.getStrategyRepo();
@@ -1871,15 +2164,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const strategy = await strategyRepo.findById(strategyId);
 
         if (!strategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
-        console.log(`[review] Starting AI review for strategy ${strategy.id} (${strategy.name})`);
+        console.log(
+          `[review] Starting AI review for strategy ${strategy.id} (${strategy.name})`,
+        );
 
         // Gather market data
         const barCache = getBarCacheService();
-        const bars = await barCache.getBars(strategy.symbol, strategy.timeframe, 100);
+        const bars = await barCache.getBars(
+          strategy.symbol,
+          strategy.timeframe,
+          100,
+        );
         const latestBar = bars[bars.length - 1];
 
         // Build review prompt
@@ -1891,7 +2190,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 - Symbol: ${strategy.symbol}
 - Timeframe: ${strategy.timeframe}
 - Status: ${strategy.status}
-- Activated: ${strategy.activatedAt ? new Date(strategy.activatedAt).toLocaleString() : 'Not activated'}
+- Activated: ${
+          strategy.activatedAt
+            ? new Date(strategy.activatedAt).toLocaleString()
+            : "Not activated"
+        }
 
 **Strategy Configuration (YAML):**
 \`\`\`yaml
@@ -1899,7 +2202,15 @@ ${strategy.yamlContent}
 \`\`\`
 
 **Current Market Data (Last 5 bars):**
-${bars.slice(-5).map((bar: any, i: number) => `Bar ${i + 1}: O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close} V=${bar.volume}`).join('\n')}
+${bars
+  .slice(-5)
+  .map(
+    (bar: any, i: number) =>
+      `Bar ${i + 1}: O=${bar.open} H=${bar.high} L=${bar.low} C=${
+        bar.close
+      } V=${bar.volume}`,
+  )
+  .join("\n")}
 
 Current Price: $${latestBar.close}
 
@@ -1912,7 +2223,9 @@ Analyze this strategy based on:
 
 **Use MCP tools for additional context:**
 - get_live_portfolio_snapshot() - Check current portfolio state
-- get_market_data("${strategy.symbol}", "${strategy.timeframe}", 100) - Analyze market conditions
+- get_market_data("${strategy.symbol}", "${
+          strategy.timeframe
+        }", 100) - Analyze market conditions
 - get_sector_info("${strategy.symbol}") - Understand sector context
 
 **IMPORTANT: Provide a clear recommendation - CONTINUE or SWAP only (never recommend stopping)**
@@ -1938,20 +2251,21 @@ Analyze this strategy based on:
 Be concise but thorough. Focus on actionable insights. If swapping, ensure the new strategy addresses the specific issues you identified.`;
 
         // Use StrategyEvaluatorClient's WebSocket connection to ACP
-        const evalEndpoint = process.env.STRATEGY_EVAL_WS_ENDPOINT || 'ws://localhost:8787/acp';
+        const evalEndpoint =
+          process.env.STRATEGY_EVAL_WS_ENDPOINT || "ws://localhost:8787/acp";
         const evaluatorClient = new StrategyEvaluatorClient(evalEndpoint, true);
 
-        console.log('[review] Connecting to ACP gateway...');
+        console.log("[review] Connecting to ACP gateway...");
 
         // Ensure WebSocket connection is established
         await evaluatorClient.ensureConnection();
 
-        console.log('[review] Sending prompt to AI...');
+        console.log("[review] Sending prompt to AI...");
 
         // Send prompt through ACP gateway (which has access to MCP tools)
         const analysisText = await evaluatorClient.sendPrompt(prompt, 120000); // 2 minute timeout
 
-        console.log('[review] Received AI analysis');
+        console.log("[review] Received AI analysis");
         console.log(`[review] AI review completed for strategy ${strategy.id}`);
 
         sendJSON(res, {
@@ -1965,22 +2279,29 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           },
         });
       } catch (error: any) {
-        console.error('[review] Error running AI review:', error);
-        sendJSON(res, { error: error.message || 'Failed to run AI review' }, 500);
+        console.error("[review] Error running AI review:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to run AI review" },
+          500,
+        );
       }
-    } else if (pathname.startsWith('/api/portfolio/strategies/') && pathname.endsWith('/swap')) {
+    } else if (
+      pathname.startsWith("/api/portfolio/strategies/") &&
+      pathname.endsWith("/swap")
+    ) {
       // POST /api/portfolio/strategies/:id/swap - Swap strategy with new YAML
-      if (req.method !== 'POST') {
-        sendJSON(res, { error: 'Method not allowed' }, 405);
+      if (req.method !== "POST") {
+        sendJSON(res, { error: "Method not allowed" }, 405);
         return;
       }
 
-      const strategyId = pathname.split('/')[4]; // Extract ID from /api/portfolio/strategies/:id/swap
+      const strategyId = pathname.split("/")[4]; // Extract ID from /api/portfolio/strategies/:id/swap
       const body = await parseBody(req);
       const { yamlContent, reason } = body;
 
       if (!yamlContent) {
-        sendJSON(res, { error: 'yamlContent is required' }, 400);
+        sendJSON(res, { error: "yamlContent is required" }, 400);
         return;
       }
 
@@ -1991,11 +2312,13 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         // Get old strategy
         const oldStrategy = await strategyRepo.findById(strategyId);
         if (!oldStrategy) {
-          sendJSON(res, { error: 'Strategy not found' }, 404);
+          sendJSON(res, { error: "Strategy not found" }, 404);
           return;
         }
 
-        console.log(`[swap] Starting manual swap for strategy ${strategyId} (${oldStrategy.name})`);
+        console.log(
+          `[swap] Starting manual swap for strategy ${strategyId} (${oldStrategy.name})`,
+        );
 
         // Validate new YAML compiles
         let compiled;
@@ -2003,13 +2326,19 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           const registry = createStandardRegistry();
           const compiler = new StrategyCompiler(registry);
           compiled = compiler.compileFromYAML(yamlContent);
-          console.log(`[swap] New YAML validation successful for ${compiled.symbol}`);
+          console.log(
+            `[swap] New YAML validation successful for ${compiled.symbol}`,
+          );
         } catch (compileError: any) {
-          console.error('[swap] YAML validation failed:', compileError.message);
-          sendJSON(res, {
-            success: false,
-            error: `YAML validation failed: ${compileError.message}`
-          }, 400);
+          console.error("[swap] YAML validation failed:", compileError.message);
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: `YAML validation failed: ${compileError.message}`,
+            },
+            400,
+          );
           return;
         }
 
@@ -2020,7 +2349,7 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           name: `${oldStrategy.name} (Swapped)`,
           timeframe: compiled.timeframe,
           yamlContent: yamlContent,
-          changeReason: reason || 'Manual swap via UI review',
+          changeReason: reason || "Manual swap via UI review",
         });
 
         console.log(`[swap] Created new strategy ${newStrategy.id}`);
@@ -2028,17 +2357,19 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         // Mark new strategy as PENDING so orchestrator picks it up
         await factory.getPrisma().strategy.update({
           where: { id: newStrategy.id },
-          data: { status: 'PENDING' },
+          data: { status: "PENDING" },
         });
 
         // Close old strategy
         await strategyRepo.close(
           oldStrategy.id,
-          reason || 'Replaced with improved strategy via manual review',
-          'user'
+          reason || "Replaced with improved strategy via manual review",
+          "user",
         );
 
-        console.log(`[swap] Closed old strategy ${oldStrategy.id}, new strategy ${newStrategy.id} is PENDING`);
+        console.log(
+          `[swap] Closed old strategy ${oldStrategy.id}, new strategy ${newStrategy.id} is PENDING`,
+        );
 
         sendJSON(res, {
           success: true,
@@ -2046,27 +2377,31 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           newStrategyId: newStrategy.id,
           newStrategyName: newStrategy.name,
           symbol: newStrategy.symbol,
-          status: 'PENDING',
-          message: 'Strategy swap successful. New strategy will be activated automatically.'
+          status: "PENDING",
+          message:
+            "Strategy swap successful. New strategy will be activated automatically.",
         });
-
       } catch (error: any) {
-        console.error('[swap] Error swapping strategy:', error);
-        sendJSON(res, { error: error.message || 'Failed to swap strategy' }, 500);
+        console.error("[swap] Error swapping strategy:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to swap strategy" },
+          500,
+        );
       }
-    // ============================================================================
-    // CHAT HISTORY ENDPOINTS
-    // ============================================================================
-    } else if (pathname === '/api/chat/sessions' && req.method === 'GET') {
+      // ============================================================================
+      // CHAT HISTORY ENDPOINTS
+      // ============================================================================
+    } else if (pathname === "/api/chat/sessions" && req.method === "GET") {
       // GET /api/chat/sessions?limit=50&offset=0
       const userId = process.env.USER_ID;
       if (!userId) {
-        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        sendJSON(res, { error: "USER_ID not configured" }, 500);
         return;
       }
 
-      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
-      const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+      const offset = parseInt(url.searchParams.get("offset") || "0", 10);
 
       const chatRepo = getChatRepo();
 
@@ -2076,12 +2411,11 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
       ]);
 
       sendJSON(res, { sessions, total });
-
-    } else if (pathname === '/api/chat/sessions' && req.method === 'POST') {
+    } else if (pathname === "/api/chat/sessions" && req.method === "POST") {
       // POST /api/chat/sessions - Create new session
       const userId = process.env.USER_ID;
       if (!userId) {
-        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        sendJSON(res, { error: "USER_ID not configured" }, 500);
         return;
       }
 
@@ -2097,7 +2431,7 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         create: {
           id: userId,
           email: process.env.USER_EMAIL || `user-${userId}@example.com`,
-          name: process.env.USER_NAME || 'Trading User',
+          name: process.env.USER_NAME || "Trading User",
         },
       });
 
@@ -2110,12 +2444,18 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
       });
 
       sendJSON(res, { session }, 201);
-
-    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'GET') {
+    } else if (
+      pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) &&
+      req.method === "GET"
+    ) {
       // GET /api/chat/sessions/:id?includeMessages=true&messageLimit=500
-      const sessionId = pathname.split('/')[4];
-      const includeMessages = url.searchParams.get('includeMessages') === 'true';
-      const messageLimit = parseInt(url.searchParams.get('messageLimit') || '500', 10);
+      const sessionId = pathname.split("/")[4];
+      const includeMessages =
+        url.searchParams.get("includeMessages") === "true";
+      const messageLimit = parseInt(
+        url.searchParams.get("messageLimit") || "500",
+        10,
+      );
 
       const chatRepo = getChatRepo();
 
@@ -2124,15 +2464,17 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         : await chatRepo.findSessionById(sessionId);
 
       if (!session) {
-        sendJSON(res, { error: 'Session not found' }, 404);
+        sendJSON(res, { error: "Session not found" }, 404);
         return;
       }
 
       sendJSON(res, { session });
-
-    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'PUT') {
+    } else if (
+      pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) &&
+      req.method === "PUT"
+    ) {
       // PUT /api/chat/sessions/:id - Update session
-      const sessionId = pathname.split('/')[4];
+      const sessionId = pathname.split("/")[4];
       const body = await parseBody(req);
 
       const chatRepo = getChatRepo();
@@ -2147,13 +2489,19 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
 
         sendJSON(res, { session });
       } catch (error: any) {
-        console.error('[portfolio-api] Error updating chat session:', error);
-        sendJSON(res, { error: error.message || 'Failed to update session' }, 500);
+        console.error("[portfolio-api] Error updating chat session:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to update session" },
+          500,
+        );
       }
-
-    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+    } else if (
+      pathname.match(/^\/api\/chat\/sessions\/[^/]+$/) &&
+      req.method === "DELETE"
+    ) {
       // DELETE /api/chat/sessions/:id - Soft delete session
-      const sessionId = pathname.split('/')[4];
+      const sessionId = pathname.split("/")[4];
 
       const chatRepo = getChatRepo();
 
@@ -2161,17 +2509,23 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         await chatRepo.softDeleteSession(sessionId);
         sendJSON(res, { success: true });
       } catch (error: any) {
-        console.error('[portfolio-api] Error deleting chat session:', error);
-        sendJSON(res, { error: error.message || 'Failed to delete session' }, 500);
+        console.error("[portfolio-api] Error deleting chat session:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to delete session" },
+          500,
+        );
       }
-
-    } else if (pathname.match(/^\/api\/chat\/sessions\/[^/]+\/messages$/) && req.method === 'POST') {
+    } else if (
+      pathname.match(/^\/api\/chat\/sessions\/[^/]+\/messages$/) &&
+      req.method === "POST"
+    ) {
       // POST /api/chat/sessions/:id/messages - Add message
-      const sessionId = pathname.split('/')[4];
+      const sessionId = pathname.split("/")[4];
       const body = await parseBody(req);
 
       if (!body.role || !body.content) {
-        sendJSON(res, { error: 'role and content are required' }, 400);
+        sendJSON(res, { error: "role and content are required" }, 400);
         return;
       }
 
@@ -2193,9 +2547,16 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
 
           for (let i = 0; i < body.images.length; i++) {
             const img = body.images[i];
-            const buffer = Buffer.from(img.data, 'base64');
-            const key = generateImageKey(sessionId, message.id, i, img.mimeType);
-            const result = await storage.save(key, buffer, { mimeType: img.mimeType });
+            const buffer = Buffer.from(img.data, "base64");
+            const key = generateImageKey(
+              sessionId,
+              message.id,
+              i,
+              img.mimeType,
+            );
+            const result = await storage.save(key, buffer, {
+              mimeType: img.mimeType,
+            });
             imageUrls.push(result.url);
           }
 
@@ -2206,19 +2567,18 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
 
         sendJSON(res, { message }, 201);
       } catch (error: any) {
-        console.error('[portfolio-api] Error adding chat message:', error);
-        sendJSON(res, { error: error.message || 'Failed to add message' }, 500);
+        console.error("[portfolio-api] Error adding chat message:", error);
+        sendJSON(res, { error: error.message || "Failed to add message" }, 500);
       }
-
-    } else if (pathname === '/api/chat/search' && req.method === 'GET') {
+    } else if (pathname === "/api/chat/search" && req.method === "GET") {
       // GET /api/chat/search?q=search+query
       const userId = process.env.USER_ID;
       if (!userId) {
-        sendJSON(res, { error: 'USER_ID not configured' }, 500);
+        sendJSON(res, { error: "USER_ID not configured" }, 500);
         return;
       }
 
-      const query = url.searchParams.get('q') || '';
+      const query = url.searchParams.get("q") || "";
       if (!query) {
         sendJSON(res, { error: 'Query parameter "q" is required' }, 400);
         return;
@@ -2230,60 +2590,68 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         const results = await chatRepo.searchSessions(userId, query);
         sendJSON(res, { results, count: results.length });
       } catch (error: any) {
-        console.error('[portfolio-api] Error searching chat sessions:', error);
-        sendJSON(res, { error: error.message || 'Failed to search sessions' }, 500);
+        console.error("[portfolio-api] Error searching chat sessions:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to search sessions" },
+          500,
+        );
       }
-
-    } else if (pathname.match(/^\/api\/chat\/images\/.*/) && req.method === 'GET') {
+    } else if (
+      pathname.match(/^\/api\/chat\/images\/.*/) &&
+      req.method === "GET"
+    ) {
       // GET /api/chat/images/:sessionId/:filename - Serve stored images
-      const imagePath = pathname.replace('/api/chat/images/', '');
+      const imagePath = pathname.replace("/api/chat/images/", "");
       const storage = getStorageProvider();
 
       try {
         const data = await storage.get(imagePath);
         if (!data) {
-          sendJSON(res, { error: 'Image not found' }, 404);
+          sendJSON(res, { error: "Image not found" }, 404);
           return;
         }
 
         const metadata = await storage.getMetadata(imagePath);
-        const mimeType = metadata?.mimeType || 'application/octet-stream';
+        const mimeType = metadata?.mimeType || "application/octet-stream";
 
-        res.writeHead(200, { 'Content-Type': mimeType });
+        res.writeHead(200, { "Content-Type": mimeType });
         res.end(data);
       } catch (error: any) {
-        console.error('[portfolio-api] Error serving image:', error);
-        sendJSON(res, { error: error.message || 'Failed to serve image' }, 500);
+        console.error("[portfolio-api] Error serving image:", error);
+        sendJSON(res, { error: error.message || "Failed to serve image" }, 500);
       }
-
-    } else if (pathname === '/api/dsl/schema' && req.method === 'GET') {
+    } else if (pathname === "/api/dsl/schema" && req.method === "GET") {
       // GET /api/dsl/schema - Get DSL schema documentation (dynamically generated from feature registry)
       try {
         const dslDocs = generateDSLDocumentation();
         sendJSON(res, {
           success: true,
           schema: dslDocs,
-          generatedAt: new Date().toISOString()
+          generatedAt: new Date().toISOString(),
         });
       } catch (error: any) {
-        console.error('[portfolio-api] Error generating DSL schema:', error);
-        sendJSON(res, { error: error.message || 'Failed to generate DSL schema' }, 500);
+        console.error("[portfolio-api] Error generating DSL schema:", error);
+        sendJSON(
+          res,
+          { error: error.message || "Failed to generate DSL schema" },
+          500,
+        );
       }
-
-    } else if (pathname === '/api/strategies/deploy' && req.method === 'POST') {
+    } else if (pathname === "/api/strategies/deploy" && req.method === "POST") {
       // POST /api/strategies/deploy - Deploy YAML strategy directly (no conversion)
       try {
         const body = await parseBody(req);
         const { yaml, name, symbol } = body;
 
         if (!yaml) {
-          sendJSON(res, { error: 'Missing required field: yaml' }, 400);
+          sendJSON(res, { error: "Missing required field: yaml" }, 400);
           return;
         }
 
         const userId = process.env.USER_ID;
         if (!userId) {
-          sendJSON(res, { error: 'USER_ID not configured' }, 500);
+          sendJSON(res, { error: "USER_ID not configured" }, 500);
           return;
         }
 
@@ -2295,13 +2663,22 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           const registry = createStandardRegistry();
           const compiler = new StrategyCompiler(registry);
           compiled = compiler.compileFromYAML(yaml);
-          console.log(`[portfolio-api] YAML validation successful for ${compiled.symbol}`);
+          console.log(
+            `[portfolio-api] YAML validation successful for ${compiled.symbol}`,
+          );
         } catch (compileError: any) {
-          console.error('[portfolio-api] YAML validation failed:', compileError.message);
-          sendJSON(res, {
-            success: false,
-            error: `YAML validation failed: ${compileError.message}`
-          }, 400);
+          console.error(
+            "[portfolio-api] YAML validation failed:",
+            compileError.message,
+          );
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: `YAML validation failed: ${compileError.message}`,
+            },
+            400,
+          );
           return;
         }
 
@@ -2315,56 +2692,74 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           name: name || `Strategy ${compiled.symbol}`,
           symbol: symbol || compiled.symbol,
           timeframe: compiled.timeframe,
-          changeReason: 'Deployed via API',
+          changeReason: "Deployed via API",
         });
 
         // Mark as PENDING so orchestrator will pick it up
         const updatedStrategy = await factory.getPrisma().strategy.update({
           where: { id: strategy.id },
-          data: { status: 'PENDING' },
+          data: { status: "PENDING" },
         });
 
-        console.log(`[portfolio-api] Strategy deployed with ID: ${updatedStrategy.id}, status: ${updatedStrategy.status}`);
+        console.log(
+          `[portfolio-api] Strategy deployed with ID: ${updatedStrategy.id}, status: ${updatedStrategy.status}`,
+        );
 
-        sendJSON(res, {
-          success: true,
-          strategyId: updatedStrategy.id,
-          strategyName: updatedStrategy.name,
-          symbol: updatedStrategy.symbol,
-          status: updatedStrategy.status,
-          message: 'Strategy deployed successfully. Orchestrator will activate it automatically.'
-        }, 201);
-
+        sendJSON(
+          res,
+          {
+            success: true,
+            strategyId: updatedStrategy.id,
+            strategyName: updatedStrategy.name,
+            symbol: updatedStrategy.symbol,
+            status: updatedStrategy.status,
+            message:
+              "Strategy deployed successfully. Orchestrator will activate it automatically.",
+          },
+          201,
+        );
       } catch (error: any) {
-        console.error('[portfolio-api] Error deploying strategy:', error);
-        sendJSON(res, {
-          success: false,
-          error: error.message || 'Failed to deploy strategy'
-        }, 500);
+        console.error("[portfolio-api] Error deploying strategy:", error);
+        sendJSON(
+          res,
+          {
+            success: false,
+            error: error.message || "Failed to deploy strategy",
+          },
+          500,
+        );
       }
-
-    } else if (pathname === '/api/tradecheck/convert' && req.method === 'POST') {
+    } else if (
+      pathname === "/api/tradecheck/convert" &&
+      req.method === "POST"
+    ) {
       // POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy (no deployment)
       try {
         const body = await parseBody(req);
         const { analysis, market_regime, max_risk_per_trade } = body;
 
         if (!analysis) {
-          sendJSON(res, { error: 'Missing required field: analysis' }, 400);
+          sendJSON(res, { error: "Missing required field: analysis" }, 400);
           return;
         }
 
         if (!market_regime) {
-          sendJSON(res, { error: 'Missing required field: market_regime' }, 400);
+          sendJSON(
+            res,
+            { error: "Missing required field: market_regime" },
+            400,
+          );
           return;
         }
 
-        console.log(`[portfolio-api] Converting TradeCheck analysis for ${analysis.ticker}`);
+        console.log(
+          `[portfolio-api] Converting TradeCheck analysis for ${analysis.ticker}`,
+        );
 
         const result = await convertTradeCheckToYAML(
           analysis,
           market_regime,
-          max_risk_per_trade || 350
+          max_risk_per_trade || 350,
         );
 
         sendJSON(res, {
@@ -2373,29 +2768,46 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           warnings: result.warnings,
           analysisId: analysis.id,
           ticker: analysis.ticker,
-          setupType: analysis.setup_type
+          setupType: analysis.setup_type,
         });
-
       } catch (error: any) {
-        console.error('[portfolio-api] Error converting TradeCheck analysis:', error);
-        sendJSON(res, {
-          success: false,
-          error: error.message || 'Failed to convert analysis'
-        }, 500);
+        console.error(
+          "[portfolio-api] Error converting TradeCheck analysis:",
+          error,
+        );
+        sendJSON(
+          res,
+          {
+            success: false,
+            error: error.message || "Failed to convert analysis",
+          },
+          500,
+        );
       }
-
-    } else if (pathname === '/api/tradecheck/analyze-and-convert' && req.method === 'POST') {
+    } else if (
+      pathname === "/api/tradecheck/analyze-and-convert" &&
+      req.method === "POST"
+    ) {
       // POST /api/tradecheck/analyze-and-convert - Fetch analysis from TradeCheck and convert to YAML
       try {
         const body = await parseBody(req);
-        const { symbol, timeframe = '5m', limit = 100, max_risk_per_trade = 350 } = body;
+        const {
+          symbol,
+          timeframe = "5m",
+          limit = 100,
+          max_risk_per_trade = 350,
+        } = body;
 
         if (!symbol) {
-          sendJSON(res, {
-            success: false,
-            error: 'Missing required field: symbol',
-            step: 'validation'
-          }, 400);
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: "Missing required field: symbol",
+              step: "validation",
+            },
+            400,
+          );
           return;
         }
 
@@ -2404,25 +2816,40 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         // Step 1: Fetch analysis from TradeCheck
         let tradeCheckResponse;
         try {
-          tradeCheckResponse = await fetchTradeCheckAnalysis(symbol, timeframe, limit);
+          tradeCheckResponse = await fetchTradeCheckAnalysis(
+            symbol,
+            timeframe,
+            limit,
+          );
         } catch (error: any) {
-          console.error('[portfolio-api] TradeCheck fetch failed:', error);
-          sendJSON(res, {
-            success: false,
-            error: `TradeCheck analysis failed: ${error.message}`,
-            step: 'fetch_analysis'
-          }, 500);
+          console.error("[portfolio-api] TradeCheck fetch failed:", error);
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: `TradeCheck analysis failed: ${error.message}`,
+              step: "fetch_analysis",
+            },
+            500,
+          );
           return;
         }
 
         // Validate response has analyses
-        if (!tradeCheckResponse.analyses || tradeCheckResponse.analyses.length === 0) {
-          sendJSON(res, {
-            success: false,
-            error: 'No analyses returned from TradeCheck',
-            step: 'fetch_analysis',
-            tradeCheckResponse
-          }, 400);
+        if (
+          !tradeCheckResponse.analyses ||
+          tradeCheckResponse.analyses.length === 0
+        ) {
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: "No analyses returned from TradeCheck",
+              step: "fetch_analysis",
+              tradeCheckResponse,
+            },
+            400,
+          );
           return;
         }
 
@@ -2430,7 +2857,9 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         const analysis = tradeCheckResponse.analyses[0];
         const market_regime = tradeCheckResponse.market_regime;
 
-        console.log(`[portfolio-api] Converting analysis ${analysis.id} to YAML...`);
+        console.log(
+          `[portfolio-api] Converting analysis ${analysis.id} to YAML...`,
+        );
 
         // Step 2: Convert to YAML
         let conversionResult;
@@ -2438,16 +2867,20 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           conversionResult = await convertTradeCheckToYAML(
             analysis,
             market_regime,
-            max_risk_per_trade
+            max_risk_per_trade,
           );
         } catch (error: any) {
-          console.error('[portfolio-api] YAML conversion failed:', error);
-          sendJSON(res, {
-            success: false,
-            error: `YAML conversion failed: ${error.message}`,
-            step: 'convert_yaml',
-            analysis
-          }, 500);
+          console.error("[portfolio-api] YAML conversion failed:", error);
+          sendJSON(
+            res,
+            {
+              success: false,
+              error: `YAML conversion failed: ${error.message}`,
+              step: "convert_yaml",
+              analysis,
+            },
+            500,
+          );
           return;
         }
 
@@ -2463,68 +2896,89 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           market_regime,
           yaml: conversionResult.yaml,
           warnings: conversionResult.warnings,
-          generatedAt: new Date().toISOString()
+          generatedAt: new Date().toISOString(),
         });
-
       } catch (error: any) {
-        console.error('[portfolio-api] Unexpected error:', error);
-        sendJSON(res, {
-          success: false,
-          error: error.message || 'Unexpected error during analysis and conversion'
-        }, 500);
+        console.error("[portfolio-api] Unexpected error:", error);
+        sendJSON(
+          res,
+          {
+            success: false,
+            error:
+              error.message ||
+              "Unexpected error during analysis and conversion",
+          },
+          500,
+        );
       }
-
-    } else if (pathname.match(/^\/api\/chart-data\/[^/]+$/) && req.method === 'GET') {
+    } else if (
+      pathname.match(/^\/api\/chart-data\/[^/]+$/) &&
+      req.method === "GET"
+    ) {
       // GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m
       // Returns historical OHLCV data compatible with TradeCheck backend format
       // Auto-fetches and caches missing data using BarCacheServiceV2
 
       // Extract parameters outside try block for error handling
-      const symbol = pathname.split('/')[3]; // Extract symbol from /api/chart-data/:symbol
-      const startDate = url.searchParams.get('start_date');
-      const endDate = url.searchParams.get('end_date');
-      const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
-      const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
-      const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+      const symbol = pathname.split("/")[3]; // Extract symbol from /api/chart-data/:symbol
+      const startDate = url.searchParams.get("start_date");
+      const endDate = url.searchParams.get("end_date");
+      const period = url.searchParams.get("period") || "5m"; // Default to 5-minute bars
+      const session =
+        (url.searchParams.get("session") as "rth" | "all") || "rth"; // Default to rth
+      const what =
+        (url.searchParams.get("what") as
+          | "trades"
+          | "midpoint"
+          | "bid"
+          | "ask") || "trades";
 
       try {
-
         if (!symbol) {
-          sendJSON(res, { error: 'Symbol is required' }, 400);
+          sendJSON(res, { error: "Symbol is required" }, 400);
           return;
         }
 
         if (!startDate || !endDate) {
-          sendJSON(res, { error: 'start_date and end_date query parameters are required (format: YYYY-MM-DD)' }, 400);
+          sendJSON(
+            res,
+            {
+              error:
+                "start_date and end_date query parameters are required (format: YYYY-MM-DD)",
+            },
+            400,
+          );
           return;
         }
 
         // Convert dates to timestamps
-        const startTimestamp = new Date(startDate + 'T00:00:00Z').getTime();
-        const endTimestamp = new Date(endDate + 'T23:59:59.999Z').getTime();
+        const startTimestamp = new Date(startDate + "T00:00:00Z").getTime();
+        const endTimestamp = new Date(endDate + "T23:59:59.999Z").getTime();
 
         if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
-          sendJSON(res, { error: 'Invalid date format. Use YYYY-MM-DD' }, 400);
+          sendJSON(res, { error: "Invalid date format. Use YYYY-MM-DD" }, 400);
           return;
         }
 
         // Calculate number of bars needed based on date range and period
-        const daysDiff = Math.ceil((endTimestamp - startTimestamp) / (1000 * 60 * 60 * 24));
+        const daysDiff = Math.ceil(
+          (endTimestamp - startTimestamp) / (1000 * 60 * 60 * 24),
+        );
         let estimatedBars: number;
 
         // Estimate bars per day based on period (for RTH: 6.5 hours = 390 minutes per day)
-        const minutesPerDay = session === 'rth' ? 390 : 1440; // RTH vs 24h
+        const minutesPerDay = session === "rth" ? 390 : 1440; // RTH vs 24h
         switch (period) {
-          case '5m':
+          case "5m":
             estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 5);
             break;
-          case '15m':
+          case "15m":
             estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 15);
             break;
-          case '1h':
+          case "1h":
             estimatedBars = Math.ceil((daysDiff * minutesPerDay) / 60);
             break;
-          case '1d':
+          case "1d":
             estimatedBars = daysDiff;
             break;
           default:
@@ -2534,7 +2988,9 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         // Add buffer for safety (50% more)
         const limit = Math.ceil(estimatedBars * 1.5);
 
-        console.log(`[portfolio-api] Fetching ${symbol} bars: ${period}, session=${session}, limit=${limit}, days=${daysDiff}`);
+        console.log(
+          `[portfolio-api] Fetching ${symbol} bars: ${period}, session=${session}, limit=${limit}, days=${daysDiff}`,
+        );
 
         // Use BarCacheServiceV2 to fetch (auto-caches if missing)
         const barCache = getBarCacheService();
@@ -2542,21 +2998,26 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           symbol.toUpperCase(),
           period,
           limit,
-          { session, what }
+          { session, what },
         );
 
-        console.log(`[portfolio-api] Retrieved ${cachedBars.length} bars for ${symbol}`);
+        console.log(
+          `[portfolio-api] Retrieved ${cachedBars.length} bars for ${symbol}`,
+        );
 
         // Filter bars to requested date range and convert to TradeCheck format
         const bars = cachedBars
-          .filter(bar => bar.timestamp >= startTimestamp && bar.timestamp <= endTimestamp)
-          .map(bar => ({
+          .filter(
+            (bar) =>
+              bar.timestamp >= startTimestamp && bar.timestamp <= endTimestamp,
+          )
+          .map((bar) => ({
             timestamp: bar.timestamp,
             open: bar.open,
             high: bar.high,
             low: bar.low,
             close: bar.close,
-            volume: bar.volume
+            volume: bar.volume,
           }));
 
         sendJSON(res, {
@@ -2567,62 +3028,88 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           session,
           what,
           bar_count: bars.length,
-          bars
+          bars,
         });
-
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching chart data for', symbol, error);
+        console.error(
+          "[portfolio-api] Error fetching chart data for",
+          symbol,
+          error,
+        );
 
         // Return structured error with symbol info
-        sendJSON(res, {
-          error: error.message || 'Failed to fetch chart data',
-          symbol: symbol.toUpperCase(),
-          start_date: startDate,
-          end_date: endDate,
-          period,
-          session,
-          what,
-          details: error.stack,
-          suggestion: symbol.toUpperCase() === 'VIX'
-            ? 'VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)'
-            : 'Check if symbol exists and TWS has data for this period'
-        }, 500);
+        sendJSON(
+          res,
+          {
+            error: error.message || "Failed to fetch chart data",
+            symbol: symbol.toUpperCase(),
+            start_date: startDate,
+            end_date: endDate,
+            period,
+            session,
+            what,
+            details: error.stack,
+            suggestion:
+              symbol.toUpperCase() === "VIX"
+                ? "VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)"
+                : "Check if symbol exists and TWS has data for this period",
+          },
+          500,
+        );
       }
-
-    } else if (pathname.match(/^\/api\/bars\/[^/]+$/) && req.method === 'GET') {
+    } else if (pathname.match(/^\/api\/bars\/[^/]+$/) && req.method === "GET") {
       // GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades
       // Simple endpoint to fetch recent bars using BarCacheServiceV2
       // Returns most recent N bars for a symbol
 
       // Extract parameters outside try block for error handling
-      const symbol = pathname.split('/')[3]; // Extract symbol from /api/bars/:symbol
-      const limitParam = url.searchParams.get('limit');
-      const period = url.searchParams.get('period') || '5m'; // Default to 5-minute bars
-      const session = url.searchParams.get('session') as 'rth' | 'all' || 'rth'; // Default to rth
-      const what = url.searchParams.get('what') as 'trades' | 'midpoint' | 'bid' | 'ask' || 'trades';
+      const symbol = pathname.split("/")[3]; // Extract symbol from /api/bars/:symbol
+      const limitParam = url.searchParams.get("limit");
+      const period = url.searchParams.get("period") || "5m"; // Default to 5-minute bars
+      const session =
+        (url.searchParams.get("session") as "rth" | "all") || "rth"; // Default to rth
+      const what =
+        (url.searchParams.get("what") as
+          | "trades"
+          | "midpoint"
+          | "bid"
+          | "ask") || "trades";
       const limit = limitParam ? parseInt(limitParam, 10) : 100;
 
       try {
-
         if (!symbol) {
-          sendJSON(res, { error: 'Symbol is required' }, 400);
+          sendJSON(res, { error: "Symbol is required" }, 400);
           return;
         }
 
         // Validate limit
         if (isNaN(limit) || limit < 1 || limit > 5000) {
-          sendJSON(res, { error: 'Invalid limit. Must be between 1 and 5000' }, 400);
+          sendJSON(
+            res,
+            { error: "Invalid limit. Must be between 1 and 5000" },
+            400,
+          );
           return;
         }
 
         // Validate period
-        const validPeriods = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+        const validPeriods = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
         if (!validPeriods.includes(period)) {
-          sendJSON(res, { error: `Invalid period. Must be one of: ${validPeriods.join(', ')}` }, 400);
+          sendJSON(
+            res,
+            {
+              error: `Invalid period. Must be one of: ${validPeriods.join(
+                ", ",
+              )}`,
+            },
+            400,
+          );
           return;
         }
 
-        console.log(`[portfolio-api] Fetching ${symbol} bars: limit=${limit}, period=${period}, session=${session}, what=${what}`);
+        console.log(
+          `[portfolio-api] Fetching ${symbol} bars: limit=${limit}, period=${period}, session=${session}, what=${what}`,
+        );
 
         // Use BarCacheServiceV2 to fetch (auto-caches if missing)
         const barCache = getBarCacheService();
@@ -2630,18 +3117,21 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           symbol.toUpperCase(),
           period,
           limit,
-          { session, what }
+          { session, what },
         );
 
-        console.log(`[portfolio-api] Retrieved ${bars.length} bars for ${symbol}`);
+        console.log(
+          `[portfolio-api] Retrieved ${bars.length} bars for ${symbol}`,
+        );
 
         // Calculate time range from bars
-        const timeRange = bars.length > 0
-          ? {
-              start: new Date(bars[0].timestamp).toISOString(),
-              end: new Date(bars[bars.length - 1].timestamp).toISOString()
-            }
-          : null;
+        const timeRange =
+          bars.length > 0
+            ? {
+                start: new Date(bars[0].timestamp).toISOString(),
+                end: new Date(bars[bars.length - 1].timestamp).toISOString(),
+              }
+            : null;
 
         sendJSON(res, {
           symbol: symbol.toUpperCase(),
@@ -2651,28 +3141,34 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
           limit,
           count: bars.length,
           timeRange,
-          bars
+          bars,
         });
-
       } catch (error: any) {
-        console.error('[portfolio-api] Error fetching bars for', symbol, error);
+        console.error("[portfolio-api] Error fetching bars for", symbol, error);
 
         // Return structured error with symbol info
-        sendJSON(res, {
-          error: error.message || 'Failed to fetch bars',
-          symbol: symbol.toUpperCase(),
-          period,
-          session,
-          what,
-          limit,
-          details: error.stack,
-          suggestion: symbol.toUpperCase() === 'VIX'
-            ? 'VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)'
-            : 'Check if symbol exists and TWS has data for this period'
-        }, 500);
+        sendJSON(
+          res,
+          {
+            error: error.message || "Failed to fetch bars",
+            symbol: symbol.toUpperCase(),
+            period,
+            session,
+            what,
+            limit,
+            details: error.stack,
+            suggestion:
+              symbol.toUpperCase() === "VIX"
+                ? "VIX might not be available as 5m bars. Try period=1d or check symbol format (^VIX, VX)"
+                : "Check if symbol exists and TWS has data for this period",
+          },
+          500,
+        );
       }
-
-    } else if (pathname === '/api/portfolio/auto-swap/enable' && req.method === 'POST') {
+    } else if (
+      pathname === "/api/portfolio/auto-swap/enable" &&
+      req.method === "POST"
+    ) {
       // Enable auto-swap with configuration
       const body = await parseBody(req);
       const parallel = body.parallel !== undefined ? body.parallel : true;
@@ -2689,17 +3185,24 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
       autoSwapInterval = setInterval(executeAutoSwap, 30 * 60 * 1000);
 
       // Run immediately
-      executeAutoSwap().catch(err => console.error('[auto-swap] Initial execution error:', err));
+      executeAutoSwap().catch((err) =>
+        console.error("[auto-swap] Initial execution error:", err),
+      );
 
-      console.log(`[auto-swap] Enabled (mode: ${parallel ? 'parallel' : 'serial'})`);
+      console.log(
+        `[auto-swap] Enabled (mode: ${parallel ? "parallel" : "serial"})`,
+      );
 
       sendJSON(res, {
         success: true,
         enabled: true,
         parallel,
-        message: 'Auto-swap enabled',
+        message: "Auto-swap enabled",
       });
-    } else if (pathname === '/api/portfolio/auto-swap/disable' && req.method === 'POST') {
+    } else if (
+      pathname === "/api/portfolio/auto-swap/disable" &&
+      req.method === "POST"
+    ) {
       // Disable auto-swap
       autoSwapEnabled = false;
 
@@ -2708,27 +3211,37 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
         autoSwapInterval = null;
       }
 
-      console.log('[auto-swap] Disabled');
+      console.log("[auto-swap] Disabled");
 
       sendJSON(res, {
         success: true,
         enabled: false,
-        message: 'Auto-swap disabled',
+        message: "Auto-swap disabled",
       });
-    } else if (pathname === '/api/portfolio/auto-swap/status' && req.method === 'GET') {
+    } else if (
+      pathname === "/api/portfolio/auto-swap/status" &&
+      req.method === "GET"
+    ) {
       // Get auto-swap status
       sendJSON(res, {
         enabled: autoSwapEnabled,
         parallel: autoSwapParallel,
         isRunning: isAutoSwapping,
       });
-    } else if (pathname === '/api/portfolio/auto-swap/execute' && req.method === 'POST') {
+    } else if (
+      pathname === "/api/portfolio/auto-swap/execute" &&
+      req.method === "POST"
+    ) {
       // Manual trigger - can optionally filter by strategy IDs
       if (isAutoSwapping) {
-        sendJSON(res, {
-          success: false,
-          error: 'Auto-swap cycle already in progress',
-        }, 409);
+        sendJSON(
+          res,
+          {
+            success: false,
+            error: "Auto-swap cycle already in progress",
+          },
+          409,
+        );
         return;
       }
 
@@ -2736,22 +3249,24 @@ Be concise but thorough. Focus on actionable insights. If swapping, ensure the n
       const strategyIds = body.strategyIds; // Optional array of strategy IDs to evaluate
 
       // Execute in background with optional filtering
-      executeAutoSwapSelective(strategyIds).catch(err => console.error('[auto-swap] Manual execution error:', err));
+      executeAutoSwapSelective(strategyIds).catch((err) =>
+        console.error("[auto-swap] Manual execution error:", err),
+      );
 
       sendJSON(res, {
         success: true,
         message: strategyIds
           ? `Auto-swap execution started for ${strategyIds.length} selected strategies`
-          : 'Auto-swap execution started for all active strategies',
+          : "Auto-swap execution started for all active strategies",
       });
-    } else if (pathname === '/health') {
-      sendJSON(res, { status: 'ok', timestamp: new Date().toISOString() });
+    } else if (pathname === "/health") {
+      sendJSON(res, { status: "ok", timestamp: new Date().toISOString() });
     } else {
-      sendJSON(res, { error: 'Not Found' }, 404);
+      sendJSON(res, { error: "Not Found" }, 404);
     }
   } catch (error: any) {
-    console.error('[portfolio-api] Error:', error);
-    sendJSON(res, { error: error.message || 'Internal Server Error' }, 500);
+    console.error("[portfolio-api] Error:", error);
+    sendJSON(res, { error: error.message || "Internal Server Error" }, 500);
   }
 };
 
@@ -2766,29 +3281,63 @@ server.listen(PORT, () => {
   console.log(`  GET /api/portfolio/strategies - Strategy performance metrics`);
   console.log(`  GET /api/portfolio/trades?limit=20 - Recent trades`);
   console.log(`  GET /api/portfolio/stats - Order statistics`);
-  console.log(`  GET /api/portfolio/tws-snapshot?force_refresh=true - Live TWS portfolio snapshot`);
-  console.log(`  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`);
-  console.log(`  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`);
+  console.log(
+    `  GET /api/portfolio/tws-snapshot?force_refresh=true - Live TWS portfolio snapshot`,
+  );
+  console.log(
+    `  GET /api/portfolio/strategy-audit?limit=100 - Strategy audit logs`,
+  );
+  console.log(
+    `  GET /api/logs - System logs (filters: limit, level, component, strategyId, since)`,
+  );
   console.log(`  GET /api/logs/stats - Log statistics`);
-  console.log(`  GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Recent rejected orders`);
+  console.log(
+    `  GET /api/portfolio/rejections?since=ISO_TIMESTAMP - Recent rejected orders`,
+  );
   console.log(`  Strategy Actions:`);
-  console.log(`    POST /api/portfolio/strategies/:id/close - Close a strategy`);
-  console.log(`    POST /api/portfolio/strategies/:id/reopen - Reopen a closed strategy`);
-  console.log(`    POST /api/portfolio/strategies/:id/force-deploy - Force deploy pending strategy`);
-  console.log(`    POST /api/portfolio/strategies/:id/backtest - Run backtest (last 180 bars)`);
-  console.log(`    POST /api/portfolio/strategies/:id/review - Get AI review context data`);
+  console.log(
+    `    POST /api/portfolio/strategies/:id/close - Close a strategy`,
+  );
+  console.log(
+    `    POST /api/portfolio/strategies/:id/reopen - Reopen a closed strategy`,
+  );
+  console.log(
+    `    POST /api/portfolio/strategies/:id/force-deploy - Force deploy pending strategy`,
+  );
+  console.log(
+    `    POST /api/portfolio/strategies/:id/backtest - Run backtest (last 180 bars)`,
+  );
+  console.log(
+    `    POST /api/portfolio/strategies/:id/review - Get AI review context data`,
+  );
   console.log(`  Market Data:`);
-  console.log(`    GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades - Fetch recent bars`);
-  console.log(`    GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m - Fetch bars by date range`);
+  console.log(
+    `    GET /api/bars/:symbol?limit=100&period=5m&session=rth&what=trades - Fetch recent bars`,
+  );
+  console.log(
+    `    GET /api/chart-data/:symbol?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&period=5m - Fetch bars by date range`,
+  );
   console.log(`  DSL & TradeCheck:`);
-  console.log(`    GET  /api/dsl/schema - Get DSL schema (dynamically from feature registry)`);
-  console.log(`    POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy`);
-  console.log(`    POST /api/tradecheck/analyze-and-convert - Fetch from TradeCheck + convert to YAML`);
+  console.log(
+    `    GET  /api/dsl/schema - Get DSL schema (dynamically from feature registry)`,
+  );
+  console.log(
+    `    POST /api/tradecheck/convert - Convert TradeCheck analysis to YAML strategy`,
+  );
+  console.log(
+    `    POST /api/tradecheck/analyze-and-convert - Fetch from TradeCheck + convert to YAML`,
+  );
   console.log(`  Auto-Swap (Background Service):`);
-  console.log(`    POST /api/portfolio/auto-swap/enable - Enable auto-swap (body: {parallel: true/false})`);
+  console.log(
+    `    POST /api/portfolio/auto-swap/enable - Enable auto-swap (body: {parallel: true/false})`,
+  );
   console.log(`    POST /api/portfolio/auto-swap/disable - Disable auto-swap`);
-  console.log(`    GET  /api/portfolio/auto-swap/status - Get auto-swap status`);
-  console.log(`    POST /api/portfolio/auto-swap/execute - Manual trigger (for testing)`);
+  console.log(
+    `    GET  /api/portfolio/auto-swap/status - Get auto-swap status`,
+  );
+  console.log(
+    `    POST /api/portfolio/auto-swap/execute - Manual trigger (for testing)`,
+  );
   console.log(`  Chat History:`);
   console.log(`    GET  /api/chat/sessions - List chat sessions`);
   console.log(`    POST /api/chat/sessions - Create chat session`);
@@ -2802,8 +3351,8 @@ server.listen(PORT, () => {
 });
 
 // Cleanup on exit
-process.on('SIGINT', async () => {
-  console.log('[portfolio-api] Shutting down...');
+process.on("SIGINT", async () => {
+  console.log("[portfolio-api] Shutting down...");
   await prisma.$disconnect();
   await pool.end();
   server.close();
