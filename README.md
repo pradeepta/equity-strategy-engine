@@ -1,3 +1,35 @@
+# ⚠️ RESTRICTED ACCESS: PROPRIETARY & CONFIDENTIAL
+
+### PROPERTY OF ZIYMO LLC
+**COPYRIGHT © 2026. ALL RIGHTS RESERVED.**
+
+**WARNING:** THIS REPOSITORY IS THE SOLE PROPERTY OF ZIYMO LLC. UNAUTHORIZED 
+ACCESS, VIEWING, OR DISTRIBUTION IS STRICTLY PROHIBITED.
+
+### LEGAL ENFORCEMENT & MONITORING
+1. **CRIMINAL PROSECUTION:** Any unauthorized use or theft of this source code 
+   may be prosecuted under the **Economic Espionage Act** and the **Defend 
+   Trade Secrets Act (DTSA)**, as well as applicable international intellectual 
+   property laws.
+2. **ACTIVE TRACKING:** Access to this private repository is logged. Any 
+   unauthorized duplication, "leaking," or exporting of this codebase will be 
+   traced back to the individual credentials used.
+3. **LIQUIDATED DAMAGES:** By accessing this code, you acknowledge that 
+   unauthorized disclosure causes irreparable harm to Ziymo LLC, and the 
+   company will seek maximum statutory damages, injunctive relief, and 
+   recovery of all legal fees.
+
+### NON-DISCLOSURE MANDATE
+If you have been granted access to this repository, you are bound by your 
+signed **Non-Disclosure Agreement (NDA)**. Any breach—including sharing 
+snippets, logic, or architectural diagrams—will result in immediate 
+termination of contract and aggressive legal action.
+
+---
+**CONFIDENTIALITY NOTICE:** If you are not an authorized employee or contractor of Ziymo LLC, EXIT 
+IMMEDIATELY. Delete any local copies or cached versions of this data.
+
+
 # Algorithmic Trading System
 
 A production-ready algorithmic trading system with database-backed strategy management, multi-strategy orchestration, and live trading support for **Interactive Brokers (TWS)**.
@@ -629,15 +661,11 @@ stocks/
 
 ## Contributing
 
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
+ - Contributors are not welcome. This is propritory software
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details
+
 
 ## Acknowledgments
 
